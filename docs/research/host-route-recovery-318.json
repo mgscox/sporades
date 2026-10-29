@@ -1,0 +1,3275 @@
+{
+  "provenance": {
+    "candidateSourceCommit": "2206b68143dd7ecb8876b0181f25aa1d14c314b9",
+    "initialCandidateCommit": "08ff36b89ed9053c99235f612fd1d901dd91d669",
+    "baseSourceCommit": "02920387d85e882af633c627139c597339d26fe9",
+    "packageVersion": "0.9.41",
+    "publishedPackage": false,
+    "installedHelperSha256": "ef79656e8070e4a6ff87faf293157b48c98c8eeca704e3adfbc060b04052c24e",
+    "node": "v24.22.2",
+    "docker": "Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2",
+    "caddy": "2.6.2",
+    "restic": "restic 0.16.4 compiled with go1.22.2 on linux/amd64",
+    "baseImageId": "sha256:60c9c56661a58aed769afd9c49fa41b4e2b5fbb3e22813f47d601c6491c74503",
+    "baseImageSource": "Repository Dockerfile.base, pinned node:24.22.1-alpine3.23 digest; registry pull denied, built on disposable VM",
+    "provider": "DigitalOcean",
+    "dropletId": 614023637,
+    "dropletName": "sporades-issue-318-20261029",
+    "region": "lon1",
+    "size": "s-2vcpu-4gb",
+    "initialContainerInventory": [],
+    "fixtures": [
+      "awake",
+      "sibling",
+      "asleep"
+    ],
+    "dns": "Temporary sslip.io names; no DNS provider records created",
+    "productionContacted": false,
+    "installationProvenanceCapturedAt": "2026-10-29T23:04:38.421992+00:00",
+    "initialHostOwnership": {
+      "providerCreation": "Fresh Droplet created for issue 318; never reused an existing Host",
+      "preexistingApplicationContainers": [],
+      "preexistingUserWorkloads": [],
+      "issueProvisionedHostServices": [
+        "Docker",
+        "Caddy",
+        "fail2ban",
+        "Node",
+        "restic"
+      ],
+      "inventoryObservation": "docker ps -a returned no names before registering fixtures; OS services are not application workloads"
+    }
+  },
+  "originalMergedCandidate": {
+    "sourceCommit": "08ff36b89ed9053c99235f612fd1d901dd91d669",
+    "installedHelperSha256": "2c83088d42141f9b02903446c57a172f75f17abc5616cadd44f11677e9ef6469",
+    "results": [
+      {
+        "scenario": "Initial candidate baseline",
+        "startedAt": "2026-10-29T22:54:10.728440+00:00",
+        "state": {
+          "at": "2026-10-29T22:54:11.161926+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "86477e81f5d72360e556ce982f90bb18c83b6b1299d5be4ed8a3caced1015e10",
+          "running": true,
+          "startedAt": "2026-10-29T22:53:31.710733505Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32776"
+              }
+            ]
+          },
+          "upstreamPort": 32776,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:54:11.377Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "candidateHelperSha256": "2c83088d42141f9b02903446c57a172f75f17abc5616cadd44f11677e9ef6469",
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:54:12.109185+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:54:12.757Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:54:12.558401+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:54:12.769553+00:00"
+      },
+      {
+        "scenario": "Unfixed reproduction with forced dynamic port change",
+        "startedAt": "2026-10-29T22:54:12.770077+00:00",
+        "command": "unfixed helper capsule.backup.create; test-owned loopback reservation after Docker stop",
+        "baseHelperSha256": "693ccdd7af609844dd97507f446de2a13ecea6086d96f3453339d3e569cec85c",
+        "before": {
+          "at": "2026-10-29T22:54:13.507346+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "86477e81f5d72360e556ce982f90bb18c83b6b1299d5be4ed8a3caced1015e10",
+          "running": true,
+          "startedAt": "2026-10-29T22:53:31.710733505Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32776"
+              }
+            ]
+          },
+          "upstreamPort": 32776,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:54:16.766262+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "86477e81f5d72360e556ce982f90bb18c83b6b1299d5be4ed8a3caced1015e10",
+          "running": true,
+          "startedAt": "2026-10-29T22:54:15.126783476Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32777"
+              }
+            ]
+          },
+          "upstreamPort": 32776,
+          "journal": null,
+          "sentinel": null
+        },
+        "observedHttps": 502,
+        "backupReportedSuccess": true,
+        "recoveredWithCandidateRestart": {
+          "at": "2026-10-29T22:55:05.331Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:06.494100+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:07.271Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:07.080276+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:07.284466+00:00"
+      },
+      {
+        "scenario": "Candidate restart",
+        "startedAt": "2026-10-29T22:55:07.285090+00:00",
+        "command": "capsule.restart",
+        "before": {
+          "at": "2026-10-29T22:55:07.755567+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "f87790a5b6001eda13c7d24288d1d39d479269b5f6a7a9ad36725111971fefee",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:03.54940353Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32778"
+              }
+            ]
+          },
+          "upstreamPort": 32778,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:55:12.338673+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "edfbaa7a10db406e1169f24b301f6e1e1ee720feb2409a91008b27816108fc93",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:10.091689224Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32779"
+              }
+            ]
+          },
+          "upstreamPort": 32779,
+          "journal": null,
+          "sentinel": null
+        },
+        "resultOk": true,
+        "protocols": {
+          "at": "2026-10-29T22:55:12.561Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:12.984826+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:13.618Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:13.431208+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:13.630451+00:00"
+      },
+      {
+        "scenario": "Candidate start",
+        "startedAt": "2026-10-29T22:55:13.630987+00:00",
+        "command": "capsule.stop followed by capsule.start",
+        "before": {
+          "at": "2026-10-29T22:55:14.030501+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "edfbaa7a10db406e1169f24b301f6e1e1ee720feb2409a91008b27816108fc93",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:10.091689224Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32779"
+              }
+            ]
+          },
+          "upstreamPort": 32779,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:55:20.381149+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "9bcefb9d8ce304a0e20b23c9cc06cb2c1318f97c84d34524d25ed472faa5c8c5",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:17.687053033Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32780"
+              }
+            ]
+          },
+          "upstreamPort": 32780,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:55:20.593Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:21.018306+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:21.642Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:21.441852+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:21.654891+00:00"
+      },
+      {
+        "scenario": "Deployment replacement",
+        "startedAt": "2026-10-29T22:55:21.655407+00:00",
+        "command": "capsule.release.install restart/verify",
+        "before": {
+          "at": "2026-10-29T22:55:22.086990+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "9bcefb9d8ce304a0e20b23c9cc06cb2c1318f97c84d34524d25ed472faa5c8c5",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:17.687053033Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32780"
+              }
+            ]
+          },
+          "upstreamPort": 32780,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:55:29.548699+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T231100Z-aabbcc03",
+          "containerId": "eef181d26aa8cd3a7da5e2d8a65393bdc19697cc85efbcb4dbeeef24a768970e",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:26.739006229Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32781"
+              }
+            ]
+          },
+          "upstreamPort": 32781,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:55:29.763Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:30.235779+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:30.974Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:30.764844+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:30.988288+00:00"
+      },
+      {
+        "scenario": "Deployment rollback",
+        "startedAt": "2026-10-29T22:55:30.988962+00:00",
+        "command": "capsule.release.rollback to first release",
+        "before": {
+          "at": "2026-10-29T22:55:31.568028+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T231100Z-aabbcc03",
+          "containerId": "eef181d26aa8cd3a7da5e2d8a65393bdc19697cc85efbcb4dbeeef24a768970e",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:26.739006229Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32781"
+              }
+            ]
+          },
+          "upstreamPort": 32781,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:55:38.176073+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:35.230803934Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32782"
+              }
+            ]
+          },
+          "upstreamPort": 32782,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:55:38.393Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:38.854412+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:39.556Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:39.340619+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:39.569890+00:00"
+      },
+      {
+        "scenario": "Successful backup capture/resume",
+        "startedAt": "2026-10-29T22:55:39.570758+00:00",
+        "command": "capsule.backup.create with real local restic repository",
+        "before": {
+          "at": "2026-10-29T22:55:40.083008+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:35.230803934Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32782"
+              }
+            ]
+          },
+          "upstreamPort": 32782,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:55:49.386159+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:44.281480124Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32783"
+              }
+            ]
+          },
+          "upstreamPort": 32783,
+          "journal": null,
+          "sentinel": null
+        },
+        "backupResult": {
+          "id": "d88a8aa65281fdc82776063a75b889ece857a0328ab0cc3f63b75bc60dd32ccb",
+          "manifest": {
+            "version": 1,
+            "domain": "[test-ip].sslip.io",
+            "subname": "awake",
+            "releaseId": "20261029T230000Z-aabbcc01",
+            "createdAt": "2026-10-29T22:55:44.072Z",
+            "schemaHash": "290ce4a9737dd84e36a80c995279019ea000a859b87d2efecf00d208cab4db0c",
+            "fileCount": 1,
+            "directoryCount": 2
+          }
+        },
+        "protocols": {
+          "at": "2026-10-29T22:55:49.627Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:55:50.201123+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:55:51.062Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:55:50.860607+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:55:51.075543+00:00"
+      },
+      {
+        "scenario": "Failed capture with resume",
+        "startedAt": "2026-10-29T22:56:10.913290+00:00",
+        "command": "capsule.backup.create with test-owned symlink rejected during capture",
+        "before": {
+          "at": "2026-10-29T22:56:11.336924+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:55:44.281480124Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32783"
+              }
+            ]
+          },
+          "upstreamPort": 32783,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T22:56:18.649157+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:13.658566599Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32784"
+              }
+            ]
+          },
+          "upstreamPort": 32784,
+          "journal": null,
+          "sentinel": null
+        },
+        "primaryError": {
+          "message": "Backup data contains a link or special file.",
+          "hint": "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics."
+        },
+        "protocols": {
+          "at": "2026-10-29T22:56:18.953Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:56:19.426307+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:56:20.089Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:56:19.882540+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:56:20.102024+00:00"
+      },
+      {
+        "scenario": "Interrupted-backup recovery",
+        "startedAt": "2026-10-29T22:56:20.103225+00:00",
+        "command": "SIGKILL helper immediately after real Docker stop, retaining exact journal; retry capsule.backup.create",
+        "before": {
+          "at": "2026-10-29T22:56:20.542080+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:13.658566599Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32784"
+              }
+            ]
+          },
+          "upstreamPort": 32784,
+          "journal": null,
+          "sentinel": null
+        },
+        "pending": {
+          "at": "2026-10-29T22:56:23.471569+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": false,
+          "startedAt": "2026-10-29T22:56:13.658566599Z",
+          "bindings": {},
+          "upstreamPort": 32784,
+          "journal": {
+            "id": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "afterAutomaticPassWhileStopped": {
+          "at": "2026-10-29T22:56:29.933609+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": false,
+          "startedAt": "2026-10-29T22:56:13.658566599Z",
+          "bindings": {},
+          "upstreamPort": 32784,
+          "journal": {
+            "id": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "afterRetry": {
+          "at": "2026-10-29T22:56:39.016075+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:34.678110398Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32786"
+              }
+            ]
+          },
+          "upstreamPort": 32786,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:56:39.237Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:56:39.663579+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:56:40.283Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:56:40.080347+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:56:40.296564+00:00"
+      },
+      {
+        "scenario": "Resume/route failure followed by recovery",
+        "startedAt": "2026-10-29T22:56:40.297659+00:00",
+        "command": "allow unavailable-route reload, inject subsequent Caddy reload failures during resume; retry after fault removal",
+        "before": {
+          "at": "2026-10-29T22:56:40.680474+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:34.678110398Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32786"
+              }
+            ]
+          },
+          "upstreamPort": 32786,
+          "journal": null,
+          "sentinel": null
+        },
+        "failedResume": {
+          "at": "2026-10-29T22:56:47.954308+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:45.064116285Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32787"
+              }
+            ]
+          },
+          "upstreamPort": null,
+          "journal": {
+            "id": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "result": {
+          "ok": false,
+          "data": null,
+          "error": {
+            "message": "Capsule backup snapshot completed but runtime resume is pending.",
+            "hint": "Inspect Docker/Caddy and retry backup create. The protected resume journal is retained; automatic route recovery never starts a stopped container.",
+            "diagnostics": {
+              "snapshotCompleted": true,
+              "resumePending": true,
+              "resumeFailure": "HOSTED_ROUTE_SETTLEMENT_FAILED"
+            }
+          }
+        },
+        "injectedReloadAttempts": 3,
+        "afterRetry": {
+          "at": "2026-10-29T22:56:56.956326+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:56:52.721624478Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32788"
+              }
+            ]
+          },
+          "upstreamPort": 32788,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T22:56:57.193Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T22:56:57.718870+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "83776bba0c565baa7b600ad756d6bf68bd695091630bed42a6d050b081dc6cff",
+            "running": true,
+            "startedAt": "2026-10-29T22:51:03.472292119Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T22:56:58.490Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T22:56:58.275085+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T22:56:58.503089+00:00",
+        "successfulRetryJournalDuringUpload": {
+          "at": "2026-10-29T22:56:54.711512+00:00",
+          "journal": {
+            "id": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "running": true,
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32788"
+              }
+            ]
+          },
+          "upstreamPort": 32788
+        }
+      },
+      {
+        "scenario": "Out-of-band Docker restart",
+        "startedAt": "2026-10-29T22:57:14.733609+00:00",
+        "status": "FAIL",
+        "error": "{'error': 'Timed out waiting for automatic routed recovery', 'runtimeReadyAt': 1793314638.0986943, 'statusTransitions': [{'at': '2026-10-29T22:57:18.117571+00:00', 'status': 502}]}",
+        "finishedAt": "2026-10-29T22:58:47.152339+00:00"
+      },
+      {
+        "scenario": "Worker restart and missed changes",
+        "startedAt": "2026-10-29T22:58:47.155992+00:00",
+        "status": "FAIL",
+        "error": "{'error': 'Timed out waiting for automatic routed recovery', 'runtimeReadyAt': 1793314730.0165918, 'statusTransitions': [{'at': '2026-10-29T22:58:50.031890+00:00', 'status': 502}]}",
+        "finishedAt": "2026-10-29T23:00:19.808796+00:00"
+      },
+      {
+        "scenario": "Disposable VM reboot",
+        "startedAt": "2026-10-29T23:00:19.812226+00:00",
+        "command": "systemctl reboot on issue-owned disposable VM",
+        "rebootRequestedAt": "2026-10-29T23:00:20.760440+00:00",
+        "previousBootId": "7265b9d8-480b-4a53-9d7d-7a28179f53a8",
+        "newBootId": "d5a9a0d5-cea1-498e-8721-375150f3850a",
+        "before": {
+          "at": "2026-10-29T23:00:20.423115+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "running": true,
+          "startedAt": "2026-10-29T22:58:48.969017984Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32790"
+              }
+            ]
+          },
+          "upstreamPort": 32788,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:01:05.061290+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a5ffdb883fac47868631122f9a91cc3b7b4e6a5aede1d94f86e8f5aba8658321",
+          "running": true,
+          "startedAt": "2026-10-29T23:00:46.650769861Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32768"
+              }
+            ]
+          },
+          "upstreamPort": 32768,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:01:04.388Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "siblingProtocols": {
+          "at": "2026-10-29T23:01:04.575Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "installedUnits": "active\n  UNIT                                                LOAD   ACTIVE SUB    DESCRIPTION\n  sporades-capsules-0bae309d483bb212-shutdown.service loaded active exited Sporades Capsule shutdown evidence ([test-ip].sslip.io)\n  sporades-capsules-0bae309d483bb212.service          loaded active exited Sporades Capsule boot recovery ([test-ip].sslip.io)\n\nLegend: LOAD   \u2192 Reflects whether the unit definition was properly loaded.\n        ACTIVE \u2192 The high-level unit activation state, i.e. generalization of SUB.\n        SUB    \u2192 The low-level unit activation state, values depend on unit type.\n\n2 loaded units listed. Pass --all to see loaded but inactive units, too.\nTo show all installed unit files use 'systemctl list-unit-files'.",
+        "manualHealthOrRouteRepairUsed": false,
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:01:05.790432+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:01:06.441Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:01:06.246529+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:01:06.455344+00:00"
+      },
+      {
+        "scenario": "Sibling and intentionally stopped fixture isolation",
+        "startedAt": "2026-10-29T23:01:06.456527+00:00",
+        "verification": "Repeated after every matrix row, including VM reboot",
+        "fixtures": {
+          "sibling": {
+            "at": "2026-10-29T23:01:06.894112+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:01:07.531Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:01:07.334069+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:01:07.960671+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:01:08.706Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:01:08.487636+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:01:08.719825+00:00"
+      }
+    ],
+    "diagnostics": {
+      "systemdSample": {
+        "at": "2026-10-29T22:58:01Z",
+        "unit": "sporades-routes-0bae309d483bb212.service",
+        "exitStatus": 1,
+        "summary": {
+          "ok": false,
+          "data": {
+            "checked": 3,
+            "pending": 2
+          },
+          "error": {
+            "message": "Hosted Capsule route recovery remains pending."
+          }
+        }
+      },
+      "singleCapsuleProbe": {
+        "environment": {
+          "SPORADES_HOST_ROUTE_RECOVERY": "1"
+        },
+        "action": "capsule.route.reconcile",
+        "subname": "sibling",
+        "errorCode": "HOSTED_READINESS_FAILED"
+      },
+      "actualEmittedProbeDifferential": [
+        {
+          "timeoutArgument": "900.5",
+          "response": {
+            "kind": "connection"
+          }
+        },
+        {
+          "timeoutArgument": "1000",
+          "response": {
+            "kind": "response",
+            "status": 200,
+            "valid": true,
+            "ok": true,
+            "ready": true,
+            "sqlite": true,
+            "fileStorage": true,
+            "fileInspection": true
+          }
+        }
+      ],
+      "readOnlyDockerExecSeconds": {
+        "withoutHarnessWrapper": [
+          0.368,
+          0.393,
+          0.361
+        ],
+        "withHarnessWrapper": [
+          0.47,
+          0.495,
+          0.428
+        ]
+      }
+    }
+  },
+  "fixedCandidate": {
+    "sourceCommit": "2206b68143dd7ecb8876b0181f25aa1d14c314b9",
+    "results": [
+      {
+        "scenario": "Initial candidate baseline",
+        "startedAt": "2026-10-29T23:03:19.090202+00:00",
+        "state": {
+          "at": "2026-10-29T23:03:19.516695+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a5ffdb883fac47868631122f9a91cc3b7b4e6a5aede1d94f86e8f5aba8658321",
+          "running": true,
+          "startedAt": "2026-10-29T23:00:46.650769861Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32768"
+              }
+            ]
+          },
+          "upstreamPort": 32768,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:03:19.720Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "candidateHelperSha256": "ef79656e8070e4a6ff87faf293157b48c98c8eeca704e3adfbc060b04052c24e",
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:03:20.483859+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:03:21.298Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:03:21.086328+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:03:21.314963+00:00"
+      },
+      {
+        "scenario": "Unfixed reproduction with forced dynamic port change",
+        "startedAt": "2026-10-29T23:03:21.315514+00:00",
+        "command": "unfixed helper capsule.backup.create; test-owned loopback reservation after Docker stop",
+        "baseHelperSha256": "693ccdd7af609844dd97507f446de2a13ecea6086d96f3453339d3e569cec85c",
+        "before": {
+          "at": "2026-10-29T23:03:22.234957+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a5ffdb883fac47868631122f9a91cc3b7b4e6a5aede1d94f86e8f5aba8658321",
+          "running": true,
+          "startedAt": "2026-10-29T23:00:46.650769861Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32768"
+              }
+            ]
+          },
+          "upstreamPort": 32768,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:03:26.123027+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a5ffdb883fac47868631122f9a91cc3b7b4e6a5aede1d94f86e8f5aba8658321",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:24.157907077Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32770"
+              }
+            ]
+          },
+          "upstreamPort": 32768,
+          "journal": null,
+          "sentinel": null
+        },
+        "observedHttps": 502,
+        "backupReportedSuccess": true,
+        "recoveredWithCandidateRestart": {
+          "at": "2026-10-29T23:03:29.999Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:03:31.186563+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:03:32.033Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:03:31.832615+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:03:32.049238+00:00"
+      },
+      {
+        "scenario": "Candidate restart",
+        "startedAt": "2026-10-29T23:03:32.049718+00:00",
+        "command": "capsule.restart",
+        "before": {
+          "at": "2026-10-29T23:03:32.542660+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "aa306ff8658af02969baa7bf382b41ad6a2f345b5cee7c9004778a31f8c26159",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:28.075271818Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32771"
+              }
+            ]
+          },
+          "upstreamPort": 32771,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:03:37.655750+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "cf4565922ec09283ebe3ab9339c9b394f5838ab1167e333dc138414e8aeeca5b",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:35.316893959Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32772"
+              }
+            ]
+          },
+          "upstreamPort": 32772,
+          "journal": null,
+          "sentinel": null
+        },
+        "resultOk": true,
+        "protocols": {
+          "at": "2026-10-29T23:03:37.866Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:03:38.305659+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:03:38.959Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:03:38.765218+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:03:38.972555+00:00"
+      },
+      {
+        "scenario": "Candidate start",
+        "startedAt": "2026-10-29T23:03:38.973092+00:00",
+        "command": "capsule.stop followed by capsule.start",
+        "before": {
+          "at": "2026-10-29T23:03:39.390062+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "cf4565922ec09283ebe3ab9339c9b394f5838ab1167e333dc138414e8aeeca5b",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:35.316893959Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32772"
+              }
+            ]
+          },
+          "upstreamPort": 32772,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:03:48.388512+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a0f78713ea607bb8d2e31bbda1666a4178be1bdcdf4eb5f934da10afe8e4c8fb",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:45.279824378Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32773"
+              }
+            ]
+          },
+          "upstreamPort": 32773,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:03:48.624Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:03:49.164659+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:03:50.005Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:03:49.777496+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:03:50.050515+00:00"
+      },
+      {
+        "scenario": "Deployment replacement",
+        "startedAt": "2026-10-29T23:03:50.051190+00:00",
+        "command": "capsule.release.install restart/verify",
+        "before": {
+          "at": "2026-10-29T23:03:50.623723+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "a0f78713ea607bb8d2e31bbda1666a4178be1bdcdf4eb5f934da10afe8e4c8fb",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:45.279824378Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32773"
+              }
+            ]
+          },
+          "upstreamPort": 32773,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:03:56.910527+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T231200Z-aabbcc04",
+          "containerId": "c74606b1054c744fac622667741dd2e3b1afec1493f7f18a77f412bcf6764c25",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:53.72754685Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32774"
+              }
+            ]
+          },
+          "upstreamPort": 32774,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:03:57.130Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:03:57.649806+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:03:58.482Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:03:58.257292+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:03:58.495723+00:00"
+      },
+      {
+        "scenario": "Deployment rollback",
+        "startedAt": "2026-10-29T23:03:58.496371+00:00",
+        "command": "capsule.release.rollback to first release",
+        "before": {
+          "at": "2026-10-29T23:03:58.960026+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T231200Z-aabbcc04",
+          "containerId": "c74606b1054c744fac622667741dd2e3b1afec1493f7f18a77f412bcf6764c25",
+          "running": true,
+          "startedAt": "2026-10-29T23:03:53.72754685Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32774"
+              }
+            ]
+          },
+          "upstreamPort": 32774,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:04:05.501907+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:02.587599703Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32775"
+              }
+            ]
+          },
+          "upstreamPort": 32775,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:04:05.722Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:04:06.156087+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:04:06.797Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:04:06.593548+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:04:06.809531+00:00"
+      },
+      {
+        "scenario": "Successful backup capture/resume",
+        "startedAt": "2026-10-29T23:04:06.810206+00:00",
+        "command": "capsule.backup.create with real local restic repository",
+        "before": {
+          "at": "2026-10-29T23:04:07.307248+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:02.587599703Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32775"
+              }
+            ]
+          },
+          "upstreamPort": 32775,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:04:16.671995+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:11.565543378Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32776"
+              }
+            ]
+          },
+          "upstreamPort": 32776,
+          "journal": null,
+          "sentinel": null
+        },
+        "backupResult": {
+          "id": "514e06b1c5abfcb03522be4b53238242c968a17bd601c6cf8593007d4f5dde52",
+          "manifest": {
+            "version": 1,
+            "domain": "[test-ip].sslip.io",
+            "subname": "awake",
+            "releaseId": "20261029T230000Z-aabbcc01",
+            "createdAt": "2026-10-29T23:04:11.375Z",
+            "schemaHash": "290ce4a9737dd84e36a80c995279019ea000a859b87d2efecf00d208cab4db0c",
+            "fileCount": 1,
+            "directoryCount": 2
+          }
+        },
+        "protocols": {
+          "at": "2026-10-29T23:04:16.915Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:04:17.557171+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:04:18.347Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:04:18.144996+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:04:18.362882+00:00"
+      },
+      {
+        "scenario": "Failed capture with resume",
+        "startedAt": "2026-10-29T23:04:37.897443+00:00",
+        "command": "capsule.backup.create with test-owned symlink rejected during capture",
+        "before": {
+          "at": "2026-10-29T23:04:38.381708+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:11.565543378Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32776"
+              }
+            ]
+          },
+          "upstreamPort": 32776,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:04:47.310948+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:41.111470317Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32777"
+              }
+            ]
+          },
+          "upstreamPort": 32777,
+          "journal": null,
+          "sentinel": null
+        },
+        "primaryError": {
+          "message": "Backup data contains a link or special file.",
+          "hint": "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics."
+        },
+        "protocols": {
+          "at": "2026-10-29T23:04:47.538Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:04:47.978351+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:04:48.657Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:04:48.452074+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:04:48.669955+00:00"
+      },
+      {
+        "scenario": "Interrupted-backup recovery",
+        "startedAt": "2026-10-29T23:04:48.671114+00:00",
+        "command": "SIGKILL helper immediately after real Docker stop, retaining exact journal; retry capsule.backup.create",
+        "before": {
+          "at": "2026-10-29T23:04:49.097208+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:04:41.111470317Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32777"
+              }
+            ]
+          },
+          "upstreamPort": 32777,
+          "journal": null,
+          "sentinel": null
+        },
+        "pending": {
+          "at": "2026-10-29T23:04:52.269566+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": false,
+          "startedAt": "2026-10-29T23:04:41.111470317Z",
+          "bindings": {},
+          "upstreamPort": 32777,
+          "journal": {
+            "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "afterAutomaticPassWhileStopped": {
+          "at": "2026-10-29T23:04:58.736357+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": false,
+          "startedAt": "2026-10-29T23:04:41.111470317Z",
+          "bindings": {},
+          "upstreamPort": 32777,
+          "journal": {
+            "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "afterRetry": {
+          "at": "2026-10-29T23:05:09.854815+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:05:04.828327422Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32779"
+              }
+            ]
+          },
+          "upstreamPort": 32779,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:05:10.098Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:05:10.653039+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:05:11.356Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:05:11.153244+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:05:11.368642+00:00"
+      },
+      {
+        "scenario": "Resume/route failure followed by recovery",
+        "startedAt": "2026-10-29T23:05:11.369772+00:00",
+        "command": "allow unavailable-route reload, inject subsequent Caddy reload failures during resume; retry after fault removal",
+        "before": {
+          "at": "2026-10-29T23:05:11.929692+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:05:04.828327422Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32779"
+              }
+            ]
+          },
+          "upstreamPort": 32779,
+          "journal": null,
+          "sentinel": null
+        },
+        "failedResume": {
+          "at": "2026-10-29T23:05:18.736192+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:05:15.541827079Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32780"
+              }
+            ]
+          },
+          "upstreamPort": null,
+          "journal": {
+            "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+            "releaseId": "20261029T230000Z-aabbcc01"
+          },
+          "sentinel": null
+        },
+        "result": {
+          "ok": false,
+          "data": null,
+          "error": {
+            "message": "Capsule backup snapshot completed but runtime resume is pending.",
+            "hint": "Inspect Docker/Caddy and retry backup create. The protected resume journal is retained; automatic route recovery never starts a stopped container.",
+            "diagnostics": {
+              "snapshotCompleted": true,
+              "resumePending": true,
+              "resumeFailure": "HOSTED_ROUTE_SETTLEMENT_FAILED"
+            }
+          }
+        },
+        "injectedReloadAttempts": 3,
+        "afterRetry": {
+          "at": "2026-10-29T23:05:28.765921+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:05:23.929251984Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32781"
+              }
+            ]
+          },
+          "upstreamPort": 32781,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:05:29.002Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:05:29.522450+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:05:30.346Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:05:30.131100+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:05:30.358602+00:00"
+      },
+      {
+        "scenario": "Out-of-band Docker restart",
+        "startedAt": "2026-10-29T23:06:13.405700+00:00",
+        "command": "out-of-band real Docker stop/start; installed timer only",
+        "injectedAt": "2026-10-29T23:06:14.393623+00:00",
+        "before": {
+          "at": "2026-10-29T23:06:14.004701+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:05:23.929251984Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32781"
+              }
+            ]
+          },
+          "upstreamPort": 32781,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:06:26.383128+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:06:15.651963343Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32782"
+              }
+            ]
+          },
+          "upstreamPort": 32782,
+          "journal": null,
+          "sentinel": null
+        },
+        "workerOutage": null,
+        "timing": {
+          "runtimeReadyAt": "2026-10-29T23:06:16.815551+00:00",
+          "routedAt": "2026-10-29T23:06:25.592666+00:00",
+          "convergenceSeconds": 8.777,
+          "newPort": 32782,
+          "statusTransitions": [
+            {
+              "at": "2026-10-29T23:06:16.841155+00:00",
+              "status": 502
+            },
+            {
+              "at": "2026-10-29T23:06:25.592634+00:00",
+              "status": 200
+            }
+          ]
+        },
+        "protocols": {
+          "at": "2026-10-29T23:06:26.604Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "manualHealthOrRouteRepairUsed": false,
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:06:27.031270+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:06:27.687Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:06:27.500186+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:06:27.701252+00:00"
+      },
+      {
+        "scenario": "Worker restart and missed changes",
+        "startedAt": "2026-10-29T23:06:27.702594+00:00",
+        "command": "out-of-band real Docker stop/start; route worker disabled during change, then timer started",
+        "injectedAt": "2026-10-29T23:06:28.688090+00:00",
+        "before": {
+          "at": "2026-10-29T23:06:28.121312+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:06:15.651963343Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32782"
+              }
+            ]
+          },
+          "upstreamPort": 32782,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:06:40.809724+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:06:29.430562268Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32783"
+              }
+            ]
+          },
+          "upstreamPort": 32783,
+          "journal": null,
+          "sentinel": null
+        },
+        "workerOutage": {
+          "at": "2026-10-29T23:06:36.008635+00:00",
+          "http": "502"
+        },
+        "timing": {
+          "runtimeReadyAt": "2026-10-29T23:06:30.419116+00:00",
+          "routedAt": "2026-10-29T23:06:39.920184+00:00",
+          "convergenceSeconds": 9.501,
+          "newPort": 32783,
+          "statusTransitions": [
+            {
+              "at": "2026-10-29T23:06:30.433945+00:00",
+              "status": 502
+            },
+            {
+              "at": "2026-10-29T23:06:39.920149+00:00",
+              "status": 200
+            }
+          ]
+        },
+        "protocols": {
+          "at": "2026-10-29T23:06:41.017Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "manualHealthOrRouteRepairUsed": false,
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:06:41.449025+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "e10a4c0c6144b860c4fb9bf0ad7e9ab96ab0ec9a80266dba6908fc6ea72369e7",
+            "running": true,
+            "startedAt": "2026-10-29T23:00:50.459448111Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:06:42.089Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:06:41.896809+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:06:42.101610+00:00"
+      },
+      {
+        "scenario": "Disposable VM reboot",
+        "startedAt": "2026-10-29T23:06:42.103534+00:00",
+        "command": "systemctl reboot on issue-owned disposable VM",
+        "rebootRequestedAt": "2026-10-29T23:06:42.818791+00:00",
+        "previousBootId": "d5a9a0d5-cea1-498e-8721-375150f3850a",
+        "newBootId": "299d5b8c-1d1e-4b73-8274-15b2266b4346",
+        "before": {
+          "at": "2026-10-29T23:06:42.524523+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "running": true,
+          "startedAt": "2026-10-29T23:06:29.430562268Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32783"
+              }
+            ]
+          },
+          "upstreamPort": 32783,
+          "journal": null,
+          "sentinel": null
+        },
+        "after": {
+          "at": "2026-10-29T23:07:14.539874+00:00",
+          "subname": "awake",
+          "name": "sporades-test-ip-sslip-io-awake",
+          "status": "running",
+          "release": "20261029T230000Z-aabbcc01",
+          "containerId": "f4c76a5bd56096ab204842733b2cb1c1eb30b591695b6f02e12340df63bec50b",
+          "running": true,
+          "startedAt": "2026-10-29T23:07:05.513601349Z",
+          "bindings": {
+            "4000/tcp": [
+              {
+                "HostIp": "127.0.0.1",
+                "HostPort": "32768"
+              }
+            ]
+          },
+          "upstreamPort": 32768,
+          "journal": null,
+          "sentinel": null
+        },
+        "protocols": {
+          "at": "2026-10-29T23:07:13.863Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "siblingProtocols": {
+          "at": "2026-10-29T23:07:14.075Z",
+          "https": 200,
+          "token": 200,
+          "websocket": 101,
+          "exchange": {
+            "fixture": "issue-318",
+            "readOnly": true,
+            "revision": "r1"
+          }
+        },
+        "installedUnits": "active\n  UNIT                                                LOAD   ACTIVE SUB    DESCRIPTION\n  sporades-capsules-0bae309d483bb212-shutdown.service loaded active exited Sporades Capsule shutdown evidence ([test-ip].sslip.io)\n  sporades-capsules-0bae309d483bb212.service          loaded active exited Sporades Capsule boot recovery ([test-ip].sslip.io)\n\nLegend: LOAD   \u2192 Reflects whether the unit definition was properly loaded.\n        ACTIVE \u2192 The high-level unit activation state, i.e. generalization of SUB.\n        SUB    \u2192 The low-level unit activation state, values depend on unit type.\n\n2 loaded units listed. Pass --all to see loaded but inactive units, too.\nTo show all installed unit files use 'systemctl list-unit-files'.",
+        "manualHealthOrRouteRepairUsed": false,
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:07:15.241617+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "a63266fab18733b8b149199a7c69b358b53293a8e1bda01896cd2ed7cc84e384",
+            "running": true,
+            "startedAt": "2026-10-29T23:07:09.330516413Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:07:15.851Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:07:15.682692+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:07:15.865574+00:00"
+      },
+      {
+        "scenario": "Sibling and intentionally stopped fixture isolation",
+        "startedAt": "2026-10-29T23:07:15.866849+00:00",
+        "verification": "Repeated after every matrix row, including VM reboot",
+        "fixtures": {
+          "sibling": {
+            "at": "2026-10-29T23:07:16.309432+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "a63266fab18733b8b149199a7c69b358b53293a8e1bda01896cd2ed7cc84e384",
+            "running": true,
+            "startedAt": "2026-10-29T23:07:09.330516413Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:07:16.915Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:07:16.733283+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "isolation": {
+          "sibling": {
+            "at": "2026-10-29T23:07:17.338115+00:00",
+            "subname": "sibling",
+            "name": "sporades-test-ip-sslip-io-sibling",
+            "status": "running",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": "a63266fab18733b8b149199a7c69b358b53293a8e1bda01896cd2ed7cc84e384",
+            "running": true,
+            "startedAt": "2026-10-29T23:07:09.330516413Z",
+            "bindings": {
+              "4000/tcp": [
+                {
+                  "HostIp": "127.0.0.1",
+                  "HostPort": "32769"
+                }
+              ]
+            },
+            "upstreamPort": 32769,
+            "journal": null,
+            "sentinel": "bbfb62ccea229dacc69c9082dd7325d5735d0e2b2d8e05cb477a9cd1ca2f9eef"
+          },
+          "siblingProtocols": {
+            "at": "2026-10-29T23:07:17.940Z",
+            "https": 200,
+            "token": 200,
+            "websocket": 101,
+            "exchange": {
+              "fixture": "issue-318",
+              "readOnly": true,
+              "revision": "r1"
+            }
+          },
+          "asleep": {
+            "at": "2026-10-29T23:07:17.760557+00:00",
+            "subname": "asleep",
+            "name": "sporades-test-ip-sslip-io-asleep",
+            "status": "stopped",
+            "release": "20261029T230000Z-aabbcc01",
+            "containerId": null,
+            "running": false,
+            "startedAt": null,
+            "bindings": null,
+            "upstreamPort": null,
+            "journal": null,
+            "sentinel": null
+          }
+        },
+        "status": "PASS",
+        "finishedAt": "2026-10-29T23:07:17.953801+00:00"
+      }
+    ],
+    "journalDuringRealResticUpload": [
+      {
+        "at": "2026-10-29T22:56:54.711512+00:00",
+        "journal": {
+          "id": "6a1bf7ab5d6d47131720cae58f06a8bc846f9159ae91a0812d986167cf21e5ba",
+          "releaseId": "20261029T230000Z-aabbcc01"
+        },
+        "running": true,
+        "bindings": {
+          "4000/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "32788"
+            }
+          ]
+        },
+        "upstreamPort": 32788
+      },
+      {
+        "at": "2026-10-29T23:04:13.901103+00:00",
+        "journal": {
+          "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "releaseId": "20261029T230000Z-aabbcc01"
+        },
+        "running": true,
+        "bindings": {
+          "4000/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "32776"
+            }
+          ]
+        },
+        "upstreamPort": 32776
+      },
+      {
+        "at": "2026-10-29T23:05:07.307505+00:00",
+        "journal": {
+          "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "releaseId": "20261029T230000Z-aabbcc01"
+        },
+        "running": true,
+        "bindings": {
+          "4000/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "32779"
+            }
+          ]
+        },
+        "upstreamPort": 32779
+      },
+      {
+        "at": "2026-10-29T23:05:17.607212+00:00",
+        "journal": {
+          "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "releaseId": "20261029T230000Z-aabbcc01"
+        },
+        "running": true,
+        "bindings": {
+          "4000/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "32780"
+            }
+          ]
+        },
+        "upstreamPort": null
+      },
+      {
+        "at": "2026-10-29T23:05:26.398744+00:00",
+        "journal": {
+          "id": "44e88383962162549a82e893683226e0a217bc1dfaca92ba0202df55c46dc761",
+          "releaseId": "20261029T230000Z-aabbcc01"
+        },
+        "running": true,
+        "bindings": {
+          "4000/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "32781"
+            }
+          ]
+        },
+        "upstreamPort": 32781
+      }
+    ]
+  },
+  "faultInjection": "Test-owned wrappers delegate actual Docker/Caddy/restic. Docker stop reserves the previous port on loopback; the listener closes connections to expose stale-upstream 502. A synthetic files symlink rejects capture; SIGKILL after stop leaves an exact journal; Caddy reload fault permits unavailable publication, then fails resume reload. Fault flags are removed before automatic and reboot checks. No host health or manual route repair in timed automatic checks.",
+  "redaction": "Raw IPs, protected probe credentials, browser connection tokens and provider tokens omitted. Opaque container, release, snapshot, VM and SSH-key IDs are evidence identities.",
+  "cleanup": {
+    "verifiedAt": "2026-10-29T23:08:53.056881+00:00",
+    "status": "PASS",
+    "provider": "DigitalOcean",
+    "dropletId": 614023637,
+    "dropletDestroyed": true,
+    "dropletGetAfterDelete": 404,
+    "finalAccountDropletCount": 0,
+    "preexistingDigitalOceanDropletInventory": 0,
+    "digitalOceanTestSshKeyId": 60477888,
+    "digitalOceanTestSshKeyDestroyed": true,
+    "digitalOceanTestTagDestroyed": true,
+    "hetznerVmCreated": false,
+    "hetznerTestSshKeyDestroyed": true,
+    "preexistingHetznerServerInventoryPreserved": true,
+    "hetznerIssueOwnedPrimaryIps": [],
+    "dnsProviderRecordsCreated": false,
+    "volumesAndBackups": "Only VM-local storage; destroyed with VM",
+    "preexistingVpcs": "2019 default-lon1 used, unchanged",
+    "localTemporarySshKeyDestroyed": true,
+    "note": "SSH key disappearance was eventually consistent: first immediate list still included key; subsequent list confirmed absence.",
+    "hetznerCreationAttempt": "A temporary issue-owned SSH key was created, VM creation failed at Primary IP quota, then that key was deleted. No existing key or VM was deleted."
+  },
+  "evidenceFinalizedAt": "2026-10-29T23:11:10.256821+00:00",
+  "fieldConventions": {
+    "upstreamPort": "Caddy reverse_proxy 127.0.0.1:<port>, extracted from the managed route file. before/after/afterRetry/pending/state contain these normalized upstreams alongside actual Docker bindings.",
+    "provenanceTimestamp": "Installation snapshot, not run completion. Later row timestamps and cleanup are authoritative for their respective operations."
+  }
+}

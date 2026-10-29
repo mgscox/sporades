@@ -1,5 +1,13 @@
 # Host route recovery verification (#316)
 
+**Hosted follow-up (#318), 2026-10-29:** the disposable-provider matrix is now
+complete for follow-up source `2206b681`. The merged #317 helper failed automatic
+recovery because its emitted readiness probe received fractional milliseconds;
+the follow-up fixes that defect and passes every hosted row, including reboot
+and cleanup. See [the acceptance report](./host-route-recovery-318.md) and its
+redacted evidence. The round 1 record below is historical. Package publication
+and upgrades of existing Hosts remain separate from this test run.
+
 **Merge acceptance remains incomplete after Barbara round 1.** Local QA passed
 for `53503d2023c0b0fa51fcda215db403b7fe786526`; the required disposable-provider
 Docker/Caddy acceptance has not run. The matrix below is a pending evidence
