@@ -720,8 +720,9 @@ loopback port. A release uploaded without restart becomes active at this next
 startup, just as with an explicit `sporades host start`. Registry and route
 locking serializes recovery with operator lifecycle commands.
 
-Stopped, unregistered, failed, never-started and already-running Capsules are
-left alone. A retained runtime that exhausted its non-zero-exit crash retries is
+Stopped, unregistered, failed and never-started Capsules are left alone.
+Already-running instances are reconciled without replacement when their exact
+container and current release match the registry. A retained runtime that exhausted its non-zero-exit crash retries is
 also left unavailable for operator repair. Docker retains `on-failure:3`; the
 boot service has no restart loop and does not supervise running Capsules. A
 missing retained container requires an explicit start. Use Sporades stop commands
@@ -742,13 +743,68 @@ The service also participates in an explicit Docker service restart once active.
 Check `systemctl status <unit>` and `journalctl -u <unit>` over SSH for per-Capsule
 results; one failed Capsule does not prevent recovery attempts for the others.
 A repaired service can be run with `systemctl restart <unit>`; already-running
-Capsules are skipped. To suspend Host-wide boot recovery use
+Capsules keep their instances and settle eligible routes. To suspend Host-wide boot recovery use
 `systemctl disable --now <unit>`; bootstrap enables it again. These commands do
 not stop running Capsules. Non-systemd installations report
 `systemd-docker-unavailable` and require an equivalent operator-managed boot hook.
 
 Docker documents that `on-failure` does not resume containers after daemon restart:
 [Docker restart policies](https://docs.docker.com/engine/containers/start-containers-automatically/).
+
+## Automatic route recovery
+
+Bootstrap also enables `sporades-routes-<identity>.timer`, reported as
+`autostart.routeRecoveryTimer`. Upgrade the installed helper and rerun bootstrap
+on an existing Host to install it. This timer inspects current registered state
+on startup and five seconds after each completed pass (`AccuracySec=1s`). It
+recovers missed changes after worker or Docker outages without an event backlog,
+including direct Docker starts and Docker restart-policy restarts. It does not
+start Docker, Caddy or stopped Capsules. Non-systemd Hosts need an equivalent
+operator-managed periodic invocation of the installed helper's
+`--reconcile-host-routes <base64url-host-descriptor>` internal entry point.
+
+Each eligible runtime passes the same settlement path as normal start/restart,
+release replacement/rollback and backup resume: actual loopback publication,
+authenticated readiness, managed Caddy route reconciliation, then an authenticated
+runtime probe through the Hosted URL. Readiness precedes route publication. The
+canonical subdomain, aliases, probe protection and trusted proxy headers retain
+their existing route definitions. Public HTTPS and WebSockets remain on 443;
+Docker continues assigning loopback host ports dynamically. Existing sockets may
+disconnect during a runtime restart; after recovery clients can reconnect.
+
+Reconciliation holds the same per-Capsule lifecycle lock as backup/deployment,
+with a 100ms acquisition attempt. It never republishes during a deliberate backup
+stop. Registered `running` state, exact ownership labels, container ID and current
+release/link must agree. Stopped/failed/unregistered state, release mismatch,
+pending deploy/restore journals and deliberate unavailable routes are skipped.
+A backup journal permits publication only for its exact already-running instance;
+it remains until settlement succeeds. Replacing the container cannot inherit old
+backup evidence. A missing route file can be rebuilt for an exact eligible running
+instance after interrupted publication; an existing unavailable route still
+requires explicit lifecycle recovery.
+
+The acceptance target is convergence within 30 seconds **after runtime readiness**,
+with available Docker/Caddy, valid DNS/TLS and no lifecycle lock contention. Normal
+single-batch operation polls within six seconds, uses a one-second readiness
+attempt and a two-second routed probe. Docker calls have 1.5-second deadlines;
+Caddy validation/reload/rollback calls have two-second deadlines during automatic
+recovery. Up to eight Capsules run independently in each batch; larger fleets,
+lock contention, provider outages or overloaded Hosts can exceed the target.
+The service has a 120-second group timeout; a later timer pass retries remaining
+state. This is bounded retry work, not an unconditional availability guarantee.
+
+Caddy changes use existing validation, route locks and rollback of the last valid
+file on reload failure. Healthy unchanged routes do not reload Caddy. If the
+file already names the current port but its routed probe fails, recovery validates
+and reloads that file once, then probes again. This covers interruption between
+file publication and proxy reload without treating matching disk bytes as success. The timer
+reports only checked/pending counts and a bounded repair hint; inspect
+`journalctl -u sporades-routes-<identity>.service` and the relevant Capsule logs.
+No protected token, provider output or response body is written to its summary.
+After repairing Docker/Caddy or readiness, the next pass retries automatically.
+Use `systemctl disable --now sporades-routes-<identity>.timer` to suspend periodic
+route recovery; bootstrap enables it again. Boot recovery and shutdown evidence
+remain separate services.
 
 ## Capsule data backups
 

@@ -6,7 +6,7 @@ import { inspectAdmissionHealth } from "../admission-evidence.js";
 import { ADMISSION_INSPECTION_SCRIPT } from "./admission-inspection.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, type PreservedSeed, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
 import { assertHostnamesAvailable, validateAliasDomains, validateCanonicalDomain, hostedPublicOrigin } from "./host-domain-aliases.js";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
@@ -67,7 +67,7 @@ import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTeleme
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
 import { enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
-import { configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
+import { type HostBackupResumeDiagnostics, configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
   hostRegistryRetryCommand,
@@ -175,10 +175,14 @@ runHostHelperEntry().catch((error: HelperError) => {
     },
     false,
   );
-  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-inventory", "--backup-host", "--observe-host"].includes(process.argv[2])) process.exitCode = 1;
+  if (HOST_HELPER_INSTALL_MODE || ["--resume-host", "--checkpoint-host", "--reconcile-host-routes", "--reconcile-inventory", "--backup-host", "--observe-host"].includes(process.argv[2])) process.exitCode = 1;
 });
 
 async function runHostHelperEntry() {
+  if (process.argv[2] === "--reconcile-host-routes") {
+    await reconcileHostRoutes();
+    return;
+  }
   if (process.argv[2] === "--observe-host") {
     const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString());
     const child = spawnSync(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: "host.services.status", host }), encoding: "utf8", timeout: 80_000 });
@@ -597,6 +601,7 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.admission.publish":
     case "capsule.release.reconcile":
     case "capsule.resume":
+    case "capsule.route.reconcile":
     case "capsule.shutdown.checkpoint":
     case "capsule.start":
     case "capsule.stop":
@@ -652,6 +657,8 @@ function actionCanProvisionCapsuleHttpLog(action: string) {
     || action === "capsule.release.install"
     || action === "capsule.release.rollback"
     || action === "capsule.resume"
+    || action === "capsule.route.reconcile"
+    || action === "capsule.backup.create"
     || action === "capsule.start"
     || action === "capsule.stop"
     || action === "capsule.canonical.set"
@@ -1116,6 +1123,10 @@ async function dispatchMain(request: HostHelperRequest) {
   }
   if (request.action === "capsule.shutdown.checkpoint") {
     await checkpointCapsuleAtShutdown(request);
+    return;
+  }
+  if (request.action === "capsule.route.reconcile") {
+    await reconcileCapsuleRoute(request);
     return;
   }
   if (request.action === "capsule.resume") {
@@ -2355,6 +2366,71 @@ async function resumeHostAtBoot() {
   if (!ok) process.exitCode = 1;
 }
 
+async function reconcileHostRoutes() {
+  const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString("utf8"));
+  const request = { action: "capsule.list", host } as HostHelperRequest;
+  validateListRequest(request);
+  const root = validateCanonicalHostRouteRoot(request);
+  canonicalManagedRouteDomainDirectory(request, root);
+  const directory = path.join(root, "hosts", host.domain, "registry", "capsules");
+  await trustedDirectoryChain(directory, false, root);
+  const entries = (await readdir(directory, { withFileTypes: true }))
+    .filter(entry => entry.isFile() && /^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name));
+  let next = 0, failed = 0;
+  // Independent Capsule processes keep a cold runtime or held backup lock from
+  // serially delaying its siblings. Each process retains the existing OS locks.
+  await Promise.all(Array.from({ length: Math.min(8, entries.length) }, async () => {
+    while (next < entries.length) {
+      const subname = entries[next++].name.slice(0, -5);
+      const ok = await new Promise<boolean>(resolve => {
+        const child = spawn(process.execPath, [process.argv[1]], { stdio: ["pipe", "pipe", "ignore"], env: {
+          ...process.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "100", SPORADES_HOST_ROUTE_RECOVERY: "1",
+        } });
+        let output = "";
+        child.stdout.on("data", chunk => { if (output.length < 65_536) output += chunk.toString(); });
+        child.on("error", () => resolve(false));
+        child.on("close", code => {
+          try { resolve(code === 0 && JSON.parse(output).ok === true); } catch { resolve(false); }
+        });
+        child.stdin.on("error", () => {});
+        child.stdin.end(JSON.stringify({ action: "capsule.route.reconcile", host, capsule: { subname } }));
+      });
+      if (!ok) failed++;
+    }
+  }));
+  // Fixed summary only: do not forward arbitrary Docker/Caddy/helper output to journald.
+  writeEnvelope({ ok: failed === 0, data: { checked: entries.length, pending: failed }, error: failed ? {
+    message: "Hosted Capsule route recovery remains pending.", hint: "The timer retries in five seconds. Inspect Capsule readiness, lifecycle locks and Caddy; retry backup create for a stopped backup runtime.",
+  } : null });
+  if (failed) process.exitCode = 1;
+}
+
+async function reconcileCapsuleRoute(request: HostHelperRequest) {
+  validateLifecycleRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "lifecycle");
+  assertRegistryRecordMatchesRequest(request, record);
+  const skip = (reason: string) => writeEnvelope({ ok: true, data: { reconciled: false, resumed: false, reason }, error: null });
+  if (record.status !== "running" || !record.currentRelease?.id || record.canonicalRestartPending) return skip("not-eligible");
+  const paths = canonicalReleasePaths(request);
+  if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths))) || await pathExists(path.join(paths.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
+  const link = await readlink(paths.currentLink).catch(() => null);
+  if (!link || path.resolve(paths.capsule, link) !== path.join(paths.releases, record.currentRelease.id)) return skip("release-pointer-mismatch");
+  const container = inspectBackupContainer(request);
+  if (!container?.State.Running || container.State.Restarting === true) return skip("not-running");
+  if (container.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) return skip("release-mismatch");
+  const journal = path.join(paths.capsule, ".backup-resume.json");
+  const pending = await readBackupResumeJournal(journal);
+  if (pending && (pending.id !== container.Id || (pending.releaseId !== undefined && pending.releaseId !== record.currentRelease.id))) return skip("backup-container-mismatch");
+  const lifecycle = normaliseLifecycle(request, record, { ignoreProvidedLifecycle: true });
+  const route = await readFile(lifecycle.routes.running.routeFile, "utf8").catch(error => { if (error.code === "ENOENT") return null; throw error; });
+  if (!pending && route !== null && !/reverse_proxy\s+127\.0\.0\.1:[1-9][0-9]*\s+\{/.test(route)) return skip("route-unavailable");
+  // An interrupted rename may leave no route file. Registry running intent and
+  // the exact current instance authorize rebuilding it; an unavailable file does not.
+  await settleRunningCapsuleRoute(request, record, lifecycle, { containerId: container.Id, timeoutMs: 1_000, refreshOnly: !pending && route !== null });
+  if (pending) await rm(journal);
+  writeEnvelope({ ok: true, data: { reconciled: true, resumed: false }, error: null });
+}
+
 async function checkpointCapsuleAtShutdown(request: HostHelperRequest) {
   validateLifecycleRequest(request);
   const record = await readRegistryRecordForCapsule(request, "lifecycle");
@@ -2414,12 +2490,26 @@ async function resumeCapsuleAtBoot(request: HostHelperRequest) {
   if (labels?.["com.sporades.managed"] !== "true" || labels?.["com.sporades.hosted-domain"] !== request.host.domain || labels?.["com.sporades.capsule-subname"] !== request.capsule.subname) {
     throw helperError("Boot recovery container identity does not match the Capsule.", "Resolve the container name conflict before starting the Capsule.");
   }
-  if (container.State?.Running === true || container.State?.Restarting === true) return skip("already-running");
+  if (container.State?.Running === true || container.State?.Restarting === true) {
+    // A Docker restart policy may beat boot recovery. Settle that instance's route
+    // without replacing it or resetting Docker's crash budget.
+    if (/^[a-f0-9]{64}$/.test(container.Id ?? "") && labels?.["com.sporades.release-id"] === record.currentRelease?.id) return reconcileCapsuleRoute(request);
+    return skip("already-running");
+  }
   if (container.State?.Status !== "exited" || !Number.isInteger(container.RestartCount) || !Number.isInteger(container.State?.ExitCode)) return skip("not-a-stopped-runtime");
   if (container.State.ExitCode !== 0 && container.RestartCount >= restartPolicyForMode("hosted").maxAttempts
     && !matchesHostShutdownCheckpoint(record, container)) {
     await routeRuntimeExhaustionToUnavailable(request, record, { container: { name } });
     return skip("crash-retries-exhausted");
+  }
+  const resumeJournal = path.join(canonicalReleasePaths(request).capsule, ".backup-resume.json");
+  const pending = await readBackupResumeJournal(resumeJournal);
+  if (pending) {
+    const paths = canonicalReleasePaths(request);
+    if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths))) || await pathExists(path.join(paths.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
+    await resumeBackupRuntime(request, record, pending, resumeJournal);
+    writeEnvelope({ ok: true, data: { resumed: true }, error: null });
+    return;
   }
   await writeUnavailableRoute(normaliseLifecycle(request, record, { ignoreProvidedLifecycle: true }));
   const data = await startCapsule(request, { write: false, trustedRegistryLifecycle: true });
@@ -2483,49 +2573,24 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
     return null;
   }
 
-  const publishedPort = inspectLoopbackPublishedPort(lifecycle.container.name, lifecycle.routes.running.port ?? 4000);
-  if (!publishedPort) {
-    stopAndRemoveContainer(lifecycle.container.name);
-    await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Docker did not report a loopback published port for Hosted Capsule.");
-    const result: LooseRecord = {
-      ok: false,
-      data: null,
-      error: {
-        message: "Docker did not report a loopback published port for Hosted Capsule.",
-        hint: `Ensure Docker published container port 4000 on 127.0.0.1, then retry \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`.`,
-      },
-    };
-    if (options.write !== false) {
-      writeEnvelope(result);
-    }
-    return null;
-  }
-
-  const readiness = await waitForHostedRuntimeReadiness(lifecycle, hostedRuntimeReadinessTimeoutMs(request, registryRecord, releaseId));
-  if (!readiness.ok) {
-    stopAndRemoveContainer(lifecycle.container.name);
-    await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, `Hosted Capsule runtime readiness failed (${readiness.failure}).`);
-    const result: LooseRecord = {
-      ok: false,
-      data: null,
-      error: {
-        message: "Hosted Capsule runtime did not become ready.",
-        hint: readiness.failure === "authentication"
-          ? "Restart the Hosted Capsule so its Host-owned runtime probe credential is refreshed, then inspect runtime logs if readiness still fails."
-          : `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
-      },
-    };
-    if (options.write !== false) writeEnvelope(result);
-    return null;
-  }
-
-  const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
+  let settled;
   try {
-    await writeRunningRoute(lifecycle, runningRoute);
+    settled = await settleRunningCapsuleRoute(request, { ...registryRecord, currentRelease: { id: releaseId }, runtimeProbe }, lifecycle);
   } catch (error) {
-    await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Failed to apply Hosted Capsule route."));
+    const details = error as HelperError & { readinessFailure?: string };
+    if (["HOSTED_PUBLICATION_INVALID", "HOSTED_READINESS_FAILED"].includes(details.code ?? "")) {
+      stopAndRemoveContainer(lifecycle.container.name);
+      await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, details.readinessFailure
+        ? `Hosted Capsule runtime readiness failed (${details.readinessFailure}).`
+        : details.message);
+      if (details.readinessFailure && details.readinessFailure !== "authentication") details.hint = `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`;
+      if (options.write !== false) writeEnvelope({ ok: false, data: null, error: { message: details.message, hint: details.hint } });
+      return null;
+    }
+    await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Hosted Capsule route settlement failed."));
     throw error;
   }
+  const { publishedPort, runningRoute } = settled;
   await recordReleaseStarted(request, releaseId);
   const data: LooseRecord = {
     started: true,
@@ -2813,14 +2878,39 @@ function inspectBackupContainer(request: HostHelperRequest) {
     if (names.ok && !names.stdout.split(/\r?\n/).includes(name)) return null;
     throw helperError("Cannot inspect backup Capsule container.", "Repair Docker access before retrying backup.");
   }
-  const container = JSON.parse(result.stdout);
-  if (!/^[a-f0-9]{64}$/.test(container.Id ?? "") || typeof container.State?.Running !== "boolean"
+  let container;
+  try { container = JSON.parse(result.stdout); } catch { throw helperError("Invalid Capsule container inspection.", "Check Docker inspection and retry recovery."); }
+  if (!/^[a-f0-9]{64}$/.test(container?.Id ?? "") || typeof container?.State?.Running !== "boolean"
     || container.Config?.Labels?.["com.sporades.managed"] !== "true"
     || container.Config?.Labels?.["com.sporades.hosted-domain"] !== request.host.domain
     || container.Config?.Labels?.["com.sporades.capsule-subname"] !== request.capsule.subname) {
     throw helperError("Backup container identity does not match the Capsule.", "Resolve the container ownership conflict before retrying.");
   }
   return container;
+}
+
+async function readBackupResumeJournal(file: string): Promise<{ id: string; releaseId?: string } | null> {
+  try { await lstat(file); } catch (error) { if (errorDetails(error).code === "ENOENT") return null; throw error; }
+  await trustedBackupPath(file, true);
+  try {
+    const pending = JSON.parse(await readFile(file, "utf8"));
+    if (!pending || typeof pending !== "object" || Array.isArray(pending)
+      || Object.keys(pending).some(key => !["id", "releaseId"].includes(key))
+      || !/^[a-f0-9]{64}$/.test(pending.id ?? "")
+      || (pending.releaseId !== undefined && (typeof pending.releaseId !== "string" || pending.releaseId.length > 128))) throw new Error();
+    return pending;
+  } catch { throw helperError("Invalid protected backup resume journal.", "Inspect the intended container/release and recover explicitly before retrying backup."); }
+}
+
+async function resumeBackupRuntime(request: HostHelperRequest, record: any, pending: { id: string; releaseId?: string }, journal: string, keepJournal = false) {
+  const container = inspectBackupContainer(request);
+  if (pending.id !== container?.Id || (pending.releaseId !== undefined && pending.releaseId !== record.currentRelease.id)
+    || container.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) {
+    throw helperError("Interrupted backup container changed.", "Inspect the intended Capsule/release before retrying; its protected resume journal is retained.");
+  }
+  if (!container.State.Running && !runDocker(["start", pending.id]).ok) throw helperError("Backup Capsule could not resume.", "Inspect Docker and retry backup create; its protected resume journal is retained.");
+  await settleRunningCapsuleRoute(request, record, normaliseLifecycle(request, record), { containerId: pending.id });
+  if (!keepJournal) await rm(journal);
 }
 
 async function manageCapsuleBackup(request: HostHelperRequest) {
@@ -2849,39 +2939,57 @@ async function manageCapsuleBackup(request: HostHelperRequest) {
       if (container?.State.Running || container?.State.Restarting || record.status === "running") throw helperError("Restore destination must be stopped.", "Run host stop for the destination Capsule before restoring.");
       data = await restoreHostBackup(policy, target, source, request.backup.id);
     } else if (request.action === "capsule.backup.create") {
-      // Resume only the exact container we stopped if an earlier backup was interrupted.
-      const pending = await readFile(resumeJournal, "utf8").then(JSON.parse, e => { if (e.code === "ENOENT") return null; throw e; });
+      // A journal is authority only for the exact retained container and release.
+      const pending = await readBackupResumeJournal(resumeJournal);
       if ((container?.State.Running || container?.State.Restarting || pending)
         && container?.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) {
         throw helperError("Backup cannot resume a runtime from a different release.", "Restart the Capsule on the intended current release before backing up; a backup must not activate a pending release.");
       }
       if (pending) {
-        await trustedBackupPath(resumeJournal, true);
-        if (pending.id !== container?.Id) throw helperError("Interrupted backup container changed.", "Inspect the Capsule, remove its protected resume journal after recovery, then retry.");
-        if (!container?.State.Running && !runDocker(["start", container.Id]).ok) throw helperError("Could not resume interrupted backup Capsule.", "Run host start after inspecting Docker.");
-        await rm(resumeJournal);
+        await resumeBackupRuntime(request, record, pending, resumeJournal);
         container = inspectBackupContainer(request);
       }
       const resume = container?.State.Running === true || container?.State.Restarting === true;
-      let resumed = false;
-      if (resume) await atomicBackupJson(resumeJournal, { id: container.Id });
+      const evidence = resume ? { id: container.Id, releaseId: record.currentRelease.id } : null;
+      if (evidence) await atomicBackupJson(resumeJournal, evidence);
+      let backupError: any = null, resumeError: any = null, resumeAttempted = false;
+      const resumeCaptured = async () => {
+        if (!evidence) return;
+        resumeAttempted = true;
+        try { await resumeBackupRuntime(request, record, evidence, resumeJournal, true); }
+        catch (error) { resumeError = error; }
+      };
       try {
         if (resume && !runDocker(["stop", "--time", "30", container.Id]).ok) throw helperError("Could not stop Capsule for backup.", "Inspect Docker before retrying backup.");
         const stopped = inspectBackupContainer(request);
         if (stopped?.State.Running || stopped?.State.Restarting) throw helperError("Capsule remained running during backup.", "Inspect Docker before retrying backup.");
+        if (resume) await writeUnavailableRoute(normaliseLifecycle(request, record));
         await recoverHostBackupRestore(paths.data);
-        data = await createHostBackup(policy, target, async () => {
-          if (resume) {
-            if (!runDocker(["start", container.Id]).ok) throw helperError("Backup Capsule could not resume.", "Inspect Docker and run host start.");
-            resumed = true;
-            await rm(resumeJournal);
-          }
-        });
-      } finally {
-        if (resume && !resumed) {
-          if (!runDocker(["start", container.Id]).ok) throw helperError("Backup Capsule could not resume.", "Inspect Docker and run host start; the protected backup resume journal is retained.");
+        // The captured copy is consistent even if application resume fails. Complete
+        // its encrypted snapshot, but report resume independently and keep its journal.
+        data = await createHostBackup(policy, target, resumeCaptured);
+      } catch (error) { backupError = error; }
+      finally { if (resume && !resumeAttempted) await resumeCaptured(); }
+      if (evidence && !resumeError) {
+        try {
+          // Upload holds the lifecycle lock too. An out-of-band Docker restart
+          // during upload cannot be repaired by the timer until we release it.
+          await settleRunningCapsuleRoute(request, record, normaliseLifecycle(request, record), { containerId: evidence.id, refreshOnly: true });
           await rm(resumeJournal);
+        } catch (error) { resumeError = error; }
+      }
+      if (backupError) {
+        if (resumeError) {
+          backupError.hint = `${errorDetails(backupError).hint ?? "Inspect backup status and retry."} Runtime resume also failed; its protected journal is retained. Inspect Docker/Caddy and retry backup create.`;
+          backupError.diagnostics = { snapshotCompleted: false, resumePending: true } satisfies HostBackupResumeDiagnostics;
         }
+        throw backupError;
+      }
+      if (resumeError) {
+        await publishHostBackupMetric(request.host, source);
+        throw Object.assign(helperError("Capsule backup snapshot completed but runtime resume is pending.",
+          "Inspect Docker/Caddy and retry backup create. The protected resume journal is retained; automatic route recovery never starts a stopped container."),
+        { diagnostics: { snapshotCompleted: true, resumePending: true, resumeFailure: errorDetails(resumeError).code ?? "HOSTED_ROUTE_SETTLEMENT_FAILED" } satisfies HostBackupResumeDiagnostics });
       }
       await publishHostBackupMetric(request.host, source);
     } else throw helperError("Unknown Capsule backup action.", "Use create, list, restore or prune.");
@@ -5564,7 +5672,7 @@ function ensureHostedBaseImage(lifecycle: HostedCapsuleLifecycle) {
 }
 
 function runDocker(args: any, options: LooseRecord = {}) {
-  const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}), ...(options.timeoutMs ? { timeout: options.timeoutMs } : {}) });
+  const result = spawnSync("docker", args, { encoding: "utf8", ...(options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}), ...((options.timeoutMs || process.env.SPORADES_HOST_ROUTE_RECOVERY === "1") ? { timeout: options.timeoutMs ?? 1_500 } : {}) });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -5620,7 +5728,7 @@ function inspectLoopbackPublishedPort(containerName: string, containerPort: any)
     return null;
   }
   const match = result.stdout.trim().match(/^(127\.0\.0\.1):([1-9][0-9]*)$/);
-  if (!match) {
+  if (!match || Number(match[2]) > 65_535) {
     return null;
   }
   return {
@@ -5654,6 +5762,91 @@ function loopbackRunningRoute(route: HostedCapsuleRoute, publishedPort: any) {
     upstream: `${publishedPort.hostIp}:${publishedPort.hostPort}`,
     publishedPort,
   };
+}
+
+// Callers hold the Capsule lifecycle/route lock for the whole start-to-settlement
+// sequence. Retained containers are pinned by ID; route authority stays registry-owned.
+async function settleRunningCapsuleRoute(request: HostHelperRequest, record: any, lifecycle: HostedCapsuleLifecycle,
+  options: { containerId?: string; timeoutMs?: number; refreshOnly?: boolean } = {}) {
+  const name = options.containerId ?? lifecycle.container.name;
+  const publicationError = () => Object.assign(helperError(
+    "Docker did not report a loopback published port for Hosted Capsule.",
+    `Ensure Docker published container port 4000 on 127.0.0.1, then retry \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`.`,
+  ), { code: "HOSTED_PUBLICATION_INVALID" });
+  if (!inspectLoopbackPublishedPort(name, lifecycle.routes.running.port ?? 4000)) throw publicationError();
+  const readiness = await waitForHostedRuntimeReadiness({ ...lifecycle, container: { ...lifecycle.container, name } },
+    options.timeoutMs ?? hostedRuntimeReadinessTimeoutMs(request, record, record.currentRelease?.id));
+  if (!readiness.ok) throw Object.assign(helperError("Hosted Capsule runtime did not become ready.",
+    readiness.failure === "authentication"
+      ? "Restart the Hosted Capsule so its Host-owned runtime probe credential is refreshed, then inspect runtime logs if readiness still fails."
+      : `Check Docker logs for ${lifecycle.container.name}; retry recovery after repairing runtime readiness.`),
+    { code: "HOSTED_READINESS_FAILED", readinessFailure: readiness.failure });
+  // Docker may have restarted again while readiness was pending.
+  if (options.containerId) assertRetainedContainer(request, record, options.containerId);
+  const publishedPort = inspectLoopbackPublishedPort(name, lifecycle.routes.running.port ?? 4000);
+  if (!publishedPort) throw publicationError();
+  const runtimeProbe = readRuntimeProbeCredential(record);
+  if (!runtimeProbe) throw helperError("Hosted Capsule runtime probe is not configured.", "Restart the Capsule explicitly to install its protected runtime probe.");
+  const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
+  let routeChanged = true;
+  if (options.refreshOnly) {
+    const refreshed = await refreshLoopbackRunningRoute(request, record, name);
+    if (!refreshed.ok || !refreshed.publishedPort) throw helperError("Hosted Capsule route is unavailable.", "Select and start the intended release explicitly.");
+    routeChanged = refreshed.refreshed;
+  } else await writeRunningRoute(lifecycle, runningRoute);
+  const verify = () => verifySettledRuntimeRoute(lifecycle.hostedUrl!, runtimeProbe, options.timeoutMs === undefined ? 5_000 : 2_000);
+  try { await verify(); }
+  catch (error) {
+    if (!options.refreshOnly || routeChanged) throw error;
+    // A previous worker can die after publishing the file but before Caddy reloads.
+    // Matching bytes alone cannot prove that the active proxy uses this upstream.
+    if (options.containerId) assertRetainedContainer(request, record, options.containerId);
+    await withManagedRouteLock(runningRoute.routeFile, () => {
+      validateCaddyRoute(runningRoute.routeFile);
+      reloadCaddy(lifecycle);
+    });
+    await verify();
+  }
+  if (options.containerId) assertRetainedContainer(request, record, options.containerId);
+  const after = inspectLoopbackPublishedPort(name, lifecycle.routes.running.port ?? 4000);
+  if (!after || after.hostPort !== publishedPort.hostPort) throw helperError("Hosted Capsule publication changed during route settlement.", "Retry recovery after Docker stabilizes; resume evidence is retained.");
+  return { publishedPort, runningRoute };
+}
+
+async function verifySettledRuntimeRoute(hostedUrl: string, probe: { header: string; token: string }, timeoutMs: number) {
+  try {
+    const response = await fetch(`${hostedUrl}${CAPSULE_RUNTIME_HEALTH_PATH}`, {
+      headers: { accept: "application/json", [probe.header]: probe.token, "user-agent": "Sporades-Host-Route-Probe" },
+      redirect: "error", signal: AbortSignal.timeout(timeoutMs),
+    });
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error();
+    const chunks: Uint8Array[] = []; let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 65_536) throw new Error();
+        chunks.push(value);
+      }
+    } finally { await reader.cancel().catch(() => {}); }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const runtime = normaliseRuntimeHealthBody(body);
+    if (response.status === 200 && body.ok === true && runtime.valid && runtime.ready
+      && runtime.checks.sqlite.ok && runtime.checks.fileStorage.ok && runtime.checks.fileInspection?.ok !== false) return;
+  } catch { /* Never expose network errors, response bodies or the protected credential. */ }
+  throw Object.assign(helperError("Hosted Capsule routed runtime could not be verified.",
+    "Inspect Caddy, DNS/TLS and runtime readiness. Recovery remains pending and will retry for eligible running Capsules."), { code: "HOSTED_ROUTE_UNVERIFIED" });
+}
+
+function assertRetainedContainer(request: HostHelperRequest, record: any, id: string) {
+  const container = inspectBackupContainer(request);
+  if (container?.Id !== id || container.State.Running !== true || container.State.Restarting === true
+    || container.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease?.id) {
+    throw helperError("Hosted Capsule container changed during recovery.", "Inspect the intended current release before retrying; resume evidence is retained.");
+  }
+  return container;
 }
 
 async function refreshLoopbackRunningRoute(request: HostHelperRequest, registryRecord: any, containerName: string) {
@@ -6244,7 +6437,7 @@ function runtimeDataOwnershipError(targetPath: string, uid: any, gid: any) {
 }
 
 function validateCaddyRoute(routeFile: string) {
-  const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2_000 : 30_000 });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate Hosted Capsule route.",
@@ -6255,7 +6448,7 @@ function validateCaddyRoute(routeFile: string) {
 
 function reloadCaddy(lifecycle: HostedCapsuleLifecycle) {
   const configPath = path.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
-  const result = spawnSync("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2_000 : 30_000 });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to apply Hosted Capsule route.",
