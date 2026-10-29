@@ -30,6 +30,12 @@ export type BackupTarget = {
     releaseId: string;
     data: string;
 };
+/** Present on backup errors when capture/upload and application resume both need reporting. */
+export type HostBackupResumeDiagnostics = {
+    snapshotCompleted: boolean;
+    resumePending: true;
+    resumeFailure?: string;
+};
 export declare function validateHostBackupPolicy(value: unknown): HostBackupPolicy;
 export declare function trustedBackupPath(file: string, secret?: boolean): Promise<void>;
 export declare function hostBackupDirectory(host: HostHelperHost): string;
