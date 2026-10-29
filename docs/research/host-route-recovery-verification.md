@@ -1,5 +1,11 @@
 # Host route recovery verification (#316)
 
+**Merge acceptance remains incomplete after Barbara round 1.** Local QA passed
+for `53503d2023c0b0fa51fcda215db403b7fe786526`; the required disposable-provider
+Docker/Caddy acceptance has not run. The matrix below is a pending evidence
+record, not a hosted pass. This session prohibits cloud creation and real Host
+contact, and no manager-provided disposable Host is identified in the handoff.
+
 Local verification date: 2026-10-29. Base revision:
 `02920387d85e882af633c627139c597339d26fe9`. Candidate source is the PR head;
 no candidate helper was installed on an existing Host. Package version during
@@ -111,3 +117,79 @@ HTTP/token/WebSocket recheck. Record an empty pre-existing-resource inventory
 before provisioning fixtures, then an explicit resource-ID cleanup list for the
 VM, volumes, hostnames and synthetic backups. No zero-downtime or hosted
 acceptance claim follows from the local tests in this document.
+
+### Barbara round 1: independently verified local results
+
+[QA report](https://github.com/mgscox/sporades/pull/317#issuecomment-6505300993),
+2026-10-29, candidate `53503d2023c0b0fa51fcda215db403b7fe786526`:
+
+- No actionable code regression or contract gap found.
+- Build, typecheck and full suite passed: 6,535 passed, 302 skipped, no failures.
+- All 45 focused recovery tests passed. The new backup regression independently
+  failed against rebuilt base `02920387d85e882af633c627139c597339d26fe9`.
+- All 56 documentation tests and the VitePress build passed. Browser checks
+  covered the operator docs and a generated local Todo Capsule.
+- Disposable user systemd units retried every five to six seconds with an
+  inactive dependency, then executed repeatedly after activation. This does not
+  verify the installed Host worker or the 30-second hosted convergence target.
+- Telemetry Docker acceptance failed at `pipeline dashboard was not provisioned`
+  on both candidate and rebuilt main, after stack readiness and stored Job
+  metrics succeeded. Later outage/alert drills were not reached. QA identified
+  this as a baseline failure; no telemetry fix is requested for #317.
+
+### Round 1 follow-up local rerun
+
+This follow-up changes only this verification document. Runtime source remains
+the source independently reviewed by Barbara at `53503d2`. With
+`SPORADES_CONFIG_DIR="$PWD/.tmp/issue-316-config"`, the rerun passed:
+
+- `npm run typecheck`.
+- `npm test`, including its build and generated-manifest precheck: 6,837 total,
+  6,535 passed, 302 skipped, zero failures or cancellations.
+- The focused recovery command above: 45 passed, zero failures or skips.
+- `npm run docs:check`: 56 tests passed and the VitePress build succeeded.
+- Playwright navigation, snapshot, pending-evidence anchor click and screenshot
+  inspection of this document on port 5203. The docs server was stopped afterward.
+
+Generated `dist/` and `bin/` outputs are restored from `origin/main` before
+commit. Hosted acceptance and the separate telemetry Docker drill were not run.
+
+### Required hosted evidence: pending
+
+Execution requires a manager-provided, dedicated disposable Hetzner or
+DigitalOcean Host and an executor permitted to operate it. Supplying a hostname
+alone does not lift this session's prohibition on real Host contact. Do not use
+an existing production Host to fill these gaps.
+
+Before running the matrix, attach provider/VM identity, approved test scope,
+UTC start time, an empty pre-existing-container/service inventory, test-owned
+resource IDs and hostnames, synthetic fixture/backup locations, candidate commit,
+package version, and the installed helper SHA-256. Keep credentials, connection
+tokens and protected probe headers out of the evidence.
+
+Every recovery row requires UTC timestamps, the exact command or injected fault,
+container/release IDs, actual old/new Docker loopback mappings, Caddy upstreams
+before/after, redacted diagnostics, and HTTPS root 200, marked connection-token
+200, genuine WebSocket 101 plus a read-only runtime exchange after recovery.
+Record convergence from runtime readiness to successful routed recovery. Do not
+run `host health` or an operator refresh workaround during these measurements.
+
+| Required scenario | Status after round 1 | Evidence still required |
+| --- | --- | --- |
+| Initial candidate baseline | Not run | Identity/inventory above; HTTPS, token and WebSocket baseline |
+| Unfixed reproduction with a forced dynamic port change | Not run | Base/helper identity, real old/new mappings, stale upstream and observed 502 |
+| Candidate start and restart | Not run | Force changed publication; settle and recheck all three protocols after each operation |
+| Deployment replacement and rollback | Not run | Exact old/new release and container identity; mapping/upstream and protocol results for both paths |
+| Successful backup capture/resume | Not run | Synthetic snapshot result, journal lifetime, changed mapping and protocol results before command success |
+| Failed capture with resume | Not run | Injected capture fault, preserved primary error, settled route and protocol results |
+| Interrupted-backup recovery | Not run | Exact retained instance/journal before retry; journal cleared only after verified settlement |
+| Resume/route failure followed by recovery | Not run | Snapshot versus resume status, retained journal, failed/retried Caddy publication and subsequent protocol results |
+| Out-of-band Docker restart | Not run | Forced changed mapping; readiness and automatic recovery timestamps; measured convergence against 30 seconds |
+| Worker restart and missed changes | Not run | Worker stop/start times, port change while inactive, startup reconciliation and protocol results |
+| Disposable Docker-daemon restart or VM reboot | Not run | Boot/daemon and worker activation evidence; recovered mappings/upstreams and protocol results |
+| Sibling and intentionally stopped fixture isolation | Not run | Sibling route/data and stopped-state/container identity before/after every disruptive scenario |
+| Cleanup | No hosted resources created in this session | Future run must identify and remove only its own VM, containers, volumes, DNS and backups, with final inventory |
+
+Attach actual results and redacted artifacts to this document before treating
+#316 as complete. Local deterministic tests, QA's local browser/systemd checks,
+and the unrelated telemetry baseline result do not satisfy these hosted rows.
