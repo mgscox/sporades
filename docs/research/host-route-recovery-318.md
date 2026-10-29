@@ -162,3 +162,21 @@ production Host/container/service or TallyTray workaround was contacted.
 
 The helper fix must still be merged and delivered through the normal package
 and Host upgrade flow. This acceptance run does not perform that rollout.
+
+## Local validation limits
+
+Build, typecheck, all 46 focused recovery tests, all 56 documentation tests and
+the VitePress build passed. The new real-probe regression failed before the fix
+and passed afterward.
+
+The broad `npm test` run was stopped after repeated failures in existing Dev/Vite,
+loader and scaffold paths. At interruption Node reported 4,322 tests: 4,025
+passed, 44 failed, 166 cancelled and 87 skipped. The cancellations include test
+files not reached by the serial run. **This is not a whole-suite pass.**
+
+Two representative failures were rerun against rebuilt, unchanged base
+`02920387d85e882af633c627139c597339d26fe9`: raw HTTP liveness failed its existing
+`true !== false` event assertion, and React Vite rebuilds timed out waiting for a
+WebSocket message. Only these two failures were independently reproduced on the
+base; the other broad-run failures are not individually classified. The focused
+Host checks and hosted matrix above completed independently.

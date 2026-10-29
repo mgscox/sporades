@@ -3271,5 +3271,45 @@
   "fieldConventions": {
     "upstreamPort": "Caddy reverse_proxy 127.0.0.1:<port>, extracted from the managed route file. before/after/afterRetry/pending/state contain these normalized upstreams alongside actual Docker bindings.",
     "provenanceTimestamp": "Installation snapshot, not run completion. Later row timestamps and cleanup are authoritative for their respective operations."
+  },
+  "localValidation": {
+    "build": "PASS",
+    "typecheck": "PASS",
+    "focusedRecovery": {
+      "tests": 46,
+      "passed": 46,
+      "failed": 0,
+      "skipped": 0
+    },
+    "regressionBeforeFix": "FAIL as expected: timer reports one pending route because actual emitted probe never contacts ready HTTP runtime",
+    "regressionAfterFix": "PASS: actual emitted probe reaches authenticated ready HTTP runtime and repairs route without lifecycle commands",
+    "docs": {
+      "tests": 56,
+      "passed": 56,
+      "failed": 0,
+      "vitepressBuild": "PASS"
+    },
+    "fullSuite": {
+      "status": "INTERRUPTED_UNCLEAN",
+      "command": "SPORADES_CONFIG_DIR=<isolated-config> npm test",
+      "observedTestsAtInterruption": 4322,
+      "passed": 4025,
+      "failed": 44,
+      "cancelled": 166,
+      "skipped": 87,
+      "reason": "Stopped after repeated failures in existing Dev/Vite, loader and scaffold paths; no whole-suite pass is claimed. The 166 cancellations include files not reached by the serial run.",
+      "baselineSourceCommit": "02920387d85e882af633c627139c597339d26fe9",
+      "baselineReproductions": [
+        {
+          "test": "sporades dev keeps serving after unusual raw HTTP request targets",
+          "result": "FAIL on unchanged base, assertion true !== false at test/dev.test.js:1773"
+        },
+        {
+          "test": "sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh",
+          "result": "FAIL on unchanged base, Timed out waiting for WebSocket message"
+        }
+      ],
+      "limit": "Only the two representative failures were independently reproduced on base; remaining broad-run failures are not individually classified."
+    }
   }
 }
