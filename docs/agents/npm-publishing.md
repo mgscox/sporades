@@ -67,6 +67,10 @@ If the publish step succeeded but a later verification failed, first check
 `npm view sporades@X.Y.Z version dist.integrity dist.attestations --json`.
 Do not try to replace that version: npm versions are immutable. Compare the
 published version/provenance with its tag and the successful publish log.
+The workflow retries these read-only checks for up to ten minutes after upload,
+plus any already in-flight bounded registry request. npm can acknowledge a
+publish before the version and its provenance are visible to registry readers;
+the first OIDC release exposed this delay beyond the original 30-second window.
 The workflow can then be retried: it skips publishing an existing version only
 when its integrity matches the rebuilt tarball and provenance metadata is present.
 Different bytes or unavailable provenance fail visibly without another upload.

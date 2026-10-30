@@ -80,12 +80,19 @@ jobs:
           node scripts/publish-npm-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/npm-pack.json"
       - name: Verify published version and provenance
         run: |
-          for attempt in 1 2 3 4 5 6; do
+          # npm can acknowledge the upload before public registry reads expose
+          # the version and its attestation. Retry reads without another upload.
+          publication_deadline_seconds=$((SECONDS + 600))
+          while (( SECONDS < publication_deadline_seconds )); do
             if npm view "sporades@${RELEASE_TAG#v}" --json --prefer-online --fetch-retries=0 --fetch-timeout=15000 > "$RUNNER_TEMP/npm-published.json" &&
                node scripts/check-npm-release.mjs --published "$RELEASE_TAG" "$RUNNER_TEMP/npm-pack.json" "$RUNNER_TEMP/npm-published.json"; then
               exit 0
             fi
-            sleep 5
+            publication_remaining_seconds=$((publication_deadline_seconds - SECONDS))
+            if (( publication_remaining_seconds <= 0 )); then
+              break
+            fi
+            sleep "$((publication_remaining_seconds < 10 ? publication_remaining_seconds : 10))"
           done
           echo 'Registry publication could not be verified; inspect the publish log before retrying.' >&2
           exit 1
