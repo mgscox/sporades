@@ -1,5 +1,7 @@
 # Disposable hosted route recovery acceptance (#318)
 
+The [2026-10-30 full-suite follow-up](#full-suite-follow-up-2026-10-30) completed cleanly after the test-environment and fixture-path corrections. The initial interrupted result is retained below as historical evidence.
+
 The complete hosted matrix passed on 2026-10-29 for follow-up source
 `2206b68143dd7ecb8876b0181f25aa1d14c314b9`. The originally merged #317 source
 `08ff36b89ed9053c99235f612fd1d901dd91d669` **failed automatic recovery**. The narrow
@@ -163,7 +165,7 @@ production Host/container/service or TallyTray workaround was contacted.
 The helper fix must still be merged and delivered through the normal package
 and Host upgrade flow. This acceptance run does not perform that rollout.
 
-## Local validation limits
+## Initial local validation limits (superseded)
 
 Build, typecheck, all 46 focused recovery tests, all 56 documentation tests and
 the VitePress build passed. The new real-probe regression failed before the fix
@@ -180,3 +182,34 @@ Two representative failures were rerun against rebuilt, unchanged base
 WebSocket message. Only these two failures were independently reproduced on the
 base; the other broad-run failures are not individually classified. The focused
 Host checks and hosted matrix above completed independently.
+
+## Full-suite follow-up (2026-10-30)
+
+The complete `npm test` run on `ee57b78dc4fb012288114359ffb4be1f9ef6fa07` finished with
+**6,536 passed, zero failed, zero cancelled and 302 skipped**
+(6,838 tests total). All 44 actual failures from the initial
+interrupted run have passing results in this completed run. The existing guards
+for optional real services and browser checks remain; skips are not passes.
+
+The earlier watch/process failures reproduced inside the restricted sandbox and
+passed with native OS access. The offline packed-CLI tests needed a writable npm
+cache containing both package metadata and tarballs, including the generated
+Capsule's React/type dependencies. A task-owned cache was populated using
+throwaway dependency manifests, without changing the user's cache or weakening
+the offline installation checks. The command used isolated cache/config paths:
+
+```sh
+NPM_CONFIG_CACHE="$task_cache" SPORADES_CONFIG_DIR="$task_config" npm test
+```
+
+The first unrestricted full run completed with just one failure: the ClamAV
+fixture's long OS temporary path could not fit the socket helper's 100-byte
+budget. Its owned fixture directory now lives under the checkout's `.tmp`,
+allowing a short relative socket name. All 133 ingress/Unix-socket tests passed
+after this path-only correction. Production scan logic, deadlines and existing
+assertions are unchanged. See the
+[testing prerequisites](../agents/runtime-flake-testing.md#native-capabilities-and-offline-package-installs).
+
+These follow-up changes affect tests and documentation only. Runtime source is
+unchanged from the hosted acceptance fix `2206b681`; no new package or production
+Host upgrade was performed.

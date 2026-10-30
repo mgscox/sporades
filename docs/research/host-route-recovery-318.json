@@ -3309,7 +3309,46 @@
           "result": "FAIL on unchanged base, Timed out waiting for WebSocket message"
         }
       ],
-      "limit": "Only the two representative failures were independently reproduced on base; remaining broad-run failures are not individually classified."
+      "limit": "Only the two representative failures were independently reproduced on base; remaining broad-run failures are not individually classified.",
+      "supersededBy": "localValidation.fullSuiteFollowUp"
+    },
+    "fullSuiteFollowUp": {
+      "status": "PASS",
+      "completedAt": "2026-10-30T07:28:22.754975+00:00",
+      "validatedCommit": "ee57b78dc4fb012288114359ffb4be1f9ef6fa07",
+      "metrics": {
+        "tests": 6838,
+        "pass": 6536,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 302,
+        "duration_ms": 1877602.405791
+      },
+      "command": "NPM_CONFIG_CACHE=\"$task_cache\" SPORADES_CONFIG_DIR=\"$task_config\" npm test",
+      "environment": {
+        "node": "24.19.0",
+        "npm": "12.2.1",
+        "nativeOsCapabilities": "Run outside the filesystem sandbox with native file-watch, Unix-socket and process-liveness access",
+        "npmCache": "Owned temporary cache with repository and generated React Capsule dependency metadata and tarballs; user cache unchanged",
+        "config": "Isolated task-owned configuration"
+      },
+      "previousFailureTitlesNowPassed": 44,
+      "firstCompleteUnrestrictedRun": {
+        "tests": 6838,
+        "passed": 6535,
+        "failed": 1,
+        "cancelled": 0,
+        "skipped": 302,
+        "failure": "ClamAV fixture socket filename exceeded the 100-byte helper budget because its OS temporary directory was long and outside the checkout"
+      },
+      "fix": "Create only the ClamAV fixture directory under cwd/.tmp so every owned socket has a short relative pathname. Production scan logic, deadlines and existing assertions unchanged.",
+      "focusedIngressAndSocketTests": {
+        "passed": 133,
+        "failed": 0,
+        "skipped": 0
+      },
+      "runtimeChangesSinceHostedAcceptance": false,
+      "skipBoundary": "Optional real-provider, PostgreSQL, Docker/Caddy/ClamAV, promtool and opt-in browser acceptance remain governed by their existing guards; skipped tests are not passes."
     }
   }
 }
