@@ -881,6 +881,16 @@ if (args[0] === "inspect" && args.some((arg) => arg.includes("NetworkSettings.Po
   process.exit(Number(process.env.FAKE_DOCKER_PUBLISHED_PORT_STATUS || "0"));
 }
 if (args[0] === "exec") {
+  if (process.env.FAKE_DOCKER_RUNTIME_PROBE_PORT) {
+    const probeArgs = args.slice(3);
+    probeArgs[probeArgs.length - 1] = process.env.FAKE_DOCKER_RUNTIME_PROBE_PORT;
+    const probe = require('node:child_process').spawnSync(process.execPath, probeArgs, {
+      encoding: 'utf8', env: { ...process.env, SPORADES_RUNTIME_PROBE_TOKEN: 'a'.repeat(64) },
+    });
+    process.stdout.write(probe.stdout || '');
+    process.stderr.write(probe.stderr || '');
+    process.exit(probe.status ?? 1);
+  }
   const { existsSync, readFileSync, writeFileSync } = require("node:fs");
   if (process.env.FAKE_DOCKER_RUNTIME_PROBE_OBSERVATION) {
     const route = existsSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE) ? readFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_ROUTE, "utf8") : "";
@@ -16592,6 +16602,25 @@ test('routed settlement uses a real bounded authenticated HTTP probe and keeps f
     });
   }));
 });
+
+test('automatic route recovery executes its real readiness probe within the short worker deadline', () => withBackupRouteFixture(async f => {
+  let requests = 0;
+  await withHttpServer((request, response) => {
+    requests++;
+    assert.equal(request.url, '/__sporades/health/runtime');
+    assert.equal(request.headers['x-sporades-host-probe'], 'a'.repeat(64));
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ ok: true, data: { runtime: { ready: true },
+      checks: { sqlite: { ok: true }, fileStorage: { ok: true } } } }));
+  }, async port => {
+    await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
+    const output = await runRouteRecoveryPass(f, { FAKE_DOCKER_RUNTIME_PROBE_PORT: String(port) });
+    assert.equal(JSON.parse(output.stdout).ok, true, output.stdout);
+    assert(requests > 0, 'the emitted Docker-exec script must reach the ready runtime');
+    assert.match(await readFile(f.routeFile, 'utf8'), /reverse_proxy 127\.0\.0\.1:49154/);
+    assert(!(await f.docker.calls()).some(c => ['start', 'stop', 'rm', 'run'].includes(c.args[0])));
+  });
+}));
 
 test('a cold runtime remains pending and is automatically retried after readiness', () => withBackupRouteFixture(async f => {
   await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
