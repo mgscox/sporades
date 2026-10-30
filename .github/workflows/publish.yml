@@ -1,0 +1,91 @@
+name: Publish npm package
+
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/publish.yml'
+      - 'scripts/package.mjs'
+      - 'scripts/check-npm-release.mjs'
+      - 'scripts/publish-npm-release.mjs'
+      - 'scripts/prepare-offline-test-cache.mjs'
+      - 'test/npm-release.test.js'
+      - 'test/package-script.test.js'
+      - 'package.json'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+jobs:
+  check-release-automation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci --no-audit --no-fund
+      - run: node --test test/package-script.test.js test/npm-release.test.js
+
+  publish:
+    if: github.repository == 'mgscox/sporades' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Validate release identity and main ancestry
+        run: node scripts/check-npm-release.mjs "$RELEASE_TAG"
+      - name: Isolate release config and npm cache
+        run: |
+          echo "SPORADES_CONFIG_DIR=$RUNNER_TEMP/sporades-release-config" >> "$GITHUB_ENV"
+          echo "NPM_CONFIG_CACHE=$RUNNER_TEMP/sporades-npm-cache" >> "$GITHUB_ENV"
+      - name: Require an OIDC-capable npm
+        run: |
+          node --input-type=module -e 'import {execFileSync} from "node:child_process"; const [major, minor, patch] = execFileSync("npm", ["--version"], {encoding:"utf8"}).trim().split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1);'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - name: Prepare the offline package smoke-test cache
+        run: node scripts/prepare-offline-test-cache.mjs
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run docs:check
+      - name: Pack the tested output and publish with OIDC
+        # prepublishOnly runs npm test locally. It has already passed above.
+        # No npm login, NODE_AUTH_TOKEN or long-lived npm publishing secret.
+        run: |
+          npm pack --json --ignore-scripts > "$RUNNER_TEMP/npm-pack.json"
+          node scripts/publish-npm-release.mjs "$RELEASE_TAG" "$RUNNER_TEMP/npm-pack.json"
+      - name: Verify published version and provenance
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if npm view "sporades@${RELEASE_TAG#v}" --json --prefer-online --fetch-retries=0 --fetch-timeout=15000 > "$RUNNER_TEMP/npm-published.json" &&
+               node scripts/check-npm-release.mjs --published "$RELEASE_TAG" "$RUNNER_TEMP/npm-pack.json" "$RUNNER_TEMP/npm-published.json"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'Registry publication could not be verified; inspect the publish log before retrying.' >&2
+          exit 1

@@ -3,6 +3,10 @@
   "version": "0.9.41",
   "description": "CLI-first platform for building, running, and hosting full-stack Sporades Capsules.",
   "homepage": "https://mgscox.github.io/sporades/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mgscox/sporades.git"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -48,6 +52,7 @@
     "docs:preview": "vitepress preview docs",
     "docs:api": "typedoc",
     "package": "node ./scripts/package.mjs",
+    "release": "node ./scripts/package.mjs --ci-publish",
     "monitoring:release-asset": "node ./scripts/monitoring-stack-release.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",

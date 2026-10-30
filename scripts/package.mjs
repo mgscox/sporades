@@ -17,10 +17,15 @@ const npmStatusHint = "Check https://status.npmjs.org, then retry.";
 export function parsePackageArgs(args) {
   const selected = [];
   let resume = false;
+  let ciPublish = false;
   let recoveryBranch = "";
   let recoveryRemote = "";
 
   for (const arg of args) {
+    if (arg === "--ci-publish") {
+      ciPublish = true;
+      continue;
+    }
     if (arg === "--major") {
       selected.push("major");
       continue;
@@ -52,7 +57,7 @@ export function parsePackageArgs(args) {
       continue;
     }
     if (arg === "--help" || arg === "-h") {
-      return { help: true, recoveryBranch: "", recoveryRemote: "", releaseType: "minor", resume: false };
+      return { help: true, ciPublish, recoveryBranch: "", recoveryRemote: "", releaseType: "minor", resume: false };
     }
 
     throw new Error(`Unknown packaging option: ${arg}`);
@@ -65,15 +70,19 @@ export function parsePackageArgs(args) {
   if (resume && unique.length > 0) {
     throw new Error("--resume cannot be combined with a version bump.");
   }
+  if (resume && ciPublish) {
+    throw new Error("For CI publishing recovery, re-run the failed publish.yml workflow; --resume is for local publishing.");
+  }
   if (!resume && (recoveryBranch || recoveryRemote)) {
     throw new Error("--branch and --remote may only be used with --resume.");
   }
 
-  return { help: false, recoveryBranch, recoveryRemote, releaseType: unique[0] ?? "minor", resume };
+  return { help: false, ciPublish, recoveryBranch, recoveryRemote, releaseType: unique[0] ?? "minor", resume };
 }
 
 export function usage() {
   return `Usage: npm run package -- [--major | --minor | --patch]
+       npm run release -- [--major | --minor | --patch]
        npm run package -- --resume [--branch=<name>] [--remote=<name>]
 
 Builds API docs, bumps package semver, creates an npm tarball, and publishes it.
@@ -82,7 +91,25 @@ Commits release metadata before packaging.
 Atomically pushes the release commit and annotated vX.Y.Z tag before npm publish.
 Requires the current branch to match its fetched upstream before publishing.
 Recovery from detached HEAD requires --branch; --remote is needed only when the remote is ambiguous.
+npm run release uses --ci-publish: pushes the release tag for GitHub Actions to test and publish, without local npm login.
 Default bump: --minor`;
+}
+
+export function assertCiPublishUpstream(upstream, remoteUrl) {
+  if (upstream.branch !== "main" || upstream.mergeRef !== "refs/heads/main" ||
+      !/^(?:git@github\.com:mgscox\/sporades(?:\.git)?|https:\/\/github\.com\/mgscox\/sporades(?:\.git)?)$/.test(remoteUrl.trim())) {
+    throw new Error("CI publishing requires main tracking mgscox/sporades main on GitHub.");
+  }
+}
+
+export async function publishOrHandoff(ciPublish, filename, publish, log = console.log) {
+  if (ciPublish) {
+    log("Release queued for GitHub Actions: https://github.com/mgscox/sporades/actions/workflows/publish.yml");
+    log("Publication is pending; check the completed workflow and npm registry before upgrading Hosts.");
+    return;
+  }
+  await publish(filename);
+  log(`Published ${filename}.`);
 }
 
 export function bumpVersion(version, releaseType) {
@@ -550,10 +577,14 @@ export async function packageForNpm(args = process.argv.slice(2)) {
     await resumeRelease(packageJson, options);
     return;
   }
-  await confirmNpmLogin();
+  if (!options.ciPublish) await confirmNpmLogin();
   const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
   assertCleanWorkingTree(status);
   const releaseUpstream = await readReleaseUpstream();
+  if (options.ciPublish) {
+    const remoteUrl = await run("git", ["remote", "get-url", "--push", releaseUpstream.remote], { captureStdout: true });
+    assertCiPublishUpstream(releaseUpstream, remoteUrl);
+  }
   await run("git", ["fetch", "--tags", releaseUpstream.remote]);
   const divergence = await run(
     "git",
@@ -599,8 +630,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
       `HEAD:${releaseUpstream.mergeRef}`,
       `refs/tags/${releaseTag}`,
     ]);
-    await run("npm", ["publish", artifact.filename]);
-    console.log(`Published ${artifact.filename}.`);
+    await publishOrHandoff(options.ciPublish, artifact.filename, filename => run("npm", ["publish", filename]));
     console.log(`Created release tag ${releaseTag}.`);
     console.log(`Pushed the release commit and ${releaseTag} to ${releaseUpstream.remote}.`);
   } finally {

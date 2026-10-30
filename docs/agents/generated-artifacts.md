@@ -52,7 +52,25 @@ creates no commit.
 Clearing the generated directories before each CI build also removes obsolete
 tracked files for sources that TypeScript no longer emits.
 
-Release operators run `scripts/package.mjs` through `npm run package` from a
+Release operators normally use `npm run release -- --patch` (or `--minor` /
+`--major`) from a clean, synchronized **main** checkout. This runs
+`scripts/package.mjs --ci-publish`: it prepares and atomically pushes the release
+commit and annotated tag, then hands publication to
+`.github/workflows/publish.yml`. It does not require local `npm login` or call
+local `npm publish`. A successful command means the release was queued; verify
+the completed Actions run and registry version before upgrading a Host.
+
+The workflow validates the stable tag against both manifests, the canonical
+repository, its release commit, and main ancestry. On a fresh standard
+GitHub-hosted Ubuntu runner it builds, primes the offline smoke-test cache,
+runs typecheck, the full test suite and docs checks, then packs and publishes
+the tested output with OIDC and provenance. It does not commit generated output.
+The publishing step skips npm lifecycle scripts because `npm test` (normally
+invoked by `prepublishOnly`) has already passed in that same job. Only tag pushes
+publish; PR checks exercise the automation without npm publishing permissions.
+See [npm publishing setup and recovery](npm-publishing.md).
+
+For explicit interactive local publishing, `npm run package` remains available from a
 synchronized **main** checkout, pushing the release commit and tag directly to
 main as before. The script still builds and commits release metadata, `dist/`
 and `bin/`, and packs those files plus `dist/generated-source-manifest.json`.

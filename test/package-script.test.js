@@ -36,6 +36,7 @@ import { parseNpmPackJson } from "../scripts/npm-pack-json.mjs";
 test("package script defaults to a minor version bump", () => {
   assert.deepEqual(parsePackageArgs([]), {
     help: false,
+    ciPublish: false,
     recoveryBranch: "",
     recoveryRemote: "",
     releaseType: "minor",
@@ -52,6 +53,7 @@ test("package script accepts explicit semver bump flags", () => {
 test("package script accepts recovery only without a version bump", () => {
   assert.deepEqual(parsePackageArgs(["--resume", "--branch=release", "--remote=upstream"]), {
     help: false,
+    ciPublish: false,
     recoveryBranch: "release",
     recoveryRemote: "upstream",
     releaseType: "minor",
