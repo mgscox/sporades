@@ -238,7 +238,7 @@ export declare function readCurrentUserSessionToken(context: LooseRecord): strin
 export declare function bindAccessKeyOwnerSession(context: LooseRecord, sessionToken: unknown): void;
 export declare function accessKeySecretWasDisclosed(context: LooseRecord | undefined): boolean;
 export declare function markAccessKeySecretDisclosed(context: LooseRecord): void;
-export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord): Promise<void>;
+export declare function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord, context?: LooseRecord): Promise<void>;
 export declare function runAccessKeyOwnerSecurityTransition(database: LooseRecord, input: LooseRecord, transition: (adapter: LooseRecord) => any): Promise<any>;
 export declare function throwAccessKeyIssueError(status: string): never;
 export declare function accessKeyNotFoundError(): import("./runtime-errors.js").HelperError;

@@ -94068,10 +94068,10 @@ function accessKeySecretWasDisclosed(context2) {
 function markAccessKeySecretDisclosed(context2) {
   accessKeySecretDisclosedContexts.add(context2);
 }
-async function emitAccessKeyOwnerTransitionAudits(database, input) {
+async function emitAccessKeyOwnerTransitionAudits(database, input, context2) {
   for (const record3 of input.records ?? []) {
     try {
-      await database.log?.emit?.({
+      const event = {
         category: "platform",
         event: "access-key.revoked",
         level: "info",
@@ -94086,7 +94086,14 @@ async function emitAccessKeyOwnerTransitionAudits(database, input) {
           accessKey: { id: record3.id, name: record3.name },
           revocationCause: input.revocationCause
         }
-      });
+      };
+      if (database.__transactionActive && context2) {
+        const events = accessKeyLifecycleAuditEventsByContext.get(context2) ?? [];
+        events.push(event);
+        accessKeyLifecycleAuditEventsByContext.set(context2, events);
+      } else {
+        await database.log?.emit?.(event);
+      }
     } catch {
     }
   }
@@ -148657,7 +148664,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
-var terminatedHumanIdentitiesByMutationResult = /* @__PURE__ */ new WeakMap();
+var revokedHumanSessionsByMutationResult = /* @__PURE__ */ new WeakMap();
 var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
@@ -152193,6 +152200,9 @@ function createEndpointContext(database, endpointRequest, session, options = {})
     reserveTerminateHumanIdentity(_userId) {
       throw humanIdentityTerminationDenied();
     },
+    reserveChangeEmailPassword(_email, _currentPassword, _newPassword) {
+      throw passwordChangeDenied();
+    },
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -154088,7 +154098,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
             clientAddress: client.clientAddress,
             signal: client.teamOperationSignal
           });
-          const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
+          const terminatedUserIds = revokedHumanSessionsByMutationResult.get(result);
           if (terminatedUserIds) await retireRevokedHumanSessions(database, terminatedUserIds);
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -154734,6 +154744,23 @@ function normalizeQueryArgumentValue(value, ancestors) {
     ancestors.delete(value);
   }
 }
+async function withMutationTransaction(adapter, passwordChange, callback) {
+  if (!passwordChange) return await adapter.withTransaction(callback);
+  let callbackFailure;
+  try {
+    return await adapter.withTransaction(async (transactionAdapter) => {
+      try {
+        return await callback(transactionAdapter);
+      } catch (error) {
+        callbackFailure = { error };
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (callbackFailure && error === callbackFailure.error) throw error;
+    throw passwordChangeDenied();
+  }
+}
 async function runMutation(database, auth, mutationName, args, options = {}) {
   let context2;
   let result;
@@ -154742,7 +154769,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
   let resourceAttempted = false;
   let resourceLogPublicationError;
   const writeState = { didWrite: false };
-  const lifecycleEffects = { terminatedUserIds: [] };
+  const lifecycleEffects = { retiredSessionUserIds: [] };
   try {
     const declaredHandler = database.mutations.find((candidate) => candidate.name === mutationName);
     const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
@@ -154751,87 +154778,104 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     }
     if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
       const maintenanceNow = database.clock.now().toISOString();
-      await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+      try {
+        await database.adapter.withTransaction((maintenanceAdapter) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+      } catch (error) {
+        if (readAuthRequirements(declaredMutationHandler)?.reauthentication === "change-password") throw passwordChangeDenied();
+        throw error;
+      }
     }
     const outerStartedAt = database.clock.now().getTime();
-    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
-      const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
-      const mutationInvocation = { active: true };
-      lifecycleEffects.terminatedUserIds = [];
-      return mutationExecution.run(mutationInvocation, async () => {
-        let handlerFailed = false;
-        let revokeOuterResources;
-        try {
-          context2 = createMutationContext(transactionDatabase, auth, {
-            sessionToken: options.sessionToken,
-            clientAddress: options.clientAddress,
-            signal: options.signal,
-            serviceUserMutationAuthority,
-            mutationInvocation,
-            lifecycleEffects
-          });
-          revokeOuterResources = bindOuterResources(transactionDatabase, context2, {
-            startedAt: outerStartedAt,
-            resourceEntered() {
-              resourceAttempted = true;
-              transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-              transactionDatabase.log = { emit() {
-              } };
-            },
-            async authorize(_context, db, identity) {
-              const anchor = await db[identity.table].where("id", identity.id).get();
-              if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-              await db[identity.table].update(identity.id, {});
-            },
-            drain: drainPendingAclWrites,
-            async stageLogs(levels) {
-              const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
-              for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
-              committedResourceLogEvents = events;
+    const committed = await withMutationTransaction(
+      database.adapter,
+      readAuthRequirements(declaredMutationHandler)?.reauthentication === "change-password",
+      async (transactionAdapter) => {
+        const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
+        const mutationInvocation = { active: true };
+        lifecycleEffects.retiredSessionUserIds = [];
+        return mutationExecution.run(mutationInvocation, async () => {
+          let handlerFailed = false;
+          let revokeOuterResources;
+          try {
+            context2 = createMutationContext(transactionDatabase, auth, {
+              sessionToken: options.sessionToken,
+              clientAddress: options.clientAddress,
+              signal: options.signal,
+              serviceUserMutationAuthority,
+              mutationInvocation,
+              lifecycleEffects
+            });
+            revokeOuterResources = bindOuterResources(transactionDatabase, context2, {
+              startedAt: outerStartedAt,
+              resourceEntered() {
+                resourceAttempted = true;
+                transactionAdapter[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+                transactionDatabase.log = { emit() {
+                } };
+              },
+              async authorize(_context, db, identity) {
+                const anchor = await db[identity.table].where("id", identity.id).get();
+                if (!anchor) throw commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+                await db[identity.table].update(identity.id, {});
+              },
+              drain: drainPendingAclWrites,
+              async stageLogs(levels) {
+                const events = levels.map((level) => uncappedLogEnvelope({ config: database.config, category: "resource", event: "resource.log", level, message: "Resource transaction committed.", data: null }));
+                for (const event of events) await transactionDatabase.adapter.insertLogIndexEvent(event);
+                committedResourceLogEvents = events;
+              }
+            });
+            const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
+            const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
+            if (mutationHandler) admitCredentialHandler(mutationHandler, context2, "mutation");
+            const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
+            if (reauthenticationPurpose) {
+              let consumed;
+              try {
+                if (reauthenticationPurpose === "change-password") await transactionAdapter.lockAuthUserFileAuthority(auth.userId);
+                consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+              } catch (error) {
+                if (reauthenticationPurpose === "change-password") throw passwordChangeDenied();
+                throw error;
+              }
+              if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+              mutationInvocation.reauthenticationPurpose = reauthenticationPurpose;
             }
-          });
-          const customHandler = transactionDatabase.mutations.find((candidate) => candidate.name === mutationName);
-          const mutationHandler = customHandler ? materializeHandler(customHandler) : null;
-          if (mutationHandler) admitCredentialHandler(mutationHandler, context2, "mutation");
-          const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
-          if (reauthenticationPurpose) {
-            const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
-            if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
-          }
-          context2 = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context2, "mutation"));
-          for (const hookSource of database.mutationHooks.beforeMutation) {
-            await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context2 }, context2));
-          }
-          const mutationRun = runCustomMutation(transactionDatabase, context2, mutationName, args, mutationHandler);
-          const outerAbort = revokeOuterResources?.aborted();
-          result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
-          if (!result) {
-            result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context2, mutationName, args) : await runInsertMutation(transactionDatabase, context2, mutationName, args);
-          }
-          await revokeOuterResources?.race(drainPendingAclWrites(context2));
-          if (result.ok) {
-            for (const hookSource of database.mutationHooks.afterMutation) {
-              await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context2, result }, context2));
+            context2 = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context2, "mutation"));
+            for (const hookSource of database.mutationHooks.beforeMutation) {
+              await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context2 }, context2));
+            }
+            const mutationRun = runCustomMutation(transactionDatabase, context2, mutationName, args, mutationHandler);
+            const outerAbort = revokeOuterResources?.aborted();
+            result = await (outerAbort ? Promise.race([mutationRun, outerAbort]) : mutationRun);
+            if (!result) {
+              result = mutationName.startsWith("update") ? await runUpdateMutation(transactionDatabase, context2, mutationName, args) : await runInsertMutation(transactionDatabase, context2, mutationName, args);
             }
             await revokeOuterResources?.race(drainPendingAclWrites(context2));
-            assertMutationSecretsReturned(context2, result);
-          }
-          revokeOuterResources?.assertOuterLive();
-          return result;
-        } catch (error) {
-          handlerFailed = true;
-          throw error;
-        } finally {
-          try {
-            await revokeOuterResources?.race(revokeOuterResources.drain());
-            await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context2, handlerFailed, handlerFailed));
+            if (result.ok) {
+              for (const hookSource of database.mutationHooks.afterMutation) {
+                await revokeOuterResources?.race(runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context2, result }, context2));
+              }
+              await revokeOuterResources?.race(drainPendingAclWrites(context2));
+              assertMutationSecretsReturned(context2, result);
+            }
+            revokeOuterResources?.assertOuterLive();
+            return result;
+          } catch (error) {
+            handlerFailed = true;
+            throw error;
           } finally {
-            revokeOuterResources?.();
-            mutationInvocation.active = false;
+            try {
+              await revokeOuterResources?.race(revokeOuterResources.drain());
+              await revokeOuterResources?.race(cleanupTransactionHandler(transactionDatabase, context2, handlerFailed, handlerFailed));
+            } finally {
+              revokeOuterResources?.();
+              mutationInvocation.active = false;
+            }
           }
-        }
-      });
-    });
+        });
+      }
+    );
     outerCommitted = resourceAttempted;
     try {
       if (database.log?.path) for (const event of committedResourceLogEvents) appendFileSync(database.log.path, `${JSON.stringify(event)}
@@ -154848,8 +154892,8 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
-    if (lifecycleEffects.terminatedUserIds.length > 0 && committed && typeof committed === "object") {
-      terminatedHumanIdentitiesByMutationResult.set(committed, [...new Set(lifecycleEffects.terminatedUserIds)]);
+    if (lifecycleEffects.retiredSessionUserIds.length > 0 && committed && typeof committed === "object") {
+      revokedHumanSessionsByMutationResult.set(committed, [...new Set(lifecycleEffects.retiredSessionUserIds)]);
     }
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
@@ -155167,6 +155211,14 @@ function createMutationContext(database, auth, options = {}) {
     const [targetUserId] = assertJsonCompatible([userId]);
     return reserveValidatedLifecycle(options, "human-identity", () => terminateHumanIdentityExecutor(targetUserId));
   };
+  context2.serverAuth.reserveChangeEmailPassword = (email, currentPassword, newPassword) => {
+    assertLiveMutationInvocation(options, "password-change");
+    if (options.mutationInvocation.reauthenticationPurpose !== "change-password" || credential?.kind !== "session" || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service" || typeof email !== "string" || !email.trim() || email.length > 320 || typeof currentPassword !== "string" || currentPassword.length > 1024 || typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 1024) throw passwordChangeDenied();
+    return reserveValidatedLifecycle(options, "password-change", () => trackMutationContextWork(
+      holder.current,
+      changeEmailPasswordInMutation(database, holder.current, auth, options, email.trim().toLowerCase(), currentPassword, newPassword)
+    ));
+  };
   context2.lifecycle = {
     continue(operations, continuation) {
       const list = Array.isArray(operations) ? operations : [operations];
@@ -155225,7 +155277,45 @@ function assertLiveMutationInvocation(options, capability = "human-security") {
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
     if (capability === "human-identity") throw humanIdentityTerminationDenied();
+    if (capability === "password-change") throw passwordChangeDenied();
     throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
+}
+function passwordChangeDenied() {
+  return commandError("Password change denied.", "Verify the current password for this human Session and retry the guarded change-password mutation.", "PASSWORD_CHANGE_DENIED");
+}
+async function changeEmailPasswordInMutation(database, context2, auth, options, email, currentPassword, newPassword) {
+  try {
+    if (!database.__transactionActive || !database.authConfig.providers.email.enabled || typeof options.sessionToken !== "string") throw passwordChangeDenied();
+    const tx = database.adapter;
+    const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+    const session = await tx.prepare(tx.dialect.sql(
+      "SELECT [s].[token], [s].[userId], [s].[expiresAt], [u].[isAuthenticated], [u].[isGuest] FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] WHERE [s].[token] = ?" + (tx.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : "")
+    )).get(options.sessionToken);
+    if (!owner || (owner.userKind ?? "human") !== "human" || owner.lifecycleStatus !== "active" || !session || session.token !== options.sessionToken || session.userId !== auth.userId || !session.isAuthenticated || session.isGuest || !Number.isFinite(Date.parse(session.expiresAt)) || Date.parse(session.expiresAt) <= database.clock.now().getTime()) throw passwordChangeDenied();
+    const credential = await tx.findEmailCredentialWithUser(email);
+    if (!credential || credential.userId !== auth.userId || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash) || !await tx.claimEmailCredentialVersion(email, credential.passwordHash, credential.passwordSalt)) throw passwordChangeDenied();
+    const password = hashEmailPassword(newPassword);
+    await tx.updateEmailCredentialPassword(email, password.hash, password.salt);
+    await tx.deletePasswordResetCodesForUser(auth.userId);
+    await tx.deleteAuthSessionsForUser(auth.userId);
+    const revoked = await tx.bulkRevokeAccessKeysForOwner({
+      ownerUserId: auth.userId,
+      revocationTime: () => database.clock.now().toISOString(),
+      revocationCause: "password-change"
+    });
+    await emitAccessKeyOwnerTransitionAudits(database, {
+      operation: "serverAuth.reserveChangeEmailPassword",
+      ownerUserId: auth.userId,
+      actor: { userId: auth.userId },
+      credential: { kind: "session" },
+      revocationCause: "password-change",
+      records: revoked.records
+    }, context2);
+    options.lifecycleEffects?.retiredSessionUserIds.push(auth.userId);
+    return Object.freeze({ ok: true });
+  } catch {
+    throw passwordChangeDenied();
   }
 }
 function humanIdentityTerminationDenied() {
@@ -155252,7 +155342,7 @@ async function terminateHumanIdentityInMutation(database, auth, credential, opti
   if (outcome?.status === "blocked") throw humanIdentityTerminationBlocked();
   if (outcome?.status === "already-terminated") return Object.freeze({ userId, status: "already-terminated" });
   if (outcome?.status !== "terminated") throw humanIdentityTerminationDenied();
-  options.lifecycleEffects?.terminatedUserIds.push(userId);
+  options.lifecycleEffects?.retiredSessionUserIds.push(userId);
   return Object.freeze({ userId, status: "terminated" });
 }
 function invokeWithLifecycleInitiation(operation) {
