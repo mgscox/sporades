@@ -3,10 +3,16 @@ name: Publish npm package
 on:
   push:
     tags: ['v*']
+  issues:
+    types: [labeled]
   pull_request:
     paths:
       - '.github/workflows/publish.yml'
       - 'scripts/package.mjs'
+      - 'scripts/issue-npm-release.mjs'
+      - '.github/ISSUE_TEMPLATE/release.yml'
+      - 'docs/agents/npm-publishing.md'
+      - 'docs/agents/generated-artifacts.md'
       - 'scripts/check-npm-release.mjs'
       - 'scripts/publish-npm-release.mjs'
       - 'scripts/prepare-offline-test-cache.mjs'
@@ -34,8 +40,84 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: node --test test/package-script.test.js test/npm-release.test.js
 
+  guard:
+    if: github.repository == 'mgscox/sporades' && github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      allowed: ${{ steps.guard.outputs.allowed }}
+      bump: ${{ steps.guard.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        id: guard
+        with:
+          script: |
+            const { guardReleaseIssue, agentMarker } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/issue-npm-release.mjs`);
+            const decision = await guardReleaseIssue({ github, context });
+            core.notice(decision.reason);
+            core.setOutput('allowed', String(decision.allowed));
+            if (decision.allowed) core.setOutput('bump', decision.bump);
+            else if (context.payload.label?.name?.startsWith('release:')) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.payload.issue.number, body: `Release skipped: ${decision.reason}\n\n${agentMarker}` });
+            }
+
+  prepare:
+    needs: guard
+    if: needs.guard.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Only authorized requests enter this queue. Unrelated/denied label events
+    # cannot replace a pending release. Checkout occurs after acquiring the slot.
+    concurrency:
+      group: npm-release-prepare
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      issues: read
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+    env:
+      RELEASE_ISSUE: ${{ github.event.issue.number }}
+      RELEASE_BUMP: ${{ needs.guard.outputs.bump }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { guardReleaseIssue } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/issue-npm-release.mjs`);
+            const decision = await guardReleaseIssue({ github, context });
+            if (!decision.allowed || decision.bump !== process.env.RELEASE_BUMP) throw new Error(decision.reason);
+      - name: Isolate release config
+        run: echo "SPORADES_CONFIG_DIR=$RUNNER_TEMP/sporades-release-config" >> "$GITHUB_ENV"
+      - run: npm ci --no-audit --no-fund
+      - name: Prepare and atomically push the release commit and tag
+        id: prepare
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git branch --set-upstream-to=origin/main main
+          node scripts/issue-npm-release.mjs
+
   publish:
-    if: github.repository == 'mgscox/sporades' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [guard, prepare]
+    if: >-
+      always() && !cancelled() && github.repository == 'mgscox/sporades' &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+       (needs.guard.outputs.allowed == 'true' && needs.prepare.result == 'success'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
     concurrency:
@@ -45,10 +127,11 @@ jobs:
       contents: read
       id-token: write
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v6
@@ -89,3 +172,26 @@ jobs:
           done
           echo 'Registry publication could not be verified; inspect the publish log before retrying.' >&2
           exit 1
+
+  report:
+    needs: [guard, prepare, publish]
+    if: always() && github.event_name == 'issues' && needs.guard.outputs.allowed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      PREPARE_RESULT: ${{ needs.prepare.result }}
+      PUBLISH_RESULT: ${{ needs.publish.result }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            const { reportIssueRelease } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/issue-npm-release.mjs`);
+            await reportIssueRelease({ github, context, tag: process.env.RELEASE_TAG, prepareResult: process.env.PREPARE_RESULT, publishResult: process.env.PUBLISH_RESULT });

@@ -1,0 +1,29 @@
+name: Release Sporades
+description: Ask the manager to choose and authorize an npm release.
+title: "Release Sporades"
+labels: [ready-for-human]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        After opening this issue, mgscox (or a repository administrator) must
+        apply exactly one label: release:patch, release:minor, or release:major.
+        That label is the release authorization. The dropdown does not apply labels.
+        Keep ready-for-human so office agents do not pick up this issue.
+        Use one issue per release; retry a failed run with its existing tag.
+  - type: dropdown
+    id: bump
+    attributes:
+      label: Requested version bump
+      description: Explicit manager choice; a 0.x minor release may break compatibility.
+      options:
+        - patch
+        - minor
+        - major
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Release notes or acceptance context
+      description: Optional context for the manager before applying the release label.

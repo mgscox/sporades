@@ -52,9 +52,16 @@ creates no commit.
 Clearing the generated directories before each CI build also removes obsolete
 tracked files for sources that TypeScript no longer emits.
 
-Release operators normally use `npm run release -- --patch` (or `--minor` /
-`--major`) from a clean, synchronized **main** checkout. This runs
-`scripts/package.mjs --ci-publish`: it prepares and atomically pushes the release
+Release operators normally open a **Release Sporades** issue, retain
+`ready-for-human`, then have mgscox or a repository administrator apply exactly
+one `release:patch`, `release:minor`, or `release:major` label. The dropdown does
+not apply the label automatically. Create the labels once in GitHub's Labels UI;
+CI never creates them. See [npm publishing](npm-publishing.md) for authorization,
+serialization and recovery. `publish.yml` prepares on main with `contents: write`
+using the same code path as the local fallback, `npm run release -- --patch`
+(or `--minor` / `--major`) from a clean, synchronized **main** checkout.
+Both entry points use `scripts/package.mjs --ci-publish`: it prepares and
+atomically pushes the release
 commit and annotated tag, then hands publication to
 `.github/workflows/publish.yml`. It does not require local `npm login` or call
 local `npm publish`. A successful command means the release was queued; verify
@@ -66,8 +73,13 @@ GitHub-hosted Ubuntu runner it builds, primes the offline smoke-test cache,
 runs typecheck, the full test suite and docs checks, then packs and publishes
 the tested output with OIDC and provenance. It does not commit generated output.
 The publishing step skips npm lifecycle scripts because `npm test` (normally
-invoked by `prepublishOnly`) has already passed in that same job. Only tag pushes
-publish; PR checks exercise the automation without npm publishing permissions.
+invoked by `prepublishOnly`) has already passed in that same job. The single
+publish job serves both issue-triggered preparation and manual tag pushes; PR
+checks exercise guard, reporting, version preparation and retries
+without npm publishing permissions. Issue releases record the issue and bump in
+the release commit so reruns reuse the same tag, and report success/failure on
+the issue. A token tag push cannot start a second workflow, so preparation and
+publication both stay in `publish.yml`.
 See [npm publishing setup and recovery](npm-publishing.md).
 
 For explicit interactive local publishing, `npm run package` remains available from a
