@@ -560,7 +560,7 @@ async function resumeRelease(packageJson, options) {
   }
 }
 
-export async function packageForNpm(args = process.argv.slice(2)) {
+export async function packageForNpm(args = process.argv.slice(2), { commitTrailer = "" } = {}) {
   const options = parsePackageArgs(args);
   if (options.help) {
     console.log(usage());
@@ -618,7 +618,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   await run("npm", ["run", "build"]);
   console.log("Rebuilt packaged files with baked CLI version.");
   await run("git", ["add", "--", "package.json", "package-lock.json", "CHANGES.md", "docs/api", "src/cli/cli-version.ts", "dist", "bin"]);
-  await run("git", ["commit", "--message", releaseCommitMessage(releaseTag)]);
+  await run("git", ["commit", "--message", releaseCommitMessage(releaseTag), ...(commitTrailer ? ["--message", commitTrailer] : [])]);
   const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
   const artifact = parsePackedArtifact(packOutput);
   try {
@@ -636,6 +636,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   } finally {
     await rm(path.join(repoRoot, artifact.filename), { force: true });
   }
+  return releaseTag;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

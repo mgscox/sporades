@@ -1,6 +1,48 @@
 # npm publishing
 
-The preferred release entry point is:
+The preferred entry point is a **Release Sporades** GitHub issue, created from
+[the release template](https://github.com/mgscox/sporades/issues/new?template=release.yml).
+Choose the bump in the form and retain `ready-for-human`, which keeps office
+agents from picking up the request. The form cannot apply a label from a dropdown.
+After opening the issue, **mgscox or a repository administrator** deliberately
+applies exactly one of `release:patch`, `release:minor`, or `release:major`.
+The label is authoritative; the dropdown is context only. A 0.x minor bump may
+break compatibility, so no bump is inferred from merged PRs.
+
+An administrator must first create these repository labels in GitHub's Labels UI:
+
+| Label | Purpose |
+| --- | --- |
+| `release:patch` | Explicit patch version bump |
+| `release:minor` | Explicit minor version bump |
+| `release:major` | Explicit major version bump |
+| `ready-for-human` | Reserve the issue for human action (if not already present) |
+
+CI never creates labels. Use one issue per release and keep one release request
+active at a time, including manual tag pushes: preparation and publication each
+serialize their jobs with cancellation disabled, but publication order across
+multiple queued releases is not guaranteed. GitHub may replace an older pending
+job if multiple requests queue. Only authorized issues enter the preparation
+queue, so unrelated or rejected label events cannot displace pending releases.
+Closed issues, conflicting labels, stale label events and unauthorized senders
+cannot prepare a release. Rejections of `release:*` labels get an explanation
+comment; other labels only produce a workflow notice.
+
+`publish.yml` runs guard → prepare → publish → report on GitHub-hosted runners.
+Guard checks the original event sender (not the person clicking rerun), including
+an API permission check for administrators other than mgscox, and fetches the
+current issue state/labels. Prepare rechecks this authorization, checks out main,
+and calls the same `scripts/package.mjs --ci-publish` preparation used locally.
+It atomically pushes the release commit and annotated tag with `GITHUB_TOKEN`.
+Main branch rules must allow that push, as for generated-artifacts automation;
+the workflow does not bypass branch protection. A concurrent main push causes a
+safe failure; rerun after it settles. The same publish job serves issue and tag
+triggers, explicitly checking out the prepared tag. This is necessary because a
+tag pushed by `GITHUB_TOKEN` does not start another workflow, and npm trusts the
+`publish.yml` filename. Success comments include the version, npm link and run
+link, then close the issue. Failure comments link the run and leave it open.
+
+The local fallback remains:
 
 ```sh
 git switch main
@@ -51,7 +93,7 @@ release establishes that evidence.
 ## Validation and recovery
 
 Check [Publish npm package runs](https://github.com/mgscox/sporades/actions/workflows/publish.yml)
-after pushing the tag. The release job validates identity before dependency
+after applying the label or pushing the tag. The release job validates identity before dependency
 installation, runs the complete default suite plus typecheck and docs checks,
 and publishes only after those steps succeed. Existing optional-service/browser
 tests retain their explicit guards; skipped tests are not live-service evidence.
@@ -60,8 +102,13 @@ No package publish or Host upgrade is performed by a PR validation run.
 The local command reports **pending** publication after the Git push. A failed
 job leaves the release commit/tag in Git, and the npm version absent if publication
 was never reached. Fix the problem, then re-run the failed Actions job on that
-same tag. Do not delete or move a published tag. If source changes are required,
-merge the fix and prepare a new patch release.
+same tag. Issue releases record their issue URL and explicit bump in the release
+commit. Rerunning preparation finds that commit on main and reuses its annotated
+tag, even if main has advanced; it never bumps again for that issue. Do not change
+the bump label to recover. If preparation failed before the atomic push, a rerun
+can prepare again. Missing/mismatched tags or duplicate issue commits fail for
+manual inspection. Do not delete or move a published tag. If source changes are required,
+merge the fix and prepare a new patch release with a new issue.
 
 If the publish step succeeded but a later verification failed, first check
 `npm view sporades@X.Y.Z version dist.integrity dist.attestations --json`.
@@ -82,10 +129,11 @@ For a local inspection without pushing or publishing, run `npm run build` then
 ## Local registry rehearsal
 
 The optional service rehearsal reuses Verdaccio 7.0.2 in a disposable loopback
-instance with no upstream registry proxy. Install it outside the repository:
+instance with no upstream registry proxy. Install its tools in a disposable worktree-local directory:
 
 ```sh
-rehearsal_tools=$(mktemp -d)
+mkdir -p .tmp
+rehearsal_tools=$(mktemp -d "$PWD/.tmp/npm-rehearsal.XXXXXX")
 npm install --prefix "$rehearsal_tools" --ignore-scripts --no-audit --no-fund verdaccio@7.0.2
 node scripts/rehearse-npm-publishing.mjs "$rehearsal_tools"
 rm -rf "$rehearsal_tools"
