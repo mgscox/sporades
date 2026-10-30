@@ -49966,7 +49966,7 @@ async function waitForHostedRuntimeReadiness(lifecycle, timeoutMs) {
     const running = inspectContainerRunning(lifecycle.container.name);
     if (!running.ok || !running.running) return { ok: false, failure: "exited" };
     const remaining = deadline - performance.now();
-    const probeTimeoutMs = Math.max(1, Math.min(1e3, remaining));
+    const probeTimeoutMs = Math.max(1, Math.floor(Math.min(1e3, remaining)));
     const probe2 = runDocker(["exec", lifecycle.container.name, "node", "--input-type=module", "--eval", HOSTED_RUNTIME_PROBE_SCRIPT, String(probeTimeoutMs), String(lifecycle.routes.running.port ?? 4e3)], { maxBuffer: 128 * 1024, timeoutMs: Math.ceil(probeTimeoutMs + 250) });
     if (!probe2.ok) {
       const after = inspectContainerRunning(lifecycle.container.name);
