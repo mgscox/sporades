@@ -671,13 +671,13 @@ export type ServerAuthApi = {
    * reauthentication: "change-password" }, handler)` and a declared `change-password` purpose.
    * Rechecks the exact live human Session, credential ownership and current password under the
    * shared identity/credential fence. Passwords are strings of at most 1024 characters; the new
-   * password requires at least 8. Invalid inputs, authority and runtime failures return opaque
-   * `PASSWORD_CHANGE_DENIED`; missing or expired guard proofs return `REAUTHENTICATION_REQUIRED`.
+   * password requires at least 8. Input, authority and storage failures (including transaction entry/commit)
+   * return opaque `PASSWORD_CHANGE_DENIED`; missing/expired proofs return `REAUTHENTICATION_REQUIRED`.
    * Execution updates the password and retires every Session, purpose proof, outstanding Reset
    * code and current human Access key with cause `password-change` in the Mutation transaction.
    * The continuation may stage app outbox rows and delivery Jobs in that same transaction; any
-   * failure rolls everything back. Mail transport belongs in a Job after commit. Successful
-   * clients must sign in again. Does not change the trusted `setEmailPassword` contract.
+   * failure rolls everything back; Capsule continuation errors are preserved. Mail transport runs in a
+   * Job after commit. Successful clients must sign in again. Preserves trusted `setEmailPassword`.
    */
   reserveChangeEmailPassword(email: string, currentPassword: string, newPassword: string): ValidatedLifecycleOperation<Readonly<{ ok: true }>>;
   /** Update the password for an existing email credential. Throws if the email is not registered. */

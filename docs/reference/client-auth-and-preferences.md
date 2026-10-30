@@ -870,7 +870,9 @@ run before returning `ctx.lifecycle.continue`. The reservation itself writes not
 is bound to that exact invocation, and can execute once. Missing or expired guard
 proofs return `REAUTHENTICATION_REQUIRED`. Invalid input, wrong current password,
 another user's credential, stale authority and runtime storage failures return opaque
-`PASSWORD_CHANGE_DENIED`. Email is normalized and limited to 320 characters; passwords
+`PASSWORD_CHANGE_DENIED`, including failures entering or committing the enclosing
+transaction. Capsule continuation errors retain their own message, code and hint.
+Email is normalized and limited to 320 characters; passwords
 must be strings of at most 1024 characters and the new password requires at least 8.
 
 The runtime locks the current identity before proof consumption and retains its

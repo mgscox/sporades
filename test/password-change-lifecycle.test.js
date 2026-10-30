@@ -28,7 +28,7 @@ const change = (ctx, input) => {
     return ctx.lifecycle.continue(input.duplicate ? [operation, operation] : operation, async (result) => {
       const row = await ctx.db.mailOutbox.insert({ userId: ctx.auth.userId, kind: "password-changed" });
       await ctx.jobs.enqueue("deliverMail", { outboxId: row.id }, { availableAt: new Date(Date.now() + 3_600_000) });
-      if (input.fail) throw new Error("post-outbox rollback");
+      if (input.fail) throw Object.assign(new Error("post-outbox rollback"), { code: "CAPSULE_CONTINUATION_FAILED", hint: "Retry the Capsule continuation." });
       return result;
     });
   })();
@@ -124,7 +124,9 @@ test("failure after outbox staging rolls back credential, revocations, proof, ou
     const logs = [];
     database.log = { emit: async (event) => logs.push(event) };
     const before = await database.adapter.findEmailCredentialWithUser(user.email);
-    assert.equal((await call(database, user, { fail: true })).ok, false);
+    assert.deepEqual((await call(database, user, { fail: true })).error, {
+      code: "CAPSULE_CONTINUATION_FAILED", message: "post-outbox rollback", hint: "Retry the Capsule continuation.",
+    });
     assert.deepEqual(await database.adapter.findEmailCredentialWithUser(user.email), before);
     assert.ok(await database.adapter.readAuthSessionWithUser(user.token));
     assert.equal((await verifyPasswordResetCode(database, user, code)).ok, true);
@@ -217,6 +219,78 @@ test("runtime storage failures are opaque and cannot commit partial password cha
     assert.doesNotMatch(JSON.stringify(logs), /sensitive-storage-marker/);
     assert.equal(logs.filter((event) => event.event === "access-key.revoked").length, 0);
   });
+});
+
+async function proveTransactionFailureRollback(database, fail) {
+  const user = await register(database);
+  const code = await reset(database, user);
+  await proof(database, user);
+  await issueKey(database, user);
+  const credentialBefore = await database.adapter.findEmailCredentialWithUser(user.email);
+  const keysBefore = await database.adapter.listAccessKeyRecordsForOwner(user.auth.userId);
+  const logs = [];
+  const captured = [];
+  database.log = { emit: async (event) => logs.push(event) };
+  database.observability.capture = (error) => captured.push({ code: error.code, message: error.message, hint: error.hint });
+  await fail(async () => {
+    assert.deepEqual((await call(database, user)).error, {
+      code: "PASSWORD_CHANGE_DENIED",
+      message: "Password change denied.",
+      hint: "Verify the current password for this human Session and retry the guarded change-password mutation.",
+    });
+  });
+  assert.doesNotMatch(JSON.stringify({ logs, captured }), /sensitive-storage-marker|P0001/);
+  assert.deepEqual(await database.adapter.findEmailCredentialWithUser(user.email), credentialBefore);
+  assert.ok(await database.adapter.readAuthSessionWithUser(user.token));
+  assert.equal((await verifyPasswordResetCode(database, user, code)).ok, true);
+  assert.equal(await count(database, "sporades_auth_reauthentication_proofs"), 1);
+  assert.deepEqual(await database.adapter.listAccessKeyRecordsForOwner(user.auth.userId), keysBefore);
+  assert.equal(await count(database, "mailOutbox"), 0);
+  assert.equal(await count(database, "sporades_jobs"), 0);
+  assert.equal(logs.filter((event) => event.event === "access-key.revoked").length, 0);
+  assert.equal((await call(database, user)).ok, true, "rollback releases the transaction and preserves the proof for retry");
+}
+
+for (const phase of ["synchronous entry", "asynchronous entry", "settlement"]) {
+  test(`password-change transaction ${phase} failures are opaque and roll back all effects`, async () => {
+    await withRuntime((database) => proveTransactionFailureRollback(database, async (assertFailure) => {
+      const original = database.adapter.withTransaction.bind(database.adapter);
+      let transactions = 0;
+      database.adapter.withTransaction = (callback) => {
+        // The first transaction maintains expired proofs; fail the enclosing Mutation transaction.
+        if (++transactions !== 2) return original(callback);
+        const error = Object.assign(new Error("sensitive-storage-marker"), { code: "P0001", hint: "sensitive-storage-marker" });
+        if (phase === "synchronous entry") throw error;
+        if (phase === "asynchronous entry") return Promise.reject(error);
+        return original(async (tx) => {
+          await callback(tx);
+          throw error;
+        });
+      };
+      try { await assertFailure(); }
+      finally { database.adapter.withTransaction = original; }
+    }));
+  });
+}
+
+test("Postgres deferred COMMIT rejection is opaque and rolls back password-change effects", { skip: POSTGRES_SKIP_REASON }, async () => {
+  const env = { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL };
+  const runtimeConfig = { ...config, services: { database: { engine: "postgres" } } };
+  await withPostgresAdapter(async () => {
+    await withRuntime((database) => proveTransactionFailureRollback(database, async (assertFailure) => {
+      await database.adapter.exec(`CREATE FUNCTION password_change_commit_rejection() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'sensitive-storage-marker' USING ERRCODE = 'P0001', HINT = 'sensitive-storage-marker'; END $$`);
+      try {
+        await database.adapter.exec(`CREATE CONSTRAINT TRIGGER password_change_commit_rejection
+          AFTER INSERT ON "mailOutbox" DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW EXECUTE FUNCTION password_change_commit_rejection()`);
+        await assertFailure();
+      } finally {
+        await database.adapter.exec('DROP TRIGGER IF EXISTS password_change_commit_rejection ON "mailOutbox"');
+        await database.adapter.exec("DROP FUNCTION password_change_commit_rejection()");
+      }
+    }), env, runtimeConfig);
+  }, { appTableNames: ["mailOutbox"] });
 });
 
 test("successful lifecycle revocations, outbox and Job survive runtime restart", async () => {

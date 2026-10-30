@@ -7221,6 +7221,27 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
   }
 }
 
+async function withMutationTransaction(adapter: LooseRecord, passwordChange: boolean, callback: (transactionAdapter: any) => Promise<any>) {
+  if (!passwordChange) return await adapter.withTransaction(callback);
+  let callbackFailure: { error: unknown } | undefined;
+  try {
+    return await adapter.withTransaction(async (transactionAdapter: any) => {
+      try {
+        return await callback(transactionAdapter);
+      } catch (error) {
+        callbackFailure = { error };
+        throw error;
+      }
+    });
+  } catch (error) {
+    // Preserve the callback's exact denial or Capsule continuation error. Entry,
+    // COMMIT and rollback failures originate outside it and may contain driver
+    // diagnostics; normalize them before observability or public serialization.
+    if (callbackFailure && error === callbackFailure.error) throw error;
+    throw passwordChangeDenied();
+  }
+}
+
 export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
@@ -7248,7 +7269,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       }
     }
     const outerStartedAt = database.clock.now().getTime();
-    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
+    const committed = await withMutationTransaction(database.adapter,
+      readAuthRequirements(declaredMutationHandler)?.reauthentication === "change-password", async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
       lifecycleEffects.retiredSessionUserIds = [];

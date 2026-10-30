@@ -89,13 +89,13 @@ its result to an unauthenticated caller reintroduces account enumeration.</p>
 Mutation. Requires <code>requireAuth({ linked: true, credentials: [&quot;session&quot;], reauthentication: &quot;change-password&quot; }, handler)</code> and a declared <code>change-password</code> purpose.
 Rechecks the exact live human Session, credential ownership and current password under the
 shared identity/credential fence. Passwords are strings of at most 1024 characters; the new
-password requires at least 8. Invalid inputs, authority and runtime failures return opaque
-<code>PASSWORD_CHANGE_DENIED</code>; missing or expired guard proofs return <code>REAUTHENTICATION_REQUIRED</code>.
+password requires at least 8. Input, authority and storage failures (including transaction entry/commit)
+return opaque <code>PASSWORD_CHANGE_DENIED</code>; missing/expired proofs return <code>REAUTHENTICATION_REQUIRED</code>.
 Execution updates the password and retires every Session, purpose proof, outstanding Reset
 code and current human Access key with cause <code>password-change</code> in the Mutation transaction.
 The continuation may stage app outbox rows and delivery Jobs in that same transaction; any
-failure rolls everything back. Mail transport belongs in a Job after commit. Successful
-clients must sign in again. Does not change the trusted <code>setEmailPassword</code> contract.</p>
+failure rolls everything back; Capsule continuation errors are preserved. Mail transport runs in a
+Job after commit. Successful clients must sign in again. Preserves trusted <code>setEmailPassword</code>.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
