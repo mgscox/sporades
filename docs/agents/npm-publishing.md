@@ -42,6 +42,15 @@ tag pushed by `GITHUB_TOKEN` does not start another workflow, and npm trusts the
 `publish.yml` filename. Success comments include the version, npm link and run
 link, then close the issue. Failure comments link the run and leave it open.
 
+For an issue-triggered run, GitHub's event ref/SHA identify the main revision
+that started the run; checking out the prepared tag does not change that identity.
+[npm's provenance generator](https://github.com/npm/cli/blob/latest/workspaces/libnpmpublish/lib/provenance.js)
+records those event values. The tagged source is independently checked by the
+release identity/main-ancestry validation and the checkout SHA in the run log;
+registry verification matches the exact tested tarball. The manager's first
+labelled release acceptance should inspect the live provenance as well as the
+reported tag and npm version. Manual tag-triggered runs retain tag event identity.
+
 The local fallback remains:
 
 ```sh
