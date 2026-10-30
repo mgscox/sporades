@@ -786,10 +786,10 @@ export function markAccessKeySecretDisclosed(context: LooseRecord) {
   accessKeySecretDisclosedContexts.add(context);
 }
 
-export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord) {
+export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, input: LooseRecord, context?: LooseRecord) {
   for (const record of input.records ?? []) {
     try {
-      await database.log?.emit?.({
+      const event = {
         category: "platform",
         event: "access-key.revoked",
         level: "info",
@@ -804,7 +804,14 @@ export async function emitAccessKeyOwnerTransitionAudits(database: LooseRecord, 
           accessKey: { id: record.id, name: record.name },
           revocationCause: input.revocationCause,
         },
-      });
+      };
+      if (database.__transactionActive && context) {
+        const events = accessKeyLifecycleAuditEventsByContext.get(context) ?? [];
+        events.push(event);
+        accessKeyLifecycleAuditEventsByContext.set(context, events);
+      } else {
+        await database.log?.emit?.(event);
+      }
     } catch { }
   }
 }
