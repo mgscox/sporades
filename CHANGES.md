@@ -1,5 +1,30 @@
 # Changes
 
+## v0.9.42 - 2026-10-30
+
+Changes since v0.9.41.
+
+### 🚀 Features
+
+- Add atomic Capsule password-change reservations (#320) (94b959e7).
+- Add declared local Capsule container services (#315) (56a08078).
+
+### 🐛 Bug Fixes
+
+- Fix Hosted route worker readiness timeout and record hosted acceptance (#321) (09f7e539).
+
+### 🔧 Improvements
+
+- Regenerate dist and bin [skip ci] (b936a834).
+- Regenerate dist and bin [skip ci] (5ecc7466).
+- Regenerate dist and bin [skip ci] (898582f5).
+- Regenerate dist and bin [skip ci] (02920387).
+
+### 📝 Documentation
+
+- Automate npm releases with GitHub OIDC trusted publishing (#322) (31e6606c).
+- Reconcile Hosted routes after dynamic Docker port changes (#317) (08ff36b8).
+
 ## v0.9.41 - 2026-10-24
 
 Changes since v0.9.40.
