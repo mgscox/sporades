@@ -540,8 +540,13 @@ revoked historical key may be deleted; active and expired keys continue to
 reserve their names until revoked.
 
 Password-reset confirmation retires every current key for that owner in the
-same Auth transaction that changes the password and revokes Sessions. Ordinary
-password changes do not retire keys. Losing linked status or deleting the
+same Auth transaction that changes the password and revokes Sessions. Trusted
+`setEmailPassword` writes do not retire keys. Native browser password
+changes and `serverAuth.reserveChangeEmailPassword` retire all current human
+Access keys, Sessions, purpose proofs and outstanding Reset codes atomically.
+The reservation also supports app outbox and Job staging in its enclosing
+Mutation through `ctx.lifecycle.continue`; see [atomic password changes](client-auth-and-preferences.md#atomic-capsule-password-change-and-outbox).
+Losing linked status or deleting the
 owner retires every current key in the same owner-security transaction with a
 distinct cause, and a later relink cannot revive a retired credential.
 

@@ -665,6 +665,21 @@ export type ServerAuthApi = {
   terminateHumanIdentity(userId: string): Promise<TerminateHumanIdentityResult>;
   /** Write-free, one-shot reservation of {@link terminateHumanIdentity} for `ctx.lifecycle.continue`. */
   reserveTerminateHumanIdentity(userId: string): ValidatedLifecycleOperation<TerminateHumanIdentityResult>;
+  /**
+   * Write-free, one-shot password-change reservation for `ctx.lifecycle.continue` in the owning
+   * Mutation. Requires `requireAuth({ linked: true, credentials: ["session"],
+   * reauthentication: "change-password" }, handler)` and a declared `change-password` purpose.
+   * Rechecks the exact live human Session, credential ownership and current password under the
+   * shared identity/credential fence. Passwords are strings of at most 1024 characters; the new
+   * password requires at least 8. Input, authority and storage failures (including transaction entry/commit)
+   * return opaque `PASSWORD_CHANGE_DENIED`; missing/expired proofs return `REAUTHENTICATION_REQUIRED`.
+   * Execution updates the password and retires every Session, purpose proof, outstanding Reset
+   * code and current human Access key with cause `password-change` in the Mutation transaction.
+   * The continuation may stage app outbox rows and delivery Jobs in that same transaction; any
+   * failure rolls everything back; Capsule continuation errors are preserved. Mail transport runs in a
+   * Job after commit. Successful clients must sign in again. Preserves trusted `setEmailPassword`.
+   */
+  reserveChangeEmailPassword(email: string, currentPassword: string, newPassword: string): ValidatedLifecycleOperation<Readonly<{ ok: true }>>;
   /** Update the password for an existing email credential. Throws if the email is not registered. */
   setEmailPassword(email: string, newPassword: string): Promise<void>;
   /**

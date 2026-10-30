@@ -825,6 +825,76 @@ facades are frozen, so later object mutation or method replacement cannot
 redirect the approved target. Prefer the direct API for simple flows; use the validated
 continuation when authorization genuinely depends on async application state.
 
+### Atomic Capsule password change and outbox
+
+Use `ctx.serverAuth.reserveChangeEmailPassword(email, currentPassword, newPassword)`
+when a successful password change must stage an app notice in the same transaction.
+Declare the `change-password` Reauthentication purpose and guard the Mutation with
+`requireAuth({ linked: true, credentials: ["session"], reauthentication: "change-password" }, handler)`.
+The browser first calls `auth.reauthenticate("email", { email, password: currentPassword },
+"change-password")`, then calls this named Mutation with the current and new password.
+
+```ts
+import type { CapsuleContext } from "sporades/server";
+
+type PasswordChangeInput = { email: string; currentPassword: string; newPassword: string };
+
+export default capsule({
+  auth: {
+    reauthentication: { purposes: { "change-password": { maxAgeSeconds: 300 } } },
+  },
+  // Declare mailOutbox and the deliverMail Job using your app's existing schema and delivery policy.
+  mutations: {
+    changePassword: mutation(requireAuth({
+      linked: true,
+      credentials: ["session"],
+      reauthentication: "change-password",
+    }, (ctx: CapsuleContext, input: PasswordChangeInput) => {
+      const change = ctx.serverAuth.reserveChangeEmailPassword(
+        input.email, input.currentPassword, input.newPassword,
+      );
+      return ctx.lifecycle.continue(change, async (result) => {
+        const notice = await ctx.db.mailOutbox.insert({
+          userId: ctx.auth.userId, kind: "password-changed",
+        });
+        await ctx.jobs.enqueue("deliverMail", { outboxId: notice.id });
+        return result; // { ok: true }
+      });
+    })),
+  },
+});
+```
+
+Reserve synchronously during initial Mutation dispatch; async app checks may then
+run before returning `ctx.lifecycle.continue`. The reservation itself writes nothing,
+is bound to that exact invocation, and can execute once. Missing or expired guard
+proofs return `REAUTHENTICATION_REQUIRED`. Invalid input, wrong current password,
+another user's credential, stale authority and runtime storage failures return opaque
+`PASSWORD_CHANGE_DENIED`, including failures entering or committing the enclosing
+transaction. Capsule continuation errors retain their own message, code and hint.
+Email is normalized and limited to 320 characters; passwords
+must be strings of at most 1024 characters and the new password requires at least 8.
+
+The runtime locks the current identity before proof consumption and retains its
+shared transaction fence through commit. Before changing the password it rechecks
+the exact live human Session, active identity, credential ownership and current
+password, then claims the credential version. Concurrent sign-in, change, reset and
+termination therefore cannot authorize this operation from stale credential state.
+Success updates the password and retires all account Sessions (including this one),
+purpose proofs, preexisting Reset codes and current human-owned Access keys with
+cause `password-change`. Old Reset codes fail both verification and confirmation.
+Connected browsers receive a fresh Anonymous session after commit and must sign in
+again. No replacement authenticated Session is minted.
+
+The continuation runs after revocation inside the same Mutation transaction, so it
+can insert the app's `mailOutbox` row and enqueue its existing `deliverMail` Job
+without a second authenticated browser request. Throwing after either write rolls
+back the password, all revocations, proof consumption, outbox and Job enqueue.
+Keep SMTP in the app's existing `recordedSend` Job boundary after commit; never send
+mail from this continuation. The runtime owns auth storage and provider transport.
+This additive operation preserves native `auth.setPassword`, the trusted
+password-only `setEmailPassword`, account closure and Team/billing lifecycles.
+
 ### Terminate a Human Identity
 
 `ctx.serverAuth.terminateHumanIdentity(userId)` closes one exact linked human

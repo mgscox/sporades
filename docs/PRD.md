@@ -1560,6 +1560,19 @@ strict explicit allow, opaque denial and poisoned rollback preserve authority
 and concurrency invariants. Omission preserves behavior. See
 [the Teams contract](reference/teams.md#atomic-additional-team-creation-policy).
 
+### Atomic Capsule password changes
+
+`ctx.serverAuth.reserveChangeEmailPassword(email, currentPassword, newPassword)`
+provides a one-shot `ctx.lifecycle.continue` operation in a named Mutation guarded
+by a live human Session and the `change-password` Reauthentication purpose. The
+runtime rechecks current-password and exact credential/Session authority under the
+shared identity fence, changes the password, and revokes all Sessions, purpose
+proofs, outstanding Reset codes and current human Access keys. App outbox rows and
+delivery Job enqueue in the continuation share the same commit or rollback. SMTP
+stays in the app's existing Job delivery boundary. Clients must sign in again;
+native browser password changes and the trusted password-only setter retain their
+contracts. See [atomic password changes](reference/client-auth-and-preferences.md#atomic-capsule-password-change-and-outbox).
+
 ### Atomic Capsule-owned Team responsibility
 
 Opt-in `teams.authorizeDestructive` protects demote, removeMember, leave and Team

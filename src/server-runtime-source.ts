@@ -131,7 +131,7 @@ import {
 import {
   accessKeyCredentialLogAttribution, bindAccessKeyOwnerSession, createCurrentUserAccessKeysApi, createPrivilegedAccessKeysApi, emitAccessKeyAdmittedAudit,
   accessKeySecretWasDisclosed,
-  dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents,
+  dropAccessKeyLifecycleAuditEvents, flushAccessKeyLifecycleAuditEvents, emitAccessKeyOwnerTransitionAudits,
   grantPrivilegedAccessKeyAccess,
   publicAccessKeyManagementError, recordAccessKeyUsage, resolveAccessKeyCredential, transferAccessKeyRuntimeState,
   revokePrivilegedAccessKeyAccess,
@@ -194,7 +194,7 @@ import { dispatchVerifiedStripeEvent } from "./stripe-events-runtime.js";
 const mutationResultsWithWrites = new WeakSet<object>();
 // ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
 // move their live connections off the old actor before any subscription refreshes.
-const terminatedHumanIdentitiesByMutationResult = new WeakMap<object, string[]>();
+const revokedHumanSessionsByMutationResult = new WeakMap<object, string[]>();
 const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
@@ -4471,6 +4471,9 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
     reserveTerminateHumanIdentity(_userId: string) {
       throw humanIdentityTerminationDenied();
     },
+    reserveChangeEmailPassword(_email: string, _currentPassword: string, _newPassword: string) {
+      throw passwordChangeDenied();
+    },
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
@@ -6495,7 +6498,7 @@ export function createWebSocketHub(
             clientAddress: client.clientAddress,
             signal: client.teamOperationSignal,
           });
-          const terminatedUserIds = terminatedHumanIdentitiesByMutationResult.get(result);
+          const terminatedUserIds = revokedHumanSessionsByMutationResult.get(result);
           if (terminatedUserIds) await retireRevokedHumanSessions(database, terminatedUserIds);
           sendJson(client, formatMutationResult(message, mutationName, result));
           if (result.ok && mutationResultsWithWrites.has(result)) {
@@ -7218,6 +7221,27 @@ function normalizeQueryArgumentValue(value: unknown, ancestors: Set<object>): un
   }
 }
 
+async function withMutationTransaction(adapter: LooseRecord, passwordChange: boolean, callback: (transactionAdapter: any) => Promise<any>) {
+  if (!passwordChange) return await adapter.withTransaction(callback);
+  let callbackFailure: { error: unknown } | undefined;
+  try {
+    return await adapter.withTransaction(async (transactionAdapter: any) => {
+      try {
+        return await callback(transactionAdapter);
+      } catch (error) {
+        callbackFailure = { error };
+        throw error;
+      }
+    });
+  } catch (error) {
+    // Preserve the callback's exact denial or Capsule continuation error. Entry,
+    // COMMIT and rollback failures originate outside it and may contain driver
+    // diagnostics; normalize them before observability or public serialization.
+    if (callbackFailure && error === callbackFailure.error) throw error;
+    throw passwordChangeDenied();
+  }
+}
+
 export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any, options: LooseRecord = {}) {
   let context: LooseRecord | undefined;
   let result;
@@ -7226,7 +7250,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   let resourceAttempted = false;
   let resourceLogPublicationError: any;
   const writeState = { didWrite: false };
-  const lifecycleEffects: { terminatedUserIds: string[] } = { terminatedUserIds: [] };
+  const lifecycleEffects: { retiredSessionUserIds: string[] } = { retiredSessionUserIds: [] };
   try {
     const declaredHandler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
     const declaredMutationHandler = declaredHandler ? materializeHandler(declaredHandler) : null;
@@ -7237,13 +7261,19 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     }
     if (readAuthRequirements(declaredMutationHandler)?.reauthentication) {
       const maintenanceNow = database.clock.now().toISOString();
-      await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+      try {
+        await database.adapter.withTransaction((maintenanceAdapter: LooseRecord) => maintenanceAdapter.deleteExpiredReauthenticationProofs(maintenanceNow));
+      } catch (error) {
+        if (readAuthRequirements(declaredMutationHandler)?.reauthentication === "change-password") throw passwordChangeDenied();
+        throw error;
+      }
     }
     const outerStartedAt = database.clock.now().getTime();
-    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter: any) => {
+    const committed = await withMutationTransaction(database.adapter,
+      readAuthRequirements(declaredMutationHandler)?.reauthentication === "change-password", async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter, writeState);
       const mutationInvocation = { active: true };
-      lifecycleEffects.terminatedUserIds = [];
+      lifecycleEffects.retiredSessionUserIds = [];
       return mutationExecution.run(mutationInvocation, async () => {
         let handlerFailed = false;
         let revokeOuterResources: any;
@@ -7282,8 +7312,18 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
         if (mutationHandler) admitCredentialHandler(mutationHandler, context, "mutation");
         const reauthenticationPurpose = readAuthRequirements(mutationHandler)?.reauthentication;
         if (reauthenticationPurpose) {
-          const consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+          // Password changes, sign-in, reset and termination all lock identity before
+          // credential/Session/proof rows. Retain this fence through the outer commit.
+          let consumed;
+          try {
+            if (reauthenticationPurpose === "change-password") await transactionAdapter.lockAuthUserFileAuthority(auth.userId);
+            consumed = typeof options.sessionToken === "string" && await transactionAdapter.consumeReauthenticationProof({ sessionToken: options.sessionToken, userId: auth.userId, purpose: reauthenticationPurpose, now: database.clock.now().toISOString() });
+          } catch (error) {
+            if (reauthenticationPurpose === "change-password") throw passwordChangeDenied();
+            throw error;
+          }
           if (!consumed) throw commandError("Reauthentication required.", "Verify the current Session for this purpose and retry.", "REAUTHENTICATION_REQUIRED");
+          (mutationInvocation as LooseRecord).reauthenticationPurpose = reauthenticationPurpose;
         }
         context = await revokeOuterResources.race(applyContextMiddleware(transactionDatabase, context, "mutation")) as LooseRecord;
 
@@ -7336,8 +7376,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       database.rowCache.clear();
       mutationResultsWithWrites.add(committed);
     }
-    if (lifecycleEffects.terminatedUserIds.length > 0 && committed && typeof committed === "object") {
-      terminatedHumanIdentitiesByMutationResult.set(committed, [...new Set(lifecycleEffects.terminatedUserIds)]);
+    if (lifecycleEffects.retiredSessionUserIds.length > 0 && committed && typeof committed === "object") {
+      revokedHumanSessionsByMutationResult.set(committed, [...new Set(lifecycleEffects.retiredSessionUserIds)]);
     }
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
@@ -7678,6 +7718,16 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
     const [targetUserId] = assertJsonCompatible([userId]);
     return reserveValidatedLifecycle(options, "human-identity", () => terminateHumanIdentityExecutor(targetUserId));
   };
+  context.serverAuth.reserveChangeEmailPassword = (email: string, currentPassword: string, newPassword: string) => {
+    assertLiveMutationInvocation(options, "password-change");
+    if (options.mutationInvocation.reauthenticationPurpose !== "change-password"
+      || credential?.kind !== "session" || !auth?.isAuthenticated || auth?.isGuest || auth?.userKind === "service"
+      || typeof email !== "string" || !email.trim() || email.length > 320
+      || typeof currentPassword !== "string" || currentPassword.length > 1024
+      || typeof newPassword !== "string" || newPassword.length < 8 || newPassword.length > 1024) throw passwordChangeDenied();
+    return reserveValidatedLifecycle(options, "password-change", () => trackMutationContextWork(holder.current,
+      changeEmailPasswordInMutation(database, holder.current, auth, options, email.trim().toLowerCase(), currentPassword, newPassword)));
+  };
   context.lifecycle = {
     continue(operations: any, continuation: any) {
       const list = Array.isArray(operations) ? operations : [operations];
@@ -7706,7 +7756,7 @@ function createMutationContext(database: LooseRecord, auth: any, options: LooseR
   return context;
 }
 
-type ValidatedLifecycleCapability = "human-security" | "human-identity" | "service-user";
+type ValidatedLifecycleCapability = "human-security" | "human-identity" | "service-user" | "password-change";
 
 function reserveValidatedLifecycle(options: LooseRecord, capability: ValidatedLifecycleCapability, execute: () => Promise<any>) {
   assertLiveMutationInvocation(options, capability);
@@ -7745,7 +7795,50 @@ function assertLiveMutationInvocation(options: LooseRecord, capability: Validate
       throw commandError("Service-User lifecycle changes require a Mutation.", "Call ctx.serviceUsers from the active Mutation invocation.", "SERVICE_USER_MUTATION_REQUIRED");
     }
     if (capability === "human-identity") throw humanIdentityTerminationDenied();
+    if (capability === "password-change") throw passwordChangeDenied();
     throw commandError("Human security transition denied.", "Use an authenticated human Session inside a Capsule mutation.", "HUMAN_SECURITY_TRANSITION_DENIED");
+  }
+}
+
+function passwordChangeDenied() {
+  return commandError("Password change denied.", "Verify the current password for this human Session and retry the guarded change-password mutation.", "PASSWORD_CHANGE_DENIED");
+}
+
+// The reservation runs only in its owning Mutation. It never opens a nested transaction:
+// credential, all authority retirement, app outbox and Job writes share the outer rollback.
+async function changeEmailPasswordInMutation(database: LooseRecord, context: LooseRecord, auth: LooseRecord, options: LooseRecord, email: string, currentPassword: string, newPassword: string) {
+  try {
+    if (!database.__transactionActive || !database.authConfig.providers.email.enabled || typeof options.sessionToken !== "string") throw passwordChangeDenied();
+    const tx = database.adapter;
+    const owner = await tx.lockAuthUserFileAuthority(auth.userId);
+    const session = await tx.prepare(tx.dialect.sql(
+      "SELECT [s].[token], [s].[userId], [s].[expiresAt], [u].[isAuthenticated], [u].[isGuest] " +
+      "FROM [sporades_auth_sessions] [s] JOIN [sporades_auth_users] [u] ON [u].[id] = [s].[userId] " +
+      "WHERE [s].[token] = ?" + (tx.dialect.name === "postgres" ? " FOR UPDATE OF [s]" : ""),
+    )).get(options.sessionToken);
+    if (!owner || (owner.userKind ?? "human") !== "human" || owner.lifecycleStatus !== "active"
+      || !session || session.token !== options.sessionToken || session.userId !== auth.userId
+      || !session.isAuthenticated || session.isGuest || !Number.isFinite(Date.parse(session.expiresAt))
+      || Date.parse(session.expiresAt) <= database.clock.now().getTime()) throw passwordChangeDenied();
+    const credential = await tx.findEmailCredentialWithUser(email);
+    if (!credential || credential.userId !== auth.userId
+      || !verifyEmailPassword(currentPassword, credential.passwordSalt, credential.passwordHash)
+      || !await tx.claimEmailCredentialVersion(email, credential.passwordHash, credential.passwordSalt)) throw passwordChangeDenied();
+    const password = hashEmailPassword(newPassword);
+    await tx.updateEmailCredentialPassword(email, password.hash, password.salt);
+    await tx.deletePasswordResetCodesForUser(auth.userId);
+    await tx.deleteAuthSessionsForUser(auth.userId);
+    const revoked = await tx.bulkRevokeAccessKeysForOwner({ ownerUserId: auth.userId,
+      revocationTime: () => database.clock.now().toISOString(), revocationCause: "password-change" });
+    await emitAccessKeyOwnerTransitionAudits(database, { operation: "serverAuth.reserveChangeEmailPassword",
+      ownerUserId: auth.userId, actor: { userId: auth.userId }, credential: { kind: "session" },
+      revocationCause: "password-change", records: revoked.records }, context);
+    options.lifecycleEffects?.retiredSessionUserIds.push(auth.userId);
+    return Object.freeze({ ok: true as const });
+  } catch {
+    // Adapter and credential failures share an opaque denial. In particular, never
+    // return storage diagnostics or credential material through Mutation errors.
+    throw passwordChangeDenied();
   }
 }
 
@@ -7785,7 +7878,7 @@ async function terminateHumanIdentityInMutation(database: LooseRecord, auth: Loo
   if (outcome?.status === "blocked") throw humanIdentityTerminationBlocked();
   if (outcome?.status === "already-terminated") return Object.freeze({ userId, status: "already-terminated" as const });
   if (outcome?.status !== "terminated") throw humanIdentityTerminationDenied();
-  options.lifecycleEffects?.terminatedUserIds.push(userId);
+  options.lifecycleEffects?.retiredSessionUserIds.push(userId);
   return Object.freeze({ userId, status: "terminated" as const });
 }
 

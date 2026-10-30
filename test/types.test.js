@@ -877,6 +877,17 @@ const app = capsule({
       await ctx.serviceUsers.create({ displayName: "Forged", email: "bot@example.test", accessKey: { name: "bad" } });
       return listed.totalCount;
     }),
+    changePassword: mutation(requireAuth({ linked: true, credentials: ["session"], reauthentication: "change-password" }, (ctx: publicServerApi.CapsuleContext) => {
+      const operation = ctx.serverAuth.reserveChangeEmailPassword("human@example.test", "current-password", "replacement-password");
+      // @ts-expect-error a password change requires the current password and replacement.
+      ctx.serverAuth.reserveChangeEmailPassword("human@example.test", "replacement-password");
+      return ctx.lifecycle.continue(operation, (result) => {
+        result.ok satisfies true;
+        // @ts-expect-error the result exposes no credential or Session material.
+        result.sessionToken.toUpperCase();
+        return result;
+      });
+    })),
     closeAccount: mutation(async (ctx) => {
       const direct = await ctx.serverAuth.terminateHumanIdentity("human-user-id");
       direct.status satisfies "terminated" | "already-terminated";
