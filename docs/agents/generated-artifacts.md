@@ -6,6 +6,8 @@ public declarations in `src/types/`, canonical docs, and focused parity tests
 together. Run `npm ci`, `npm run typecheck`, and `npm test` locally; `pretest`
 builds fresh output and checks its manifest against the local files, without
 comparing them to Git. Older committed output on a PR branch is expected.
+See the [native-capability and offline-cache prerequisites](runtime-flake-testing.md#native-capabilities-and-offline-package-installs)
+before running the CLI and packed-Capsule tests in a restricted environment.
 
 This exception applies only to `dist/` and `bin/`. Other shipped build outputs,
 such as `monitoring/trace/inventory-contract.mjs`, still accompany their source

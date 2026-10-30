@@ -16,6 +16,27 @@ npm run typecheck
 npm test
 ```
 
+## Native capabilities and offline package installs
+
+Dev tests exercise native recursive file watching, Unix sockets, and process
+liveness checks. A restricted execution sandbox can turn denied watch operations
+into `EMFILE` failures, or make an owned process appear unavailable. The resulting
+runtime restart disconnects refresh/auth sockets and can cause many secondary
+timeouts. Compare the same isolated test with the required OS access before
+changing runtime behavior, extending timeouts, or classifying a failure as a
+product regression. Keep the fixtures synthetic and retain real-service opt-ins.
+
+The packed-CLI and generated-Capsule smoke tests intentionally install with
+`npm install --offline`. Their npm cache must be writable and contain both
+package metadata and tarballs for the candidate's dependencies and the generated
+Capsule's development dependencies, including React type packages. A lockfile
+installation with `npm ci` alone may populate tarballs without all metadata
+needed by those separate installations. Use `NPM_CONFIG_CACHE` to select an
+owned temporary cache when the default cache is inaccessible. Populate missing
+entries with an online install of the repository and generated-Capsule dependency
+manifests in throwaway directories, then rerun the unchanged offline smoke tests.
+Do not repair cache permissions by changing unrelated user-owned directories.
+
 Unix socket fixtures use `test/support/unix-socket-path.js`. It keeps a short
 absolute pathname when possible and otherwise uses a pathname relative to the
 shared working directory, bounded to 100 UTF-8 bytes for Darwin and Linux.
