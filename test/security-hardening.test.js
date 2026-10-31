@@ -4,6 +4,48 @@ import { test } from 'node:test';
 import * as http from '../dist/http-runtime.js';
 import { validateSecurityConfig, resolveEffectiveSecurityPolicy } from '../dist/cli/project-config.js';
 
+test('serialized enforced nonce CSP retains a stricter endpoint policy as an independent policy', async () => {
+  const database = { securityPolicy: http.resolveRuntimeSecurityPolicy({ security: { csp: { mode: 'enforce', nonce: true } } }) };
+  const server = createServer((request, response) => {
+    http.prepareHttpSecurity(database, request, response);
+    response.writeHead(500, { 'content-security-policy': "default-src 'none'" });
+    response.end('opaque failure');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}`);
+    assert.ok(response.headers.get('content-security-policy').split(/,\s*/).includes("default-src 'none'"));
+    assert.match(response.headers.get('content-security-policy'), /nonce-/);
+    await response.text();
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('endpoint CSP composes across casing, setHeader and report-only mode without weakening the platform', async () => {
+  for (const mode of ['enforce', 'report-only']) {
+    const database = { securityPolicy: http.resolveRuntimeSecurityPolicy({ security: { csp: { mode, nonce: true } } }) };
+    const server = createServer((request, response) => {
+      http.prepareHttpSecurity(database, request, response);
+      if (request.url === '/stored') response.setHeader('Content-Security-Policy', "default-src 'none'");
+      response.writeHead(500, request.url === '/stored' ? {} : { 'Content-Security-Policy': request.url === '/permissive' ? 'default-src *' : "default-src 'none'" });
+      response.end('opaque failure');
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      for (const pathname of ['/stored', '/restrictive', '/permissive']) {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}${pathname}`);
+        const endpointPolicy = pathname === '/permissive' ? 'default-src *' : "default-src 'none'";
+        const enforced = response.headers.get('content-security-policy').split(/,\s*/);
+        assert.ok(enforced.includes(endpointPolicy));
+        const baseline = response.headers.get(mode === 'enforce' ? 'content-security-policy' : 'content-security-policy-report-only');
+        assert.match(baseline, /object-src 'none'/);
+        assert.match(baseline, /nonce-/);
+        assert.equal(mode === 'enforce' ? enforced.length : enforced.length + 1, 2);
+        await response.text();
+      }
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  }
+});
+
 async function serve(config, fn) {
   const database = { securityPolicy: http.resolveRuntimeSecurityPolicy(config) };
   const server = createServer((request, response) => {

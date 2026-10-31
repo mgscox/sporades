@@ -71,9 +71,11 @@ test("the packed package exposes the complete server and client Access-key contr
     const probe = path.join(dir, "consumer", "probe.mjs");
     await writeFile(probe, [
       'import { accessKeys } from "sporades/client";',
-      'import { endpointFor, requireAuth, requireUserAuth } from "sporades/server";',
+      'import { endpointError, endpointFor, requireAuth, requireUserAuth } from "sporades/server";',
       'const names = Object.keys(accessKeys).sort();',
       'if (JSON.stringify(names) !== JSON.stringify(["delete", "issue", "list", "revoke", "rotate"])) process.exit(1);',
+      'if (!(endpointError({ "Cache-Control": "no-store" }) instanceof Error)) process.exit(3);',
+      'let rejected = false; try { endpointError({ "Set-Cookie": "secret=yes" }); } catch { rejected = true; } if (!rejected) process.exit(4);',
       'if (typeof requireAuth !== "function" || typeof requireUserAuth !== "function" || typeof endpointFor({}) !== "function") process.exit(2);',
     ].join("\n"));
     const result = await run(process.execPath, [probe]);

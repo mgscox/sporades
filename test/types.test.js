@@ -150,7 +150,20 @@ const sourceServices: SourceCapsuleServices = {};
 const publicServices: publicServerApi.CapsuleServices = sourceServices;
 const serverEnvConfig: ServerEnvConfig = { required: ["INTAKE_URL"], failClosed: true };
 import * as publicServerApi from "sporades/server";
-import { endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth, type CapsuleServices as SourceCapsuleServices } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+import { endpointError as sourceEndpointError, type FileIngressAdmissionDecision as SourceIngressDecision, endpoint as sourceEndpoint, endpointFor as sourceEndpointFor, requireAuth as sourceRequireAuth, type CapsuleServices as SourceCapsuleServices } from "${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}";
+const secureError: Error = publicServerApi.endpointError({ "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'" });
+const sourceSecureError: Error = sourceEndpointError({ Pragma: "no-cache", "Referrer-Policy": "no-referrer" });
+// @ts-expect-error Arbitrary error headers are unavailable.
+publicServerApi.endpointError({ "Set-Cookie": "secret=yes" });
+// @ts-expect-error The source helper has the same allowlist.
+sourceEndpointError({ "Content-Length": "0" });
+const refusalDecision: publicServerApi.FileIngressAdmissionDecision = { allow: false, refusalJob: { name: "record", payload: { applicationId: "resolved" }, idempotencyKey: "resolved:v1" } };
+const sourceRefusal: SourceIngressDecision = refusalDecision;
+const publicRefusal: publicServerApi.FileIngressAdmissionDecision = sourceRefusal;
+// @ts-expect-error A refusal cannot supply upload authority.
+const refusalAuthority: publicServerApi.FileIngressAdmissionDecision = { allow: false, principal: { namespace: "application", key: "key" }, refusalJob: { name: "record", payload: null, idempotencyKey: "resolved" } };
+// @ts-expect-error A refusal payload must be JSON.
+const refusalPayload: SourceIngressDecision = { allow: false, refusalJob: { name: "record", payload: () => null, idempotencyKey: "resolved" } };
 sourceEndpoint({ method: "GET", path: "/source-health", session: "none" }, ctx => {
   // @ts-expect-error Source and shipped bindings both exclude Auth.
   ctx.auth;

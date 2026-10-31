@@ -948,6 +948,68 @@ inside their transaction before claiming files or writing domain records.
 A rejected Capsule-principal admission returns an opaque `401` before consuming
 request bytes, with `Cache-Control: no-store` and `Pragma: no-cache`.
 
+#### Durable refusal Jobs before reading bytes
+
+A trusted `files.ingress.admit` callback may deny a Capsule-principal request
+and request one declared ordinary Job:
+
+```ts
+return {
+  allow: false,
+  refusalJob: {
+    name: "recordRefusal",
+    payload: { applicationId: application.id, reason: "intake-disabled" },
+    idempotencyKey: `application:${application.id}:intake-disabled:${policyRevision}`,
+  },
+};
+```
+
+Resolve the credential, Application and processing authority on the server before
+returning refusal evidence. Use a stable server-resolved observation key; never
+copy a request idempotency key, credential, arbitrary header or request body into
+it or the payload. Failed authentication normally returns just `{ allow: false }`.
+Admission still exposes only expiring read-only app data, Server env, the request
+head and the Capsule rate limiter. It cannot write or enqueue directly.
+
+The runtime snapshots strict JSON without invoking accessors or `toJSON`, closes
+the admission read capability and transaction, then opens a separate write
+transaction for a userless Privileged Job and its bounded audit metadata. It
+commits before returning the same opaque `401`, `Cache-Control: no-store` and
+`Pragma: no-cache` denial. No multipart iterator, staging, scanner, File claim or
+endpoint handler runs. Ordinary actor multipart admission cannot request a
+refusal Job. Admission has a five-second budget and request aborts revoke its
+read capability even when a callback ignores cancellation.
+
+`FileIngressRefusalJob` requires exactly `name`, `payload` and `idempotencyKey`.
+The name must identify a declared non-reserved Job and match
+`[a-zA-Z][a-zA-Z0-9_-]{0,127}`. Payloads are strict JSON up to 4096 UTF-8 bytes;
+keys are nonempty, at most 256 UTF-8 bytes and contain no control characters.
+The complete decision is bounded to 8192 serialized UTF-8 bytes, 1024 visited
+values and 16 nesting levels. Arrays must be dense; custom prototypes,
+non-finite numbers, functions, symbols, accessors and cycles are refused. The
+optional decision fields `allowFiles` and `refusalJob` may be explicitly
+`undefined`, which is treated as omission; payload values must remain JSON.
+
+The persisted key is a runtime-namespaced SHA-256 digest of method, exact endpoint
+path, Job name and server-provided observation key. The request's caller-supplied
+idempotency key has no role. Repeated refusals with the same identity retain the
+first Job and payload, including after completion and restart. Jobs execute as
+the Privileged server role, with the existing queue's retry, cancellation and
+**at-least-once** delivery semantics. Handlers must make observations and any
+owner notifications duplicate-safe; a Job is not an exactly-once notification.
+This enqueue uses the ordinary default retry policy (one attempt); further
+notification delivery can use the Capsule's existing Job/outbox workflow.
+Do not depend on raw refusal payloads being present in inspection or logs.
+
+Malformed decisions/evidence (including reserved Job names) deny with opaque
+`401` and enqueue nothing. An unknown Job or enqueue/commit failure returns opaque `503`
+`FILE_INGRESS_REFUSAL_FAILED`, always no-store: it never admits the upload or
+claims successful recording. An abort before the refusal commit check rolls back
+the Job; an abort during or after commit may leave durable work, which remains
+queue-owned and replay-safe. No HTTP denial acknowledges delivery of a Job.
+SQLite, PostgreSQL and libSQL use their existing transaction/Job adapters; no
+resource-transaction capability is added to libSQL by this API.
+
 #### Charging a signed resource before staging
 
 `FileIngressAdmissionContext` also exposes synchronous

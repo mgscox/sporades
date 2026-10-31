@@ -230,6 +230,19 @@ _Avoid_: app definition (that's the argument, not the function), config function
 A Capsule-defined HTTP handler declared with `endpoint({ method, path }, handler)`. Used for integration paths such as webhooks that cannot use the WebSocket client transport. Endpoints receive normal Sporades context plus `ctx.request`.
 _Avoid_: REST API (too broad), route handler (confuses it with client routing)
 
+**Endpoint error security headers**:
+The server-only `endpointError(headers)` failure facility. Throwing preserves
+ordinary endpoint rollback and an opaque error response while retaining only a
+bounded security-header allowlist. Endpoint and platform CSP are independent
+policies enforced together; nonce injection never relaxes a stricter policy.
+
+**File ingress refusal Job**:
+A bounded server-resolved observation requested by a denied Capsule-principal
+admission decision. The runtime closes admission's read-only scope, commits one
+idempotent Privileged Job in a separate transaction, then denies without reading
+multipart bytes. It preserves the ordinary queue's at-least-once delivery and
+never grants application writes during admission.
+
 **Capsule MCP bridge**:
 The opt-in, runtime-owned `/__sporades/mcp` route (ADR-0059) that serves MCP over stateless Streamable HTTP. Every request, and every operator route under `/__sporades/ops/`, needs the bearer key named by `mcp.keyEnv` in Sealed Server env. Each tool call becomes one HTTP request against the Capsule and returns that response unchanged: operator tools reach log and read-only database routes, and Capsule tools reach Custom endpoints declared with `mcp`. Bridged endpoint requests carry no key or caller credential.
 _Avoid_: MCP server (it holds no tool logic), agent API, admin API
