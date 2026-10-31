@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { bundleServerCapsuleModule } from '../dist/bundle-pipeline.js';
@@ -51,6 +51,7 @@ export default capsule({ name: 'security-refusal',
 });`;
 
 test('built Capsule HTTP rolls back secure failures and persists unprocessed pre-byte refusal Jobs across restart', { timeout: 60000 }, async () => {
+  await mkdir(path.join(process.cwd(), '.tmp'), { recursive: true });
   const root = await mkdtemp(path.join(process.cwd(), '.tmp/security-refusal-bundle-'));
   let child, db;
   async function stop() { if (child && child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'close'); } child = null; }
