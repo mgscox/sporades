@@ -95491,6 +95491,38 @@ function flushTeamSecurityEvents(database, context2, options = {}) {
   }
 }
 
+// src/endpoint-error.ts
+function endpointError(headers) {
+  const invalid4 = () => new Error("Invalid endpoint error headers.");
+  if (!headers || typeof headers !== "object" || Array.isArray(headers) || ![Object.prototype, null].includes(Object.getPrototypeOf(headers))) throw invalid4();
+  const result = {};
+  let size = 0;
+  for (const key of Reflect.ownKeys(headers)) {
+    if (typeof key !== "string") throw invalid4();
+    const name2 = key.toLowerCase();
+    if (!["cache-control", "pragma", "x-robots-tag", "content-security-policy", "referrer-policy"].includes(name2) || Object.hasOwn(result, name2)) throw invalid4();
+    const property = Object.getOwnPropertyDescriptor(headers, key);
+    const value = property?.value;
+    if (!property || !Object.hasOwn(property, "value") || typeof value !== "string" || !value.trim() || /[^\x20-\x7e]/.test(value)) throw invalid4();
+    size += name2.length + value.length;
+    if (size > 8192) throw invalid4();
+    result[name2] = value;
+  }
+  const error = new Error("Endpoint handler failed.");
+  Object.defineProperty(error, Symbol.for("sporades.endpoint.errorHeaders"), { value: Object.freeze(result) });
+  return error;
+}
+function endpointErrorResponseHeaders(error) {
+  try {
+    const descriptor = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, Symbol.for("sporades.endpoint.errorHeaders")) : void 0;
+    if (!descriptor || !Object.hasOwn(descriptor, "value")) return {};
+    const checked = endpointError(descriptor.value);
+    return checked[Symbol.for("sporades.endpoint.errorHeaders")];
+  } catch {
+    return {};
+  }
+}
+
 // src/http-runtime.ts
 import { ServerResponse } from "node:http";
 import { randomBytes as randomBytes6 } from "node:crypto";
@@ -129726,8 +129758,9 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
   response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
     const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : void 0;
     const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
+    const supplied = sanitizeResponseHeaders({ ...response.getHeaders?.() ?? {}, ...inputHeaders });
     const headers = {
-      ...sanitizeResponseHeaders(inputHeaders ?? {}),
+      ...supplied,
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "x-frame-options": "DENY",
@@ -129736,6 +129769,11 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
       [policy.csp.header]: serializeCspDirectives(directives),
       ...policy.hsts ? { "strict-transport-security": policy.hsts } : {}
     };
+    const suppliedCsp = supplied[policy.csp.header];
+    if (suppliedCsp) headers[policy.csp.header] = [
+      ...Array.isArray(suppliedCsp) ? suppliedCsp.map(String) : [String(suppliedCsp)],
+      serializeCspDirectives(directives)
+    ];
     if (isGuardedAttachmentHttpResponse(response)) {
       delete headers["content-security-policy-report-only"];
       delete headers["access-control-allow-origin"];
@@ -130015,7 +130053,7 @@ function sanitizeResponseHeaders(headers) {
     [...entries].filter(([name2]) => {
       const normalized = String(name2).toLowerCase();
       return normalized !== "x-powered-by" && normalized !== "server";
-    })
+    }).map(([name2, value]) => [String(name2).toLowerCase(), value])
   );
 }
 async function handleFileHttpRoute(database, request, response, websocketHub = null) {
@@ -130282,12 +130320,16 @@ function mergeEndpointResponseHeaders(handlerHeaders, runtimeHeaders) {
   return { ...headers, ...runtimeHeaders };
 }
 function writeEndpointError(response, error) {
-  const headers = { "content-type": "application/json; charset=utf-8" };
+  const headers = { ...endpointErrorResponseHeaders(error), "content-type": "application/json; charset=utf-8" };
   if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
     headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" && error?.sporadesAccessKeyReason !== "missing" ? 'Bearer realm="sporades", error="invalid_token"' : 'Bearer realm="sporades"';
   }
   if (error?.sporadesAccessKeyFailure) {
     headers["cache-control"] = "no-store";
+    headers.pragma = "no-cache";
+  }
+  if (String(response.getHeader?.("cache-control") ?? "").includes("no-store")) {
+    headers["cache-control"] = response.getHeader("cache-control");
     headers.pragma = "no-cache";
   }
   const multipartDetails = safeMultipartLimitDetails(error);
@@ -130314,6 +130356,7 @@ function safeMultipartLimitDetails(error) {
   return { partType: details.partType, limitKind: details.limitKind, limit: details.limit };
 }
 function endpointErrorStatus(error) {
+  if (error?.code === "FILE_INGRESS_REFUSAL_FAILED") return 503;
   if (error?.code === "UNAUTHENTICATED") return 401;
   if (error?.code === "FORBIDDEN") return 403;
   if (error?.code === "RATE_LIMITED") return 429;
@@ -142565,6 +142608,7 @@ function privilegedOnlyTableAcl() {
 }
 function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
+export const endpointError = ${endpointError.toString()};
 const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -145113,6 +145157,49 @@ function restartPolicyStatus(mode, overrides2 = {}) {
     ...policy.verificationFallbackOnly ? { verificationFallbackOnly: true } : {},
     ...overrides2
   };
+}
+
+// src/file-ingress-refusal.ts
+function snapshotIngressDecision(value) {
+  let nodes = 0;
+  let bytes = 0;
+  const invalid4 = () => {
+    throw new Error("Invalid File ingress decision.");
+  };
+  const visit = (input, depth2) => {
+    if (++nodes > 1024 || depth2 > 16) return invalid4();
+    if (input === null || typeof input === "boolean") return input;
+    if (typeof input === "number") return Number.isFinite(input) ? input : invalid4();
+    if (typeof input === "string") {
+      bytes += Buffer.byteLength(input, "utf8");
+      return bytes <= 8192 ? input : invalid4();
+    }
+    if (!input || typeof input !== "object" || !Array.isArray(input) && ![Object.prototype, null].includes(Object.getPrototypeOf(input))) return invalid4();
+    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
+    for (const key of Reflect.ownKeys(input)) {
+      if (Array.isArray(input) && key === "length") continue;
+      if (typeof key !== "string") return invalid4();
+      bytes += Buffer.byteLength(key, "utf8");
+      if (bytes > 8192) return invalid4();
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable) return invalid4();
+      if (depth2 === 0 && (key === "allowFiles" || key === "refusalJob") && descriptor.value === void 0) continue;
+      if (Array.isArray(input) && (!/^(0|[1-9][0-9]*)$/.test(key) || Number(key) >= 1024)) return invalid4();
+      Object.defineProperty(output, key, { value: visit(descriptor.value, depth2 + 1), enumerable: true });
+    }
+    if (Array.isArray(input) && (input.length > 1024 || Object.keys(output).length !== input.length)) return invalid4();
+    return Object.freeze(output);
+  };
+  const result = visit(value, 0);
+  if (Buffer.byteLength(JSON.stringify(result) ?? "", "utf8") > 8192) invalid4();
+  return result;
+}
+function ingressRefusalJob(decision) {
+  if (!decision || decision.allow !== false || Object.keys(decision).some((key) => !["allow", "refusalJob"].includes(key))) throw new Error("Invalid File ingress refusal.");
+  if (!Object.hasOwn(decision, "refusalJob")) return null;
+  const job = decision.refusalJob;
+  if (!job || typeof job !== "object" || Array.isArray(job) || Object.keys(job).length !== 3 || Object.keys(job).some((key) => !["name", "payload", "idempotencyKey"].includes(key)) || typeof job.name !== "string" || !/^[a-zA-Z][a-zA-Z0-9_-]{0,127}$/.test(job.name) || typeof job.idempotencyKey !== "string" || !job.idempotencyKey || Buffer.byteLength(job.idempotencyKey, "utf8") > 256 || /[\x00-\x1f\x7f]/.test(job.idempotencyKey) || !Object.hasOwn(job, "payload") || Buffer.byteLength(JSON.stringify(job.payload), "utf8") > 4096) throw new Error("Invalid File ingress refusal.");
+  return job;
 }
 
 // src/services-context.ts
@@ -151471,25 +151558,47 @@ function multipartAdmissionFilePermission(decision, principalMode = false) {
   if (keys.some((key) => key !== "allow" && key !== "allowFiles" && !(principalMode && key === "principal")) || !allow || !Object.prototype.hasOwnProperty.call(allow, "value") || allow.value !== true || principalMode && (!principal || !Object.prototype.hasOwnProperty.call(principal, "value")) || allowFiles && (!Object.prototype.hasOwnProperty.call(allowFiles, "value") || allowFiles.value !== void 0 && typeof allowFiles.value !== "boolean")) throw multipartAdmissionDenied();
   return allowFiles?.value !== false;
 }
-async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
+async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, requestSignal) {
+  const signal = requestSignal ? AbortSignal.any([requestSignal, AbortSignal.timeout(5e3)]) : AbortSignal.timeout(5e3);
   const definition = database.fileIngressDefinition;
   if (!definition) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
-  const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
-    transaction,
-    purpose: "files.ingress-admission",
-    subject: { method: endpoint.options.method, path: endpoint.options.path },
-    signal
-  }, (db, assertActive) => definition.admit(Object.freeze({
-    db,
-    app: database.app,
-    env: database.serverEnv,
-    signal,
-    rateLimit: (key2, options) => {
+  let decision;
+  try {
+    decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+      transaction,
+      purpose: "files.ingress-admission",
+      subject: { method: endpoint.options.method, path: endpoint.options.path },
+      signal
+    }, async (db, assertActive) => {
+      const request = Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) });
+      const result = await raceIngressAdmission(() => definition.admit(Object.freeze({
+        db,
+        app: database.app,
+        env: database.serverEnv,
+        signal,
+        request,
+        rateLimit: (key2, options) => {
+          assertActive();
+          return database.capsuleRateLimiter.consume(key2, options);
+        }
+      }), request), signal);
       assertActive();
-      return database.capsuleRateLimiter.consume(key2, options);
-    },
-    request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) })
-  }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+      return snapshotIngressDecision(result);
+    }), { signal });
+    if (signal?.aborted) throw new Error("Aborted");
+  } catch {
+    throw capsuleIngressDenied();
+  }
+  if (decision?.allow === false) {
+    let refusal;
+    try {
+      refusal = ingressRefusalJob(decision);
+    } catch {
+      throw capsuleIngressDenied();
+    }
+    if (refusal) await enqueueCapsuleIngressRefusal(database, endpointRequest, refusal, requestSignal);
+    throw capsuleIngressDenied();
+  }
   let allowFiles;
   try {
     allowFiles = multipartAdmissionFilePermission(decision, true);
@@ -151509,6 +151618,58 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
   }
   return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash15("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+}
+async function raceIngressAdmission(evaluate, signal) {
+  if (signal.aborted) throw capsuleIngressDenied();
+  let removeAbort = () => {
+  };
+  try {
+    const abort = new Promise((_2, reject) => {
+      const onAbort = () => reject(capsuleIngressDenied());
+      signal.addEventListener("abort", onAbort, { once: true });
+      removeAbort = () => signal.removeEventListener("abort", onAbort);
+    });
+    return await Promise.race([Promise.resolve().then(evaluate), abort]);
+  } finally {
+    removeAbort();
+  }
+}
+function capsuleIngressDenied() {
+  return commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+}
+async function enqueueCapsuleIngressRefusal(database, request, refusal, signal) {
+  let context2;
+  const failure2 = () => commandError("File ingress refusal could not be recorded.", "Retry the request later.", "FILE_INGRESS_REFUSAL_FAILED");
+  try {
+    if (signal?.aborted || !database.jobs?.some((job) => job.name === refusal.name) || refusal.name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX)) throw failure2();
+    const idempotencyKey = "file-ingress-refusal:" + createHash15("sha256").update(JSON.stringify([request.method, request.path, refusal.name, refusal.idempotencyKey]), "utf8").digest("hex");
+    await database.adapter.withTransaction(async (adapter) => {
+      const scoped = createTransactionDatabase(database, adapter);
+      const checks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+      (adapter[checks] ??= []).push(() => {
+        if (signal?.aborted) throw failure2();
+      });
+      let failed = false;
+      try {
+        if (signal?.aborted) throw failure2();
+        context2 = createMutationContext(scoped, { userId: database.capsuleIngressOwnerId, displayName: "File ingress", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "file-ingress" }, { ordinaryCredential: false });
+        await context2.privileged.run(
+          { operation: "files.ingress-refusal", targetResourceKind: "job-queue", signal },
+          (privileged) => privileged.jobs.enqueue(refusal.name, refusal.payload, { idempotencyKey })
+        );
+        if (signal?.aborted) throw failure2();
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        await cleanupTransactionHandler(scoped, context2, failed);
+      }
+    }, { signal });
+    await dispatchPendingJobs(context2);
+  } catch {
+    dropPendingJobDispatch(context2);
+    throw failure2();
+  }
 }
 var endpointMultipartAdmissionTimeoutMs = 5e3;
 function multipartAdmissionDenied() {
@@ -151632,8 +151793,10 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
       let allowFiles = true;
       if (claimAuthority === "capsule-principal") {
         const endpointSignal = request.__sporadesEndpointSignal ?? request.signal;
+        request.__sporadesCapsuleIngressAdmissionDenied = true;
         const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, endpointSignal);
         if (endpointSignal?.aborted) throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+        delete request.__sporadesCapsuleIngressAdmissionDenied;
         ingressAuthority = admission.authority;
         allowFiles = admission.allowFiles;
       } else {

@@ -3,6 +3,7 @@ export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } fr
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
+export { endpointError, type EndpointErrorHeaders } from "./endpoint-error.js";
 import type { AppContext as CanonicalAppContext, EndpointBodyBytes as CanonicalEndpointBodyBytes, EndpointContext as CanonicalEndpointContext, EndpointFileAttachmentApi as CanonicalEndpointFileAttachmentApi, EndpointFileAttachmentContext as CanonicalEndpointFileAttachmentContext, EndpointFileAttachmentOptions as CanonicalEndpointFileAttachmentOptions, EndpointFileAttachmentReference as CanonicalEndpointFileAttachmentReference, EndpointFileAttachmentResponse as CanonicalEndpointFileAttachmentResponse, EndpointFileIngressApi as CanonicalEndpointFileIngressApi, EndpointFileIngressInspection as CanonicalEndpointFileIngressInspection, EndpointFileIngressLease as CanonicalEndpointFileIngressLease, EndpointFileMetadata as CanonicalEndpointFileMetadata, EndpointRequest as CanonicalEndpointRequest, FileIngressOptions as CanonicalFileIngressOptions, SchemaDefinition as CanonicalSchemaDefinition } from "../src/types/server.js";
 export type AppContext = CanonicalAppContext;
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
@@ -55,8 +56,14 @@ export type FileIngressAdmissionRequest = Readonly<{
     headers: Readonly<Record<string, string>>;
     query: Readonly<Record<string, string>>;
 }>;
+export type FileIngressRefusalJob = Readonly<{
+    name: string;
+    payload: JsonValue;
+    idempotencyKey: string;
+}>;
 export type FileIngressAdmissionDecision = Readonly<{
     allow: false;
+    refusalJob?: FileIngressRefusalJob;
 } | {
     allow: true;
     principal: FileIngressPrincipal;
@@ -68,6 +75,7 @@ export type FileIngressAdmissionContext<Schema extends SchemaDefinition = Schema
     env: Readonly<Record<string, string | undefined>>;
     signal?: AbortSignal;
     request: FileIngressAdmissionRequest;
+    rateLimit(key: string, options: import("../src/types/server.js").RateLimitOptions): import("../src/types/server.js").RateLimitResult;
 }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;

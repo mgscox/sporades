@@ -1,3 +1,4 @@
+import { endpointErrorResponseHeaders } from "./endpoint-error.js";
 // The Capsule runtime's HTTP and security policy domain: the CORS and CSP posture every response
 // carries, the origin and host-header validation behind it, the request body reader and its size
 // limit, the generic response writers, and the two routes the runtime owns outright — the health
@@ -405,8 +406,9 @@ export function prepareHttpSecurity(database, request, response, admitPreflight)
     response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
         const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
         const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
+        const supplied = sanitizeResponseHeaders({ ...(response.getHeaders?.() ?? {}), ...inputHeaders });
         const headers = {
-            ...sanitizeResponseHeaders(inputHeaders ?? {}),
+            ...supplied,
             "x-content-type-options": "nosniff",
             "referrer-policy": "no-referrer",
             "x-frame-options": "DENY",
@@ -415,6 +417,14 @@ export function prepareHttpSecurity(database, request, response, admitPreflight)
             [policy.csp.header]: serializeCspDirectives(directives),
             ...(policy.hsts ? { "strict-transport-security": policy.hsts } : {}),
         };
+        // Multiple CSP policies are enforced independently (intersection), never merged
+        // by directive: neither the endpoint nor the platform can weaken the other.
+        const suppliedCsp = supplied[policy.csp.header];
+        if (suppliedCsp)
+            headers[policy.csp.header] = [
+                ...(Array.isArray(suppliedCsp) ? suppliedCsp.map(String) : [String(suppliedCsp)]),
+                serializeCspDirectives(directives),
+            ];
         if (isGuardedAttachmentHttpResponse(response)) {
             delete headers["content-security-policy-report-only"];
             delete headers["access-control-allow-origin"];
@@ -731,7 +741,7 @@ function sanitizeResponseHeaders(headers) {
     return Object.fromEntries([...entries].filter(([name]) => {
         const normalized = String(name).toLowerCase();
         return normalized !== "x-powered-by" && normalized !== "server";
-    }));
+    }).map(([name, value]) => [String(name).toLowerCase(), value]));
 }
 export async function handleFileHttpRoute(database, request, response, websocketHub = null) {
     const target = requestTarget(request);
@@ -1013,7 +1023,7 @@ function mergeEndpointResponseHeaders(handlerHeaders, runtimeHeaders) {
     return { ...headers, ...runtimeHeaders };
 }
 export function writeEndpointError(response, error) {
-    const headers = { "content-type": "application/json; charset=utf-8" };
+    const headers = { ...endpointErrorResponseHeaders(error), "content-type": "application/json; charset=utf-8" };
     if (error?.code === "UNAUTHENTICATED" && error?.sporadesAccessKeyFailure) {
         headers["www-authenticate"] = error?.sporadesAccessKeyFailure === "invalid" && error?.sporadesAccessKeyReason !== "missing"
             ? 'Bearer realm="sporades", error="invalid_token"'
@@ -1021,6 +1031,10 @@ export function writeEndpointError(response, error) {
     }
     if (error?.sporadesAccessKeyFailure) {
         headers["cache-control"] = "no-store";
+        headers.pragma = "no-cache";
+    }
+    if (String(response.getHeader?.("cache-control") ?? "").includes("no-store")) {
+        headers["cache-control"] = response.getHeader("cache-control");
         headers.pragma = "no-cache";
     }
     const multipartDetails = safeMultipartLimitDetails(error);
@@ -1058,6 +1072,8 @@ function safeMultipartLimitDetails(error) {
     return { partType: details.partType, limitKind: details.limitKind, limit: details.limit };
 }
 function endpointErrorStatus(error) {
+    if (error?.code === "FILE_INGRESS_REFUSAL_FAILED")
+        return 503;
     if (error?.code === "UNAUTHENTICATED")
         return 401;
     if (error?.code === "FORBIDDEN")

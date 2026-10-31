@@ -80,8 +80,10 @@
       "src/dev-clamav-sidecar.ts",
       "src/email-events-config.ts",
       "src/email-events-runtime.ts",
+      "src/endpoint-error.ts",
       "src/endpoint-file-response.ts",
       "src/endpoint-session.ts",
+      "src/file-ingress-refusal.ts",
       "src/file-ingress-runtime.ts",
       "src/file-policy.ts",
       "src/file-storage-runtime.ts",
@@ -158,7 +160,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "03b9f54d552fd4b2040d645f572c76cad26f639f762eb0046bb67e6cc10031a0"
+    "digest": "b5487f2d0fe1801ad09eef8555f87aea2ab426d582d746c8160a7b0c04c7470c"
   },
   "outputs": {
     "files": [
@@ -448,6 +450,10 @@
       "dist/email-events-runtime.d.ts.map",
       "dist/email-events-runtime.js",
       "dist/email-events-runtime.js.map",
+      "dist/endpoint-error.d.ts",
+      "dist/endpoint-error.d.ts.map",
+      "dist/endpoint-error.js",
+      "dist/endpoint-error.js.map",
       "dist/endpoint-file-response.d.ts",
       "dist/endpoint-file-response.d.ts.map",
       "dist/endpoint-file-response.js",
@@ -456,6 +462,10 @@
       "dist/endpoint-session.d.ts.map",
       "dist/endpoint-session.js",
       "dist/endpoint-session.js.map",
+      "dist/file-ingress-refusal.d.ts",
+      "dist/file-ingress-refusal.d.ts.map",
+      "dist/file-ingress-refusal.js",
+      "dist/file-ingress-refusal.js.map",
       "dist/file-ingress-runtime.d.ts",
       "dist/file-ingress-runtime.d.ts.map",
       "dist/file-ingress-runtime.js",
@@ -706,6 +716,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "b7b91be6ef8746a346a6d48d53da2d3c6db34b177f1e8c78aede76da59f18c9b"
+    "digest": "07be55e9b23482b8a08f6a1fcc9cda51cdb01bc4492b9a7cb9b64464a62cbc0a"
   }
 }

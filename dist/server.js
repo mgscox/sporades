@@ -1,4 +1,6 @@
 export { escapeHtml, html } from "./html.js";
+export { endpointError } from "./endpoint-error.js";
+import { endpointError } from "./endpoint-error.js";
 import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -188,6 +190,7 @@ function field(kind) {
 }
 export function serverRuntimeModuleSource() {
     return `export { escapeHtml, html } from "sporades:html";
+export const endpointError = ${endpointError.toString()};
 const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");

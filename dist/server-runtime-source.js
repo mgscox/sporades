@@ -1,3 +1,4 @@
+import { snapshotIngressDecision, ingressRefusalJob } from "./file-ingress-refusal.js";
 import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
 import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { createRuntimeObservability } from "./observability-runtime.js";
@@ -3509,26 +3510,45 @@ function multipartAdmissionFilePermission(decision, principalMode = false) {
         throw multipartAdmissionDenied();
     return allowFiles?.value !== false;
 }
-async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, signal) {
+async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, requestSignal) {
+    const signal = requestSignal ? AbortSignal.any([requestSignal, AbortSignal.timeout(5_000)]) : AbortSignal.timeout(5_000);
     const definition = database.fileIngressDefinition;
     if (!definition)
         throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
-    const decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
-        transaction,
-        purpose: "files.ingress-admission",
-        subject: { method: endpoint.options.method, path: endpoint.options.path },
-        signal,
-    }, (db, assertActive) => definition.admit(Object.freeze({
-        db,
-        app: database.app,
-        env: database.serverEnv,
-        signal,
-        rateLimit: (key, options) => {
+    let decision;
+    try {
+        decision = await database.adapter.withTransaction((transaction) => withTrustedRead(database, {
+            transaction,
+            purpose: "files.ingress-admission",
+            subject: { method: endpoint.options.method, path: endpoint.options.path },
+            signal,
+        }, async (db, assertActive) => {
+            const request = Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) });
+            const result = await raceIngressAdmission(() => definition.admit(Object.freeze({
+                db, app: database.app, env: database.serverEnv, signal, request,
+                rateLimit: (key, options) => { assertActive(); return database.capsuleRateLimiter.consume(key, options); },
+            }), request), signal);
             assertActive();
-            return database.capsuleRateLimiter.consume(key, options);
-        },
-        request: Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }),
-    }), Object.freeze({ method: endpointRequest.method, path: endpointRequest.path, headers: Object.freeze({ ...endpointRequest.headers }), query: Object.freeze({ ...endpointRequest.query }) }))));
+            return snapshotIngressDecision(result);
+        }), { signal });
+        if (signal?.aborted)
+            throw new Error("Aborted");
+    }
+    catch {
+        throw capsuleIngressDenied();
+    }
+    if (decision?.allow === false) {
+        let refusal;
+        try {
+            refusal = ingressRefusalJob(decision);
+        }
+        catch {
+            throw capsuleIngressDenied();
+        }
+        if (refusal)
+            await enqueueCapsuleIngressRefusal(database, endpointRequest, refusal, requestSignal);
+        throw capsuleIngressDenied();
+    }
     let allowFiles;
     try {
         allowFiles = multipartAdmissionFilePermission(decision, true);
@@ -3548,6 +3568,65 @@ async function admitCapsuleIngressPrincipal(database, endpoint, endpointRequest,
         throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
     }
     return Object.freeze({ allowFiles, authority: Object.freeze({ kind: "capsule-principal", namespace, key, keyDigest: createHash("sha256").update(`${namespace}\0${key}`, "utf8").digest("hex"), ownerId: database.capsuleIngressOwnerId }) });
+}
+async function raceIngressAdmission(evaluate, signal) {
+    if (signal.aborted)
+        throw capsuleIngressDenied();
+    let removeAbort = () => { };
+    try {
+        const abort = new Promise((_, reject) => {
+            const onAbort = () => reject(capsuleIngressDenied());
+            signal.addEventListener("abort", onAbort, { once: true });
+            removeAbort = () => signal.removeEventListener("abort", onAbort);
+        });
+        return await Promise.race([Promise.resolve().then(evaluate), abort]);
+    }
+    finally {
+        removeAbort();
+    }
+}
+function capsuleIngressDenied() {
+    return commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+}
+// This write boundary starts only after the admission transaction and read capability close.
+// No application callback receives this privileged enqueue context.
+async function enqueueCapsuleIngressRefusal(database, request, refusal, signal) {
+    let context;
+    const failure = () => commandError("File ingress refusal could not be recorded.", "Retry the request later.", "FILE_INGRESS_REFUSAL_FAILED");
+    try {
+        if (signal?.aborted || !database.jobs?.some((job) => job.name === refusal.name) || refusal.name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX))
+            throw failure();
+        const idempotencyKey = "file-ingress-refusal:" + createHash("sha256")
+            .update(JSON.stringify([request.method, request.path, refusal.name, refusal.idempotencyKey]), "utf8").digest("hex");
+        await database.adapter.withTransaction(async (adapter) => {
+            const scoped = createTransactionDatabase(database, adapter);
+            const checks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+            (adapter[checks] ??= []).push(() => { if (signal?.aborted)
+                throw failure(); });
+            let failed = false;
+            try {
+                if (signal?.aborted)
+                    throw failure();
+                context = createMutationContext(scoped, { userId: database.capsuleIngressOwnerId, displayName: "File ingress", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "file-ingress" }, { ordinaryCredential: false });
+                await context.privileged.run({ operation: "files.ingress-refusal", targetResourceKind: "job-queue", signal }, (privileged) => privileged.jobs.enqueue(refusal.name, refusal.payload, { idempotencyKey }));
+                if (signal?.aborted)
+                    throw failure();
+            }
+            catch (error) {
+                failed = true;
+                throw error;
+            }
+            finally {
+                await cleanupTransactionHandler(scoped, context, failed);
+            }
+        }, { signal });
+        // A disconnect after commit cannot undo durable recording. The queue owns it now.
+        await dispatchPendingJobs(context);
+    }
+    catch {
+        dropPendingJobDispatch(context);
+        throw failure();
+    }
 }
 const endpointMultipartAdmissionTimeoutMs = 5_000;
 function multipartAdmissionDenied() {
@@ -3693,9 +3772,11 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
             let allowFiles = true;
             if (claimAuthority === "capsule-principal") {
                 const endpointSignal = request.__sporadesEndpointSignal ?? request.signal;
+                request.__sporadesCapsuleIngressAdmissionDenied = true;
                 const admission = await admitCapsuleIngressPrincipal(database, endpoint, endpointRequest, endpointSignal);
                 if (endpointSignal?.aborted)
                     throw commandError("Unauthenticated.", "Provide valid ingress authority and retry.", "UNAUTHENTICATED");
+                delete request.__sporadesCapsuleIngressAdmissionDenied;
                 ingressAuthority = admission.authority;
                 allowFiles = admission.allowFiles;
             }
