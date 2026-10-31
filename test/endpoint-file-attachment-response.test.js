@@ -81,7 +81,7 @@ test("an endpoint can return only its runtime-created exact-version attachment r
       throw new Error("rollback sentinel");
     }),
   } });
-  const database = await openDevDatabase(path.join(directory, "data.db"), "", {}, { name: definition.name, __sporadesSession: "public-dev", files: { storagePath: path.join(directory, "files") } }, definition);
+  const database = await openDevDatabase(path.join(directory, "data.db"), "", {}, { name: definition.name, __sporadesSession: "public-dev", security: { csp: { mode: "enforce", nonce: true } }, files: { storagePath: path.join(directory, "files") } }, definition);
   const auth = actor("attachment-owner");
   const token = "attachment-owner-session";
   let server;

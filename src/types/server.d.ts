@@ -201,7 +201,8 @@ export type FileAclRules = Partial<Record<FileAclOperation, FileAclRule>> & { up
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 /** Runtime-owned inspector names; Capsule code cannot supply verdicts. */
 export type FileIngressInspection = Readonly<{ policyRevision: string; maxVerdictAgeMs?: number; requiredInspectors: readonly ("content-policy-v1" | "clamav")[] }>;
-export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
+export type FileIngressRefusalJob = Readonly<{ name: string; payload: JsonValue; idempotencyKey: string }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false; refusalJob?: FileIngressRefusalJob } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
@@ -1729,3 +1730,7 @@ export type SecurityConfig = {
 export type { ObservabilityConfig, AnalyticsConfig } from "./observability.js";
 /** Opt-in sporades.json Server env requirements. Explicit keys plus configured SMTP, webhook and enabled Stripe keys are checked. Omit to preserve existing doctor/push behavior; failClosed defaults to false. */
 export type ServerEnvConfig = Readonly<{ required?: readonly string[]; failClosed?: boolean }>;
+
+/** Throw to roll back an endpoint while retaining only validated security headers. */
+export function endpointError(headers: EndpointErrorHeaders): Error;
+export type EndpointErrorHeaders = Readonly<Partial<Record<"Cache-Control" | "Pragma" | "X-Robots-Tag" | "Content-Security-Policy" | "Referrer-Policy" | "cache-control" | "pragma" | "x-robots-tag" | "content-security-policy" | "referrer-policy", string>>>;

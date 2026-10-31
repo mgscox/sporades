@@ -347,6 +347,8 @@ const MIGRATED_RUNTIME_MODULES = [
   // identifier validator is the boundary that prevents Capsule-controlled
   // values from becoming unbounded File selectors.
   { file: "endpoint-file-response.js", atLeast: 5, sentinel: "exactIdentifier" },
+  { file: "endpoint-error.js", atLeast: 1, sentinel: "endpointErrorResponseHeaders" },
+  { file: "file-ingress-refusal.js", atLeast: 1, sentinel: "snapshotIngressDecision" },
   // Batch 7's two non-domain modules, each holding two functions, so each floor is 1 — a floor only
   // ever asserts that the parse returned something, and for a module this size "something" is both.
   // Both sentinels are exported, as `mail-config`'s and `maybe-promise`'s are, because the monolith

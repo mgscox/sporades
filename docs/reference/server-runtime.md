@@ -1234,6 +1234,45 @@ Exact bytes are server-only and never automatically logged or added to HTTP
 errors, CLI output, or client transport results. Do not log the copy merely
 because an integration library accepts it.
 
+### Security headers on a thrown endpoint failure
+
+Throw `endpointError(headers)` to retain approved security headers while the
+ordinary endpoint transaction rolls back. It returns an `Error`; returning it
+as a handler result does not signal failure. The response remains an opaque
+HTTP 500. It works for sessionless endpoints too (which have no transaction).
+
+```ts
+import { endpointError } from "sporades/server";
+
+// After provisional transactional work, fail the entire operation:
+throw endpointError({
+  "Cache-Control": "no-store",
+  Pragma: "no-cache",
+  "X-Robots-Tag": "noindex, nofollow",
+  "Content-Security-Policy": "default-src 'none'",
+  "Referrer-Policy": "no-referrer",
+});
+```
+
+Only these five names, in the shown spelling or lowercase, are available in
+`EndpointErrorHeaders`. Runtime validation is case-insensitive. Values must be
+nonempty printable ASCII, with at most 8192 bytes across names and values;
+CR/LF, other controls, duplicate names, accessors, arrays, non-string values,
+Set-Cookie, arbitrary and transport-controlled headers are rejected. Validation
+throws an opaque failure and emits no supplied header. The runtime snapshots
+headers so later mutation cannot change a response. This facility changes no
+status, error message, authentication, transaction or File authority. Runtime
+no-store requirements and the platform's no-referrer baseline still apply.
+
+The HTTP wrapper sends endpoint and platform CSP as **independent policies**.
+Browsers enforce all enforced policies together: an enforced nonce policy cannot
+replace `default-src 'none'`, and a permissive endpoint policy cannot weaken an
+enforced platform baseline. An endpoint's enforced CSP remains enforced when
+the platform uses report-only CSP; report-only policy never relaxes enforcement.
+Normal HTML retains its per-response nonce injection. Guarded attachments retain
+their runtime-owned `sandbox`, octet-stream, no-store and same-origin policy.
+This is not a general response-header override.
+
 ### Explicitly sessionless public endpoints
 
 For a stateless public probe, opt in with `session: "none"`:

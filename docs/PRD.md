@@ -473,6 +473,17 @@ Custom endpoints are HTTP escape hatches for integrations such as webhooks.
 They are not the primary app data API; queries and mutations over the client
 transport remain the default application path.
 
+Throwing `endpointError(headers)` retains a bounded allowlist of security headers
+without changing transaction rollback or exposing handler diagnostics. Independent
+endpoint and platform CSP policies preserve both sets of enforced restrictions,
+including enforced nonce CSP. A denied Capsule-principal File ingress decision
+may request one bounded server-resolved refusal Job. The runtime closes admission's
+read-only scope before committing that userless Privileged enqueue separately;
+it never reads upload bytes or enters the endpoint handler, and failures deny
+opaquely. Stable server observation identity and ordinary at-least-once Job
+semantics survive restart. See [endpoint errors](reference/server-runtime.md#security-headers-on-a-thrown-endpoint-failure)
+and [refusal Jobs](reference/files-and-realtime.md#durable-refusal-jobs-before-reading-bytes).
+
 Custom endpoints may explicitly opt into `session: "none"` for stateless public
 requests. Their separate `SessionlessEndpointContext` contains only `app`, `env`, `services`,
 `log`, `rateLimit`, `signal` and the bounded ordinary `request`. The runtime skips

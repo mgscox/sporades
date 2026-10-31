@@ -3,6 +3,8 @@ export type { RateLimitOptions, RateLimitResult, RegistrationThrottleConfig } fr
 export type { AdmissionPolicy, AdmissionCondition, AdmissionAction, AdmissionGeneration, AdmissionHealth, AdmissionEvidence, AdmissionPolicyConfig } from "../src/types/admission-policy.js";
 export type { SecurityConfig, ResourceIdentity, ResourceRunOptions, ResourceStatusOptions, ResourceNotification, ResourceNotificationRecipientStatus, ResourceScope, ResourceStatus, ResourceAdapterSupport, ResourcesApi } from "../src/types/server.js";
 export { escapeHtml, html, type Html } from "./html.js";
+export { endpointError, type EndpointErrorHeaders } from "./endpoint-error.js";
+import { endpointError } from "./endpoint-error.js";
 import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
 import { validateEndpointMcpDeclarations } from "./mcp-config.js";
 import type {
@@ -71,8 +73,9 @@ export type ReadOnlyDatabaseFromSchema<Schema extends SchemaDefinition> = {
 };
 export type FileIngressPrincipal = Readonly<{ namespace: string; key: string }>;
 export type FileIngressAdmissionRequest = Readonly<{ method: string; path: string; headers: Readonly<Record<string, string>>; query: Readonly<Record<string, string>> }>;
-export type FileIngressAdmissionDecision = Readonly<{ allow: false } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
-export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest }>;
+export type FileIngressRefusalJob = Readonly<{ name: string; payload: JsonValue; idempotencyKey: string }>;
+export type FileIngressAdmissionDecision = Readonly<{ allow: false; refusalJob?: FileIngressRefusalJob } | { allow: true; principal: FileIngressPrincipal; allowFiles?: boolean }>;
+export type FileIngressAdmissionContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; env: Readonly<Record<string, string | undefined>>; signal?: AbortSignal; request: FileIngressAdmissionRequest; rateLimit(key: string, options: import("../src/types/server.js").RateLimitOptions): import("../src/types/server.js").RateLimitResult }>;
 /** Shared immutable request head supplied to endpoint multipart admission. */
 export type EndpointMultipartAdmissionRequest = FileIngressAdmissionRequest;
 /** An authenticated, read-only policy context evaluated before a multipart endpoint reads its request body. */
@@ -502,6 +505,7 @@ function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
 
 export function serverRuntimeModuleSource() {
   return `export { escapeHtml, html } from "sporades:html";
+export const endpointError = ${endpointError.toString()};
 const validateEndpointSessionDeclaration = ${validateEndpointSessionDeclaration.toString()};
 const AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
 const ATOMIC_STRIPE_EVENT_DEFINITION = Symbol.for("sporades.stripeEvent.atomicDefinition");
