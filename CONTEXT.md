@@ -118,6 +118,10 @@ _Avoid_: 404, proxy error, default error page
 
 **Capsule route**:
 A generated reverse-proxy route file for one Hosted Capsule's full subdomain and optional custom domain aliases, pointing each hostname either to its running container or to the Hosted Capsule unavailable response. Aliases do not change the Capsule identity or canonical hostedUrl.
+Production route files remain root-owned and readable by the Caddy service group
+(`0640`), including after replacement or rollback. Bootstrap repairs legacy
+access without changing route contents; internal probe/address tokens are not
+readable by unrelated users.
 _Avoid_: wildcard route, dynamic route, proxy rule
 
 **Edge TLS**:

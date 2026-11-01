@@ -813,6 +813,28 @@ Host-side key files. The Host profile owns `backups.schedule`, retention and tar
 configuration through `sporades host backup configure`. See the
 [backup contract and restore-rehearsal runbook](./reference/capsule-backups.md).
 
+## Caddy configuration access
+
+On a production Host the helper retains root ownership of Capsule route files
+and gives the installed `caddy` account's primary group read access with mode
+`0640`. Caddy cannot modify these files and other users cannot read their
+internal probe/address-authentication tokens. The helper sets the group and mode
+through an open descriptor before atomic publication, independently of the
+operator's umask. Route replacement, unavailable responses and rollback keep
+the same access contract.
+
+Managed Caddy configuration directories use `0750` and the Caddy group. The
+installation root permits traversal without granting additional directory
+listing access. Bootstrap also prepares the canonical Cloudflare origin
+certificate/key for the service account when that TLS mode is selected;
+the private key remains restricted to root and the Caddy group.
+
+After upgrading the helper, run `sporades host bootstrap --host <alias> --json`
+for each Hosted domain to repair existing Capsule routes without changing
+their contents or restarting Capsules. Validate the effective Caddyfile as the
+service user and verify a normal systemd reload; a successful root-operated
+reload alone does not establish service-user access.
+
 ## Optional Host-managed error tracking and analytics
 
 Install opt-in pinned GlitchTip/Umami after bootstrap with
