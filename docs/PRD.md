@@ -166,6 +166,11 @@ The repository currently includes:
   route files, deterministic Docker containers, loopback-only published ports,
   Docker ownership labels, and a Host-server-owned unavailable response for
   registered Capsules without a running release.
+  Generated Capsule routes retain operator-only write ownership and Caddy-group
+  read access (`root:caddy`, `0640` in production), independently of caller
+  umask, through publication and rollback. Bootstrap reconciles legacy route
+  permissions and service traversal without restarting Capsules or making
+  internal authentication tokens readable by unrelated users.
 - Opt-in Container SSH access for local Container sessions and Hosted Capsules
   through top-level `ssh.authorizedKeys` entries in `sporades.json`. SSH uses
   the Base image `sporades` user, key-based authentication, Docker-assigned

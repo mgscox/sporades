@@ -2,7 +2,7 @@ import { createHostFixture, hostFixtureConfig, removeHostFixture } from "./suppo
 import { withFixtureUmask } from "./support/fixture-umask.js";
 import { preservedDeployFilePath } from "../dist/deploy-files.js";
 import assert from "node:assert/strict";
-import { chmod, chown, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, chown, copyFile, cp, link, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -1176,6 +1176,97 @@ async function readJsonl(filePath) {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
 }
+
+test("Caddy Capsule route publication preserves service read access under restrictive umasks", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot } = await writeHostedCapsuleRollbackFixture(dir);
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const env = { ...docker.env, ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}` };
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    for (const mask of [0o077, 0o022]) {
+      for (const action of ["capsule.start", "capsule.stop"]) {
+        const previous = process.umask(mask);
+        let result;
+        try {
+          result = await runHostHelper({ action, host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+            capsule: { subname: "team-notes" } }, { cwd: dir, env });
+        } finally { process.umask(previous); }
+        assert.equal(result.code, 0, result.stdout + result.stderr);
+        const details = await stat(routeFile);
+        assert.equal(details.mode & 0o777, 0o640, `${action}, umask ${mask.toString(8)}: Caddy must read and other users must not`);
+        assert.equal(details.uid, process.getuid());
+        assert.equal(details.gid, Number(caddyUser.env.FAKE_CADDY_GID));
+        for (const directory of ["caddy", "caddy/hosts", "caddy/hosts/capsules.example.dev"]) {
+          const parent = await stat(path.join(remoteRoot, directory));
+          assert.equal(parent.mode & 0o777, 0o750);
+          assert.equal(parent.gid, Number(caddyUser.env.FAKE_CADDY_GID));
+        }
+      }
+    }
+    const legacyBytes = await readFile(routeFile);
+    await chmod(routeFile, 0o600);
+    const bootstrap = await runHostHelper({ action: "host.bootstrap",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot } }, { cwd: dir, env });
+    assert.equal(JSON.parse(bootstrap.stdout).ok, true, bootstrap.stdout + bootstrap.stderr);
+    assert.equal((await stat(routeFile)).mode & 0o777, 0o640, "bootstrap upgrades legacy route permissions");
+    assert.deepEqual(await readFile(routeFile), legacyBytes, "permission repair preserves the route bytes");
+  });
+});
+
+test("Caddy route permissions allow the distinct service user and deny unrelated users", {
+  skip: process.platform !== "linux" || process.getuid?.() !== 0 ? "Requires an isolated Linux root fixture for distinct uid/gid checks" : false,
+}, async () => {
+  await withTempDir(async (dir) => {
+    await chmod(dir, 0o755);
+    const { remoteRoot } = await writeHostedCapsuleRollbackFixture(dir);
+    // POSIX chooses group bits before other bits when Caddy matches the group.
+    await chown(remoteRoot, 0, 12346);
+    await chmod(remoteRoot, 0o700);
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"), {
+      env: { FAKE_CADDY_UID: "12345", FAKE_CADDY_GID: "12346" },
+    });
+    const env = { ...docker.env, ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}` };
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    const request = { action: "capsule.start", host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" } };
+    const previous = process.umask(0o077);
+    let result;
+    try { result = await runHostHelper(request, { cwd: dir, env }); }
+    finally { process.umask(previous); }
+    assert.equal(JSON.parse(result.stdout).ok, true, result.stdout + result.stderr);
+    const check = (uid, gid, operation) => spawnSync(process.execPath, ["-e",
+      `require('node:fs').accessSync(process.argv[1],require('node:fs').constants.${operation})`, routeFile], { uid, gid });
+    assert.equal(check(12345, 12346, "R_OK").status, 0, "Caddy can read its configuration");
+    assert.notEqual(check(12345, 12346, "W_OK").status, 0, "Caddy cannot rewrite root-owned routes");
+    assert.notEqual(check(12347, 12348, "R_OK").status, 0, "an unrelated user cannot read internal tokens");
+    const details = await stat(routeFile);
+    assert.equal(details.uid, 0);
+    assert.equal(details.gid, 12346);
+    assert.equal(details.mode & 0o777, 0o640);
+  });
+});
+
+test("Caddy route permission repair refuses hard links without changing their other name", async () => {
+  await withTempDir(async (dir) => {
+    const { remoteRoot } = await writeHostedCapsuleRollbackFixture(dir);
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(path.dirname(routeFile), { recursive: true });
+    const other = path.join(dir, "private-other-file");
+    await writeFile(other, "private fixture\n", { mode: 0o600 });
+    await link(other, routeFile);
+    const result = await runHostHelper({ action: "capsule.stop",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" } }, { cwd: dir, env: docker.env });
+    assert.equal(JSON.parse(result.stdout).ok, false);
+    assert.equal((await stat(other)).mode & 0o777, 0o600);
+    assert.equal(await readFile(other, "utf8"), "private fixture\n");
+  });
+});
 
 async function readProjectAuditEvents(projectDir) {
   const eventsPath = path.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
@@ -3555,6 +3646,11 @@ test("sporades host helper requires readable Cloudflare origin certificate files
     assert.equal(output.data.tls.mode, "cloudflare-origin");
     assert.equal(output.data.tls.certificate, path.join(tlsDirectory, "origin.crt"));
     assert.equal(output.data.tls.key, path.join(tlsDirectory, "origin.key"));
+    for (const file of ["origin.crt", "origin.key"]) {
+      const details = await stat(path.join(tlsDirectory, file));
+      assert.equal(details.mode & 0o777, 0o640, "Caddy can load TLS material without exposing the private key to other users");
+      assert.equal(details.gid, Number(caddyUser.env.FAKE_CADDY_GID));
+    }
   });
 });
 
@@ -10266,6 +10362,7 @@ test("sporades host helper preserves previous route when Caddy validation fails"
     await mkdir(path.dirname(routeFile), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await writeFile(routeFile, "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    await chmod(routeFile, 0o600);
     const docker = await installFakeDocker(path.join(dir, "docker"));
     const caddy = await installFakeCaddy(path.join(dir, "caddy"), { env: { FAKE_CADDY_VALIDATE_STATUS: "1" } });
     const env = {
@@ -10300,6 +10397,7 @@ test("sporades host helper preserves previous route when Caddy validation fails"
       },
     });
     assert.equal(await readFile(routeFile, "utf8"), "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    assert.equal((await stat(routeFile)).mode & 0o777, 0o640, "the retained legacy route remains readable after failure");
     assert.deepEqual((await caddy.calls()).map((call) => call.args), [["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"]]);
   });
 });
@@ -10313,6 +10411,7 @@ test("sporades host helper reloads the restored route after candidate reload fai
     await mkdir(path.dirname(routeFile), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await writeFile(routeFile, "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    await chmod(routeFile, 0o600);
     const docker = await installFakeDocker(path.join(dir, "docker"));
     const caddy = await installFakeCaddy(path.join(dir, "caddy"), { env: { FAKE_CADDY_RELOAD_STATUSES: "1,0" } });
     const env = {
@@ -10347,6 +10446,7 @@ test("sporades host helper reloads the restored route after candidate reload fai
       },
     });
     assert.equal(await readFile(routeFile, "utf8"), "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    assert.equal((await stat(routeFile)).mode & 0o777, 0o640, "the retained legacy route remains readable after failure");
     assert.deepEqual(
       (await caddy.calls()).map((call) => call.args),
       [

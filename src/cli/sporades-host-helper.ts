@@ -5268,6 +5268,9 @@ async function validateBootstrapTls(request: HostHelperRequest, bootstrap: any) 
       `Install readable Cloudflare origin certificate and key files at ${bootstrap.tls.certificate} and ${bootstrap.tls.key}, then rerun \`sporades host bootstrap --host ${request.host.alias}\`.`,
     );
   }
+  await provisionCaddyRouteDirectoryAccess(bootstrap.tls.key);
+  await provisionCaddyRouteFileAccess(bootstrap.tls.certificate);
+  await provisionCaddyRouteFileAccess(bootstrap.tls.key);
 }
 
 function ensureDockerNetwork(networkName: string) {
@@ -5294,6 +5297,7 @@ function ensureDockerNetwork(networkName: string) {
 
 async function installCaddyBootstrapConfig(request: HostHelperRequest, bootstrap: any) {
   await assertActiveManagedRouteTrust(null);
+  await provisionCaddyRouteDirectoryAccess(bootstrap.caddy.healthRoute);
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
@@ -5303,6 +5307,15 @@ async function installCaddyBootstrapConfig(request: HostHelperRequest, bootstrap
   await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
   await atomicPublishBootstrapFile(managedInclude, `# Sporades-managed Hosted domain include list.\nimport ${path.join(bootstrap.directories.caddyHosts, "*.caddy")}\n`, "bootstrap-managed-include");
   await atomicPublishBootstrapFile(domainInclude, `# Sporades-managed routes for ${request.host.domain}.\nimport ${path.join(bootstrap.caddy.routesDirectory, "*.caddy")}\n`, "bootstrap-domain-include");
+
+  // Upgrade legacy routes without changing their bytes or restarting Capsules.
+  // A later failed publication must also be able to restore a readable inode.
+  for (const record of await readCapsuleRegistryRecords(request)) {
+    if (record.status === "unregistered") continue;
+    const file = path.join(bootstrap.caddy.routesDirectory, `${record.subname}.caddy`);
+    await assertBootstrapMutationBoundary("bootstrap-capsule-route-access", [file]);
+    if (await pathExists(file)) await provisionCaddyRouteFileAccess(file);
+  }
 
   await assertActiveManagedRouteTrust(null);
   validateCaddyBootstrap(caddyfile);
@@ -5993,8 +6006,14 @@ async function applyManagedRouteLocked(lifecycle: HostedCapsuleLifecycle, routeF
   await rm(tempRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-previous", [previousRouteFile]);
   await rm(previousRouteFile, { force: true });
+  await provisionCaddyRouteDirectoryAccess(routeFile);
+  if (await pathExists(routeFile)) await provisionCaddyRouteFileAccess(routeFile);
   await assertManagedRouteMutationBoundary(routeFile, "apply-write-temp", [tempRouteFile]);
-  await writeFile(tempRouteFile, contents, { flag: "wx", mode: 0o644 });
+  const candidate = await open(tempRouteFile, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  try {
+    await candidate.writeFile(contents);
+    await provisionCaddyRouteFileAccess(tempRouteFile, candidate);
+  } finally { await candidate.close(); }
   try {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
@@ -6040,6 +6059,63 @@ async function applyManagedRouteLocked(lifecycle: HostedCapsuleLifecycle, routeF
   await rm(previousRouteFile, { force: true });
 }
 
+let cachedCaddyRouteGroup: number | undefined;
+function caddyRouteGroup() {
+  if (cachedCaddyRouteGroup !== undefined) return cachedCaddyRouteGroup;
+  const caddy = resolveCaddyServiceUser();
+  // Rootless fixture/standalone helpers retain their own group when no system
+  // Caddy account exists, matching the existing HTTP-log provisioning contract.
+  const value = caddy?.gid ?? String(process.getegid?.() ?? process.getgid?.() ?? 0);
+  const gid = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(gid) || gid < 0) throw routeTrustError();
+  return cachedCaddyRouteGroup = gid;
+}
+
+async function provisionCaddyRouteDirectoryAccess(routeFile: string) {
+  const trust = activeManagedRouteTrust;
+  if (!trust) throw routeTrustError();
+  const gid = caddyRouteGroup();
+  for (const identity of trust.directories) {
+    if (identity.path !== trust.managedRoot && !identity.path.startsWith(`${trust.managedRoot}${path.sep}`)) continue;
+    if (!routeFile.startsWith(`${identity.path}${path.sep}`)) continue;
+    await assertActiveManagedRouteTrust(trust.routeFile);
+    const handle = await open(identity.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0));
+    try {
+      const before = await handle.stat();
+      if (!before.isDirectory() || before.dev !== identity.dev || before.ino !== identity.ino || !trustedHostPathMetadata(before)) throw routeTrustError();
+      if (identity.path === trust.managedRoot) {
+        // Only search access is needed through the installation root. Preserve
+        // existing listing restrictions and all unrelated directory ownership.
+        await handle.chmod((before.mode & 0o7777) | 0o011);
+      } else {
+        if (before.gid !== gid) await handle.chown(before.uid, gid);
+        await handle.chmod(0o750);
+      }
+      await assertActiveManagedRouteTrust(trust.routeFile);
+    } finally { await handle.close(); }
+  }
+}
+
+async function provisionCaddyRouteFileAccess(target: string, retained?: Awaited<ReturnType<typeof open>>) {
+  await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
+  await assertTrustedRegularFileIfExists(target);
+  const handle = retained ?? await open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const before = await handle.stat();
+    const named = await lstat(target);
+    if (!before.isFile() || before.nlink !== 1 || !trustedHostPathMetadata(before) || named.isSymbolicLink()
+      || named.dev !== before.dev || named.ino !== before.ino) throw routeTrustError();
+    const gid = caddyRouteGroup();
+    if (before.gid !== gid) await handle.chown(before.uid, gid);
+    await handle.chmod(0o640);
+    const after = await handle.stat();
+    const published = await lstat(target);
+    if (published.isSymbolicLink() || published.dev !== before.dev || published.ino !== before.ino
+      || after.nlink !== 1 || after.uid !== before.uid || after.gid !== gid || (after.mode & 0o777) !== 0o640) throw routeTrustError();
+    await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
+  } finally { if (!retained) await handle.close(); }
+}
+
 async function removeManagedRouteLocked(lifecycle: HostedCapsuleLifecycle, routeFile: string) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "remove-remove-previous", [previousRouteFile]);
@@ -6048,6 +6124,9 @@ async function removeManagedRouteLocked(lifecycle: HostedCapsuleLifecycle, route
   if (!hadRoute) {
     return { routeFile, removed: false };
   }
+
+  await provisionCaddyRouteDirectoryAccess(routeFile);
+  await provisionCaddyRouteFileAccess(routeFile);
 
   await assertManagedRouteMutationBoundary(routeFile, "remove-move-current", [previousRouteFile]);
   await rename(routeFile, previousRouteFile);
