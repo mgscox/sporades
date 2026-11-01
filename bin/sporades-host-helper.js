@@ -52698,6 +52698,9 @@ async function validateBootstrapTls(request2, bootstrap) {
       `Install readable Cloudflare origin certificate and key files at ${bootstrap.tls.certificate} and ${bootstrap.tls.key}, then rerun \`sporades host bootstrap --host ${request2.host.alias}\`.`
     );
   }
+  await provisionCaddyRouteDirectoryAccess(bootstrap.tls.key);
+  await provisionCaddyRouteFileAccess(bootstrap.tls.certificate);
+  await provisionCaddyRouteFileAccess(bootstrap.tls.key);
 }
 function ensureDockerNetwork(networkName) {
   const inspect3 = spawnSync8("docker", ["network", "inspect", networkName], { encoding: "utf8" });
@@ -52721,6 +52724,7 @@ function ensureDockerNetwork(networkName) {
 }
 async function installCaddyBootstrapConfig(request2, bootstrap) {
   await assertActiveManagedRouteTrust(null);
+  await provisionCaddyRouteDirectoryAccess(bootstrap.caddy.healthRoute);
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
@@ -52734,6 +52738,12 @@ import ${path14.join(bootstrap.directories.caddyHosts, "*.caddy")}
   await atomicPublishBootstrapFile(domainInclude, `# Sporades-managed routes for ${request2.host.domain}.
 import ${path14.join(bootstrap.caddy.routesDirectory, "*.caddy")}
 `, "bootstrap-domain-include");
+  for (const record of await readCapsuleRegistryRecords(request2)) {
+    if (record.status === "unregistered") continue;
+    const file = path14.join(bootstrap.caddy.routesDirectory, `${record.subname}.caddy`);
+    await assertBootstrapMutationBoundary("bootstrap-capsule-route-access", [file]);
+    if (await pathExists(file)) await provisionCaddyRouteFileAccess(file);
+  }
   await assertActiveManagedRouteTrust(null);
   validateCaddyBootstrap(caddyfile);
   reloadCaddyBootstrap(caddyfile);
@@ -53374,8 +53384,16 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   await rm10(tempRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-previous", [previousRouteFile]);
   await rm10(previousRouteFile, { force: true });
+  await provisionCaddyRouteDirectoryAccess(routeFile);
+  if (await pathExists(routeFile)) await provisionCaddyRouteFileAccess(routeFile);
   await assertManagedRouteMutationBoundary(routeFile, "apply-write-temp", [tempRouteFile]);
-  await writeFile6(tempRouteFile, contents, { flag: "wx", mode: 420 });
+  const candidate = await open7(tempRouteFile, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 384);
+  try {
+    await candidate.writeFile(contents);
+    await provisionCaddyRouteFileAccess(tempRouteFile, candidate);
+  } finally {
+    await candidate.close();
+  }
   try {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
@@ -53418,6 +53436,58 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   await assertManagedRouteMutationBoundary(routeFile, "apply-finalize-previous", [previousRouteFile]);
   await rm10(previousRouteFile, { force: true });
 }
+var cachedCaddyRouteGroup;
+function caddyRouteGroup() {
+  if (cachedCaddyRouteGroup !== void 0) return cachedCaddyRouteGroup;
+  const caddy = resolveCaddyServiceUser();
+  const value = caddy?.gid ?? String(process.getegid?.() ?? process.getgid?.() ?? 0);
+  const gid = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(gid) || gid < 0) throw routeTrustError();
+  return cachedCaddyRouteGroup = gid;
+}
+async function provisionCaddyRouteDirectoryAccess(routeFile) {
+  const trust = activeManagedRouteTrust;
+  if (!trust) throw routeTrustError();
+  const gid = caddyRouteGroup();
+  for (const identity of trust.directories) {
+    if (identity.path !== trust.managedRoot && !identity.path.startsWith(`${trust.managedRoot}${path14.sep}`)) continue;
+    if (!routeFile.startsWith(`${identity.path}${path14.sep}`)) continue;
+    await assertActiveManagedRouteTrust(trust.routeFile);
+    const handle = await open7(identity.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0));
+    try {
+      const before = await handle.stat();
+      if (!before.isDirectory() || before.dev !== identity.dev || before.ino !== identity.ino || !trustedHostPathMetadata(before)) throw routeTrustError();
+      if (identity.path === trust.managedRoot) {
+        await handle.chmod(before.mode & 4095 | 9);
+      } else {
+        if (before.gid !== gid) await handle.chown(before.uid, gid);
+        await handle.chmod(488);
+      }
+      await assertActiveManagedRouteTrust(trust.routeFile);
+    } finally {
+      await handle.close();
+    }
+  }
+}
+async function provisionCaddyRouteFileAccess(target, retained) {
+  await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
+  await assertTrustedRegularFileIfExists(target);
+  const handle = retained ?? await open7(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const before = await handle.stat();
+    const named = await lstat11(target);
+    if (!before.isFile() || before.nlink !== 1 || !trustedHostPathMetadata(before) || named.isSymbolicLink() || named.dev !== before.dev || named.ino !== before.ino) throw routeTrustError();
+    const gid = caddyRouteGroup();
+    if (before.gid !== gid) await handle.chown(before.uid, gid);
+    await handle.chmod(416);
+    const after = await handle.stat();
+    const published = await lstat11(target);
+    if (published.isSymbolicLink() || published.dev !== before.dev || published.ino !== before.ino || after.nlink !== 1 || after.uid !== before.uid || after.gid !== gid || (after.mode & 511) !== 416) throw routeTrustError();
+    await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
+  } finally {
+    if (!retained) await handle.close();
+  }
+}
 async function removeManagedRouteLocked(lifecycle, routeFile) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "remove-remove-previous", [previousRouteFile]);
@@ -53426,6 +53496,8 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
   if (!hadRoute) {
     return { routeFile, removed: false };
   }
+  await provisionCaddyRouteDirectoryAccess(routeFile);
+  await provisionCaddyRouteFileAccess(routeFile);
   await assertManagedRouteMutationBoundary(routeFile, "remove-move-current", [previousRouteFile]);
   await rename10(routeFile, previousRouteFile);
   try {

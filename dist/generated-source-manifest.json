@@ -160,7 +160,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "e705886424917bce68edceb78f8f45184c1055abfd7699836596e6e4e364a7e5"
+    "digest": "cd6043e51f3f19b56d37964096c73f61279dcdda025fc630712898d0e82f5207"
   },
   "outputs": {
     "files": [
@@ -716,6 +716,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "2beff51c6581530f9cc54446a881f896db899362e19c06d4d883e0fbaf54a9ff"
+    "digest": "62b028cde9a4d9074abbf613d3716727b69af1dce00c6d0754386fbe3b237eb0"
   }
 }
