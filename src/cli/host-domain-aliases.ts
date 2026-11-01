@@ -1,6 +1,26 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { helperError } from "./cli-support.js";
+import { trustedBackupPath } from "./host-backups.js";
+
+/** Operator-owned routing intent; never changes the Host or service-data identity. */
+export async function readObservabilityAnalyticsDomain(host: { remoteRoot: string; domain: string }): Promise<string> {
+  const file = path.join(host.remoteRoot, "hosts", host.domain, "services", "observability", "public.json");
+  try {
+    await trustedBackupPath(file, true);
+    const details = await lstat(file);
+    if (!details.isFile() || details.nlink !== 1 || details.size > 4096) throw new Error();
+    const config = JSON.parse(await readFile(file, "utf8"));
+    if (!config || Array.isArray(config) || config.version !== 1
+      || Object.keys(config).sort().join() !== "analyticsDomain,version") throw new Error();
+    validateAliasDomains([config.analyticsDomain]);
+    return config.analyticsDomain;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return `analytics.${host.domain}`;
+    throw helperError("Invalid Host observability public configuration.",
+      "Use a helper-owned mode-0600 public.json with version 1 and one exact lowercase DNS analyticsDomain; do not use symbolic or hard links.");
+  }
+}
 
 /** Exact hostnames only: never interpolate caller-controlled Caddy syntax. */
 export function validateAliasDomains(value: unknown): string[] {
@@ -48,6 +68,26 @@ export async function assertHostnamesAvailable(remoteRoot: string, hostnames: st
     const serviceState = path.join(remoteRoot, "hosts", domain.name, "services", "observability", "secrets.json");
     const installed = await readFile(serviceState, "utf8").then(() => true).catch(e => { if (e.code === "ENOENT") return false; throw e; });
     if (installed) for (const service of ["errors", "analytics"]) assertUnclaimed(`${service}.${domain.name}`, `observability:${domain.name}`);
+    if (installed) assertUnclaimed(await readObservabilityAnalyticsDomain({remoteRoot,domain:domain.name}), `observability:${domain.name}`);
+    if (installed) {
+      // Desired configuration can change before the locked route replacement.
+      // Keep the currently published names reserved throughout that interval.
+      const applied = path.join(remoteRoot, "caddy", "hosts", domain.name, "__sporades-observability.caddy");
+      let appliedNames: string[] = [];
+      try {
+        await trustedBackupPath(applied);
+        const details = await lstat(applied);
+        if (!details.isFile() || details.nlink !== 1 || details.uid !== process.geteuid?.() || (details.mode & 0o022)) throw new Error();
+        const names = [...(await readFile(applied, "utf8")).matchAll(/^([^\s{}]+) \{$/gm)].map(match => match[1]);
+        if (names.length !== 2) throw new Error();
+        appliedNames = validateAliasDomains(names);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          throw helperError("Cannot inspect observability hostname ownership.", "Repair the protected managed observability route before registering hostnames.");
+        }
+      }
+      for (const name of appliedNames) assertUnclaimed(name, `observability:${domain.name}`);
+    }
     for (const collection of ["capsules", "registration-claims"]) {
       const directory = path.join(remoteRoot, "hosts", domain.name, "registry", collection);
       for (const entry of await entries(directory)) {

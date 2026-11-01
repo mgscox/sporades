@@ -4,10 +4,10 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {execFile,spawnSync} from 'node:child_process';
 import {promisify} from 'node:util';
-import {mkdir,writeFile,readFile,rm,chmod,symlink} from 'node:fs/promises';
+import {mkdir,writeFile,readFile,rm,chmod,symlink,link} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {assertObservabilityResources,OBSERVABILITY_IMAGES,observabilityCompose,observabilityProject,observabilityDirectory,readObservabilityState,observabilityMonitorUnits,provisionObservability} from '../dist/cli/host-observability.js';
+import {assertObservabilityResources,OBSERVABILITY_IMAGES,observabilityCompose,observabilityProject,observabilityDirectory,readObservabilityState,observabilityMonitorUnits,provisionObservability,renderObservabilityRoutes,observabilityUrls} from '../dist/cli/host-observability.js';
 import {assertHostnamesAvailable} from '../dist/cli/host-domain-aliases.js';
 import {unsealServerEnv,readSealedServerEnv,readKeyPair,sealedServerEnvPaths,ensureSealedServerEnvKeyPair,sealServerEnv,writeSealedServerEnv} from '../dist/sealed-server-env.js';
 const run=promisify(execFile);
@@ -62,6 +62,73 @@ test('pending or disabled service installs reserve both domains across Hosted do
 }));
 test('unconfigured provisioning is inert',()=>fixture(async dir=>{
  assert.equal((await provisionObservability(h(dir),{})).connected,false);
+}));
+test('a protected public analytics domain owns the direct route and service URLs',()=>fixture(async dir=>{
+ const host=h(dir),directory=observabilityDirectory(host);await mkdir(directory,{recursive:true,mode:0o700});
+ await writeFile(path.join(directory,'secrets.json'),JSON.stringify({...state(),enabled:false}),{mode:0o600});
+ await writeFile(path.join(directory,'public.json'),JSON.stringify({version:1,analyticsDomain:'analytics.kimatt.test'}),{mode:0o600});
+ const routes=await renderObservabilityRoutes(host,{errors:51231,analytics:51232});
+ assert.match(routes,/analytics\.kimatt\.test \{\n  reverse_proxy 127\.0\.0\.1:51232/);
+ assert.doesNotMatch(routes,/analytics\.ops\.example\.test|header_up|tls_server_name/);
+ assert.equal((await observabilityUrls(host)).analytics,'https://analytics.kimatt.test');
+ await assert.rejects(assertHostnamesAvailable(dir,['analytics.kimatt.test'],'other/capsule'),/reserved/);
+ await assertHostnamesAvailable(dir,['analytics.kimatt.test'],'observability:ops.example.test');
+ assert.match(await renderObservabilityRoutes(host,null),/analytics\.kimatt\.test \{\n  respond "Service disabled" 503/);
+ assert.equal(JSON.parse(await readFile(path.join(directory,'public.json'),'utf8')).analyticsDomain,'analytics.kimatt.test');
+ const applied=path.join(dir,'caddy/hosts/ops.example.test/__sporades-observability.caddy');
+ await mkdir(path.dirname(applied),{recursive:true});await writeFile(applied,routes);
+ await writeFile(path.join(directory,'public.json'),JSON.stringify({version:1,analyticsDomain:'analytics.next.test'}));
+ for(const name of ['analytics.kimatt.test','analytics.next.test'])await assert.rejects(assertHostnamesAvailable(dir,[name],'other/capsule'),/reserved/);
+ await writeFile(applied,await renderObservabilityRoutes(host,null));
+ await assertHostnamesAvailable(dir,['analytics.kimatt.test'],'other/capsule');
+}));
+test('public analytics configuration rejects unsafe files and invalid exact hostnames',()=>fixture(async dir=>{
+ const host=h(dir),directory=observabilityDirectory(host);await mkdir(directory,{recursive:true,mode:0o700});
+ const file=path.join(directory,'public.json');
+ assert.equal((await observabilityUrls(host)).analytics,'https://analytics.ops.example.test');
+ for(const value of [null,[],{version:2,analyticsDomain:'analytics.example.test'},{version:1,analyticsDomain:'https://analytics.example.test'},
+  {version:1,analyticsDomain:'*.example.test'},{version:1,analyticsDomain:'127.0.0.1'},
+  {version:1,analyticsDomain:'analytics.example.test\nmalicious'},{version:1,analyticsDomain:'analytics.example.test',extra:'private-marker'}]){
+  await writeFile(file,JSON.stringify(value),{mode:0o600});
+  await assert.rejects(renderObservabilityRoutes(host,null),error=>/Invalid Host observability public configuration/.test(error.message)&&!JSON.stringify(error).includes('private-marker'));
+ }
+ const valid=JSON.stringify({version:1,analyticsDomain:'analytics.kimatt.test'});
+ await writeFile(file,valid);await chmod(file,0o644);
+ await assert.rejects(renderObservabilityRoutes(host,null),/Invalid Host observability public configuration/);
+ await rm(file);const other=path.join(directory,'other.json');await writeFile(other,valid,{mode:0o600});await symlink(other,file);
+ await assert.rejects(renderObservabilityRoutes(host,null),/Invalid Host observability public configuration/);
+ await rm(file);await link(other,file);
+ await assert.rejects(renderObservabilityRoutes(host,null),/Invalid Host observability public configuration/);
+}));
+test('Umami public domain preserves authenticated same-origin requests through Caddy',{
+ skip:process.env.SPORADES_REAL_OBSERVABILITY_CADDY!=='1'?'Set SPORADES_REAL_OBSERVABILITY_CADDY=1 for isolated Docker proxy emulation.':false,timeout:120000,
+},()=>fixture(async dir=>{
+ const host=h(dir),directory=observabilityDirectory(host);await mkdir(directory,{recursive:true,mode:0o700});
+ await writeFile(path.join(directory,'public.json'),JSON.stringify({version:1,analyticsDomain:'analytics.kimatt.test'}),{mode:0o600});
+ const config=path.join(dir,'Caddyfile');
+ const routes=(await renderObservabilityRoutes(host,{errors:4000,analytics:4000}))
+  .replace('errors.ops.example.test {','http://errors.ops.example.test:18081 {')
+  .replace('analytics.kimatt.test {','http://analytics.kimatt.test:18080 {');
+ await writeFile(config,'{\n admin off\n auto_https off\n}\n'+routes);
+ const id=`sporades-umami-origin-${process.pid}`,backend=id+'-backend',proxy=id+'-proxy',seed=id+'-seed';
+ const docker=async args=>(await run('docker',args,{timeout:30000})).stdout;
+ try{
+  await docker(['network','create','--internal',id]);
+  await docker(['volume','create',id]);
+  await docker(['create','--name',seed,'--network','none','--volume',id+':/fixture','--entrypoint','true','node:24.22.1-bookworm-slim']);
+  await docker(['cp',path.join(root,'test/support/umami-origin-emulator.mjs'),seed+':/fixture/emulator.mjs']);
+  await docker(['cp',config,seed+':/fixture/Caddyfile']);
+  await docker(['create','--name',backend,'--network',id,'--read-only','--volume',id+':/fixture:ro','--cpus','1','--memory','256m','--pids-limit','64','-p','127.0.0.1::18080','--entrypoint','node','node:24.22.1-bookworm-slim','/fixture/emulator.mjs']);
+  await docker(['start',backend]);
+  await docker(['create','--name',proxy,'--network','container:'+backend,'--read-only','--volume',id+':/fixture:ro','--cpus','1','--memory','128m','--pids-limit','64','--tmpfs','/data','--tmpfs','/config','--entrypoint','caddy','caddy:2.10.2-alpine','run','--config','/fixture/Caddyfile','--adapter','caddyfile']);
+  await docker(['start',proxy]);
+  const result=JSON.parse(await docker(['exec',backend,'node','/fixture/emulator.mjs','probe']));
+  assert.ok(Object.values(result).every(value=>value===true),JSON.stringify(result));
+ }finally{
+  await docker(['rm','-f',proxy,backend,seed]).catch(()=>{});
+  await docker(['network','rm',id]).catch(()=>{});
+  await docker(['volume','rm',id]).catch(()=>{});
+ }
 }));
 test('CLI registration and dedicated ops connect seal custom env names without disclosing provider values',()=>fixture(async dir=>{
  const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir)};
@@ -176,7 +243,7 @@ test('Caddy imports observability routes through the managed glob with automatic
  const {renderObservabilityRoutes,OBSERVABILITY_ROUTE_FILE}=await import('../dist/cli/host-observability.js');
  await writeFile(path.join(dir,'Caddyfile'),`{\n admin off\n}\nimport /fixture/*.caddy\n`);
  for(const ports of [{errors:52281,analytics:52282},null]){
-  await writeFile(path.join(dir,OBSERVABILITY_ROUTE_FILE),renderObservabilityRoutes(h(dir),ports));
+  await writeFile(path.join(dir,OBSERVABILITY_ROUTE_FILE),await renderObservabilityRoutes(h(dir),ports));
   const result=spawnSync('docker',['run','--rm','--name',`sporades-ken-observability-caddy-${process.pid}`,'--network','none','--mount',`type=bind,source=${dir},target=/fixture,readonly`,'caddy:2.10.2-alpine','caddy','adapt','--config','/fixture/Caddyfile','--adapter','caddyfile'],{encoding:'utf8',timeout:55_000});
   assert.equal(result.status,0,result.stderr);
   const config=JSON.stringify(JSON.parse(result.stdout));

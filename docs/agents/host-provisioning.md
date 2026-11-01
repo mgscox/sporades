@@ -12,7 +12,19 @@ sections must explain how to use that provider's local CLI and how to adapt an
 available MCP, SDK, Terraform provider, or other automation surface to the same
 output contract.
 
+Host creation and SaaS Capsule provisioning are separate steps. For Matt's SaaS
+Capsules, also follow [SaaS provisioning policy](./saas-provisioning.md), including
+shared Umami analytics on every production Capsule regardless of hosting provider.
+Creating a Hetzner server is neither a prerequisite nor the activation trigger
+for analytics.
+
 ## Host environment
+
+The Host helper owns the persistent
+[Caddy configuration access contract](../server-installation.md#caddy-configuration-access).
+After helper upgrades, bootstrap repairs legacy route permissions. Verify
+service-user validation and normal systemd reload, including when provisioning
+uses umask `077`; do not depend on manual chmod/chown after deployment.
 
 These instructions depend upon a Linux-like (Linux, MacOS, WSL) host environment.
 
