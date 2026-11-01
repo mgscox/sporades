@@ -1,5 +1,27 @@
 # Changes
 
+## v0.9.43 - 2026-11-01
+
+Changes since v0.9.42.
+
+### 🚀 Features
+
+- Allow registry propagation before verifying npm releases (#324) (15bdab53).
+
+### 🐛 Bug Fixes
+
+- Fix dependency audit vulnerabilities (#328) (cd70c8de).
+
+### 🔧 Improvements
+
+- Regenerate dist and bin [skip ci] (de2841c9).
+- Regenerate dist and bin [skip ci] (57a49c25).
+
+### 📝 Documentation
+
+- Preserve endpoint security on rollback and record ingress refusals (#327) (1a7e2185).
+- Trigger npm releases from labelled Release issues (#325) (83a9c292).
+
 ## v0.9.42 - 2026-10-30
 
 Changes since v0.9.41.
