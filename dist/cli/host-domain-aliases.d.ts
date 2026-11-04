@@ -1,3 +1,8 @@
+/** Operator-owned routing intent; never changes the Host or service-data identity. */
+export declare function readObservabilityAnalyticsDomain(host: {
+    remoteRoot: string;
+    domain: string;
+}): Promise<string>;
 /** Exact hostnames only: never interpolate caller-controlled Caddy syntax. */
 export declare function validateAliasDomains(value: unknown): string[];
 /** Caller holds the Host-wide route flock, including during bootstrap. */

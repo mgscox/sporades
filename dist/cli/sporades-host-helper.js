@@ -5,7 +5,7 @@ import { normalizePublicOrigin } from "../public-origin.js";
 import { inspectAdmissionHealth } from "../admission-evidence.js";
 import { ADMISSION_INSPECTION_SCRIPT } from "./admission-inspection.js";
 import { readDeployFile, attemptJournalPath, beginPreservedFileAttempt, finishPreservedFileAttempt, readPreservedFileAttempt, assertPreservedDeployFile, rollbackPreservedFiles, rethrowAfterDeployCleanup, deployFileMounts, preparePreservedFiles, resolveDeployFiles } from "../deploy-files.js";
-import { assertHostnamesAvailable, validateAliasDomains, validateCanonicalDomain, hostedPublicOrigin } from "./host-domain-aliases.js";
+import { assertHostnamesAvailable, validateAliasDomains, validateCanonicalDomain, hostedPublicOrigin, readObservabilityAnalyticsDomain } from "./host-domain-aliases.js";
 import { spawn, spawnSync } from "node:child_process";
 import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, lstat, mkdir, open, opendir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
@@ -905,7 +905,7 @@ async function dispatchMain(request) {
             throw helperError("Observability requires a DNS Hosted domain.", "Use a Hosted domain without a port.");
         let data;
         if (operation === "enable") {
-            await assertHostnamesAvailable(host.remoteRoot, [`errors.${host.domain}`, `analytics.${host.domain}`], `observability:${host.domain}`);
+            await assertHostnamesAvailable(host.remoteRoot, [`errors.${host.domain}`, await readObservabilityAnalyticsDomain(host)], `observability:${host.domain}`);
             const master = path.join(host.remoteRoot, "caddy", "Caddyfile");
             if (!await pathExists(master))
                 throw helperError("Bootstrap the Hosted domain first.", "Run host bootstrap before enabling observability.");
@@ -1297,7 +1297,7 @@ async function applyObservabilityRoutes(request, ports) {
     await assertTrustedRegularFileIfExists(file);
     const previous = await readFile(file).catch(e => { if (e.code === "ENOENT")
         return null; throw e; });
-    const contents = renderObservabilityRoutes(request.host, ports);
+    const contents = await renderObservabilityRoutes(request.host, ports);
     try {
         await publishHostHelperBytes(Buffer.from(contents), file, 0o644);
         validateCaddyBootstrap(path.join(request.host.remoteRoot, "caddy", "Caddyfile"));

@@ -85533,7 +85533,7 @@ var init_shared_env_configuration = __esm({
 
 // node_modules/@opentelemetry/otlp-exporter-base/build/esm/configuration/otlp-node-http-env-configuration.js
 import * as fs2 from "fs";
-import * as path16 from "path";
+import * as path17 from "path";
 function getStaticHeadersFromEnv(signalIdentifier) {
   const signalSpecificRawHeaders = (0, import_core4.getStringFromEnv)(`OTEL_EXPORTER_OTLP_${signalIdentifier}_HEADERS`);
   const nonSignalSpecificRawHeaders = (0, import_core4.getStringFromEnv)("OTEL_EXPORTER_OTLP_HEADERS");
@@ -85592,7 +85592,7 @@ function readFileFromEnv(signalSpecificEnvVar, nonSignalSpecificEnvVar, warningM
   const filePath = signalSpecificPath ?? nonSignalSpecificPath;
   if (filePath != null) {
     try {
-      return fs2.readFileSync(path16.resolve(process.cwd(), filePath));
+      return fs2.readFileSync(path17.resolve(process.cwd(), filePath));
     } catch {
       diag2.warn(warningMessage);
       return void 0;
@@ -137784,6 +137784,32 @@ function validateQueryCredential(value) {
   return value;
 }
 
+// src/cli/host-backups.ts
+import path6 from "node:path";
+function fail3(message) {
+  throw helperError(message, "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics.");
+}
+function absolute(value) {
+  return typeof value === "string" && value.length < 4096 && path6.isAbsolute(value) && path6.normalize(value) === value && !/[\x00-\x1f\x7f]/.test(value);
+}
+function validateHostBackupPolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) fail3("Invalid Host backup policy.");
+  const v2 = value;
+  if (Object.keys(v2).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "retentionDays", "maxAgeHours"].includes(k))) fail3("Unknown Host backup policy field.");
+  let repository = absolute(v2.repository);
+  if (typeof v2.repository === "string" && v2.repository.startsWith("s3:https://")) {
+    let url;
+    try {
+      url = new URL(v2.repository.slice(3));
+    } catch {
+      return fail3("Invalid Host backup repository.");
+    }
+    repository = !!url.hostname && !url.username && !url.password && !url.search && !url.hash && /^\/[^/]+/.test(url.pathname);
+  }
+  if (!repository || !absolute(v2.passwordFile) || v2.credentialsFile !== void 0 && !absolute(v2.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v2.schedule) || !Number.isSafeInteger(v2.retention) || v2.retention < 1 || v2.retention > 1e4 || v2.retentionDays !== void 0 && (!Number.isSafeInteger(v2.retentionDays) || v2.retentionDays < 1 || v2.retentionDays > 3650) || !Number.isSafeInteger(v2.maxAgeHours) || v2.maxAgeHours < 1 || v2.maxAgeHours > 87600) fail3("Invalid Host backup policy.");
+  return { repository: v2.repository, passwordFile: v2.passwordFile, ...v2.credentialsFile ? { credentialsFile: v2.credentialsFile } : {}, schedule: v2.schedule, retention: v2.retention, ...v2.retentionDays !== void 0 ? { retentionDays: v2.retentionDays } : {}, maxAgeHours: v2.maxAgeHours };
+}
+
 // src/cli/host-domain-aliases.ts
 function validateAliasDomains(value) {
   if (value === void 0) return [];
@@ -137815,10 +137841,10 @@ import { fileURLToPath as fileURLToPath3, pathToFileURL as pathToFileURL6 } from
 
 // src/bundle-pipeline.ts
 import { lstat as lstat10, mkdir as mkdir6, readFile as readFile9, rename as rename7, rm as rm7, writeFile as writeFile4 } from "node:fs/promises";
-import path14 from "node:path";
+import path15 from "node:path";
 
 // src/client-toolchain.ts
-import path8 from "node:path";
+import path9 from "node:path";
 import { lstat as lstat7, readFile as readFile5, realpath as realpath3 } from "node:fs/promises";
 import { createRequire as createRequire2 } from "node:module";
 import { pathToFileURL as pathToFileURL3 } from "node:url";
@@ -139659,7 +139685,7 @@ function deepFreeze(value) {
 
 // src/client-prerender.ts
 import { lstat as lstat6, readFile as readFile4, realpath as realpath2 } from "node:fs/promises";
-import path7 from "node:path";
+import path8 from "node:path";
 import { createRequire, isBuiltin } from "node:module";
 import { fileURLToPath, pathToFileURL as pathToFileURL2 } from "node:url";
 import { MessageChannel, Worker as Worker2 } from "node:worker_threads";
@@ -140560,14 +140586,14 @@ var fn = r((e) => {
 }, "createPathsMatcher");
 
 // src/build-diagnostics.ts
-import path6 from "node:path";
+import path7 from "node:path";
 import { pathToFileURL } from "node:url";
 function redactBuildProjectRoots(message, projectRoots) {
   const absoluteRoots = /* @__PURE__ */ new Set();
   const relativeRoots = /* @__PURE__ */ new Set();
   for (const projectRoot of projectRoots) {
-    const resolved = path6.resolve(projectRoot);
-    for (const root of [resolved, path6.isAbsolute(projectRoot) ? projectRoot : ""]) {
+    const resolved = path7.resolve(projectRoot);
+    for (const root of [resolved, path7.isAbsolute(projectRoot) ? projectRoot : ""]) {
       if (!root) continue;
       for (const normalizedRoot of diagnosticNormalizationForms(root)) {
         absoluteRoots.add(normalizedRoot);
@@ -140578,7 +140604,7 @@ function redactBuildProjectRoots(message, projectRoots) {
         absoluteRoots.add(fileUrl.pathname);
       }
     }
-    const relative = path6.relative(process.cwd(), resolved);
+    const relative = path7.relative(process.cwd(), resolved);
     if (!relative || relative === ".") continue;
     for (const normalizedRoot of diagnosticNormalizationForms(relative)) {
       for (const root of [normalizedRoot, normalizedRoot.replaceAll("\\", "/"), normalizedRoot.replaceAll("/", "\\")]) {
@@ -140600,9 +140626,9 @@ function redactBuildProjectRoots(message, projectRoots) {
 }
 function canonicalBuildDiagnosticRoots(projectRoots) {
   return [...new Set(projectRoots.flatMap((projectRoot) => {
-    const resolved = path6.resolve(projectRoot);
-    const relative = path6.relative(process.cwd(), resolved);
-    return [projectRoot, resolved, relative, relative.split(path6.sep).join("/")];
+    const resolved = path7.resolve(projectRoot);
+    const relative = path7.relative(process.cwd(), resolved);
+    return [projectRoot, resolved, relative, relative.split(path7.sep).join("/")];
   }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 function diagnosticNormalizationForms(value) {
@@ -140650,7 +140676,7 @@ function readClientPrerenderConfig(value, toolchain) {
   return fragments;
 }
 async function renderClientPrerenderFragment(projectRoot, fragment2, projectRoots = [projectRoot], onDependency) {
-  const modulePath = path7.resolve(projectRoot, ...fragment2.module.split("/"));
+  const modulePath = path8.resolve(projectRoot, ...fragment2.module.split("/"));
   onDependency?.(modulePath);
   let canonicalModulePath;
   try {
@@ -140696,14 +140722,14 @@ async function renderClientPrerenderFragment(projectRoot, fragment2, projectRoot
   {
     const outcome = await executeBundledRenderer(bundledSource, bundleFormat, canonicalModulePath, fragment2.module, boundedRendererRoots);
     for (const dependency of outcome.dependencies ?? []) {
-      if (typeof dependency === "string" && path7.isAbsolute(dependency)) {
+      if (typeof dependency === "string" && path8.isAbsolute(dependency)) {
         onDependency?.(dependency);
         await recordRendererLocalPackageBoundaries(dependency, projectRoot, onDependency);
       }
     }
     for (const request of outcome.packageImports ?? []) {
-      if (request.specifier.startsWith("#")) await recordRendererPackageTargets(request.specifier, path7.dirname(request.filename), onDependency);
-      else await recordRendererPackageManifests(request.specifier, path7.dirname(request.filename), onDependency, request.resolvedPath);
+      if (request.specifier.startsWith("#")) await recordRendererPackageTargets(request.specifier, path8.dirname(request.filename), onDependency);
+      else await recordRendererPackageManifests(request.specifier, path8.dirname(request.filename), onDependency, request.resolvedPath);
       for (const directory of request.resolvePaths ?? []) {
         if (!request.specifier.startsWith("#")) await recordRendererPackageManifests(request.specifier, directory, onDependency, request.resolvedPath);
       }
@@ -140739,7 +140765,7 @@ async function buildRendererBundle(build2, projectRoot, canonicalModulePath, for
     entryPoints: { renderer: canonicalModulePath },
     format,
     logLevel: "silent",
-    outdir: path7.join(projectRoot, ".sporades-prerender-output"),
+    outdir: path8.join(projectRoot, ".sporades-prerender-output"),
     platform: "node",
     plugins: [preserveRendererImportMetaUrl(build2, projectRoot, rendererDependencyRoots, rendererDependencyAliases, onDependency)],
     sourcemap: false,
@@ -140774,7 +140800,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         recordTsconfig(args.path, args.resolveDir || projectRoot);
         if (args.path.startsWith("#")) await recordRendererPackageTargets(args.path, args.resolveDir || projectRoot, onDependency);
         else await recordRendererPackageManifests(args.path, args.resolveDir || projectRoot, onDependency);
-        const localPath = rendererLocalFilePath(args.path) ?? (args.path.startsWith(".") ? path7.resolve(args.resolveDir || projectRoot, args.path) : void 0);
+        const localPath = rendererLocalFilePath(args.path) ?? (args.path.startsWith(".") ? path8.resolve(args.resolveDir || projectRoot, args.path) : void 0);
         if (localPath) {
           recordRendererLocalResolutionCandidates(localPath, onDependency);
           await recordRendererLocalPackageBoundaries(localPath, projectRoot, onDependency);
@@ -140789,14 +140815,14 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         });
         if (resolved.errors.length > 0) {
           const failedPath = rendererLocalFilePath(args.path);
-          if (!localPath && !path7.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
+          if (!localPath && !path8.isAbsolute(args.path) && !/^(?:[A-Za-z][A-Za-z0-9+.-]*:|#)/.test(args.path)) {
             const packageName = args.path.split("/").slice(0, args.path.startsWith("@") ? 2 : 1).join("/");
-            const localRequire = createRequire(path7.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
-            for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path7.join(directory, packageName));
+            const localRequire = createRequire(path8.join(args.resolveDir || projectRoot, "__sporades_prerender__.cjs"));
+            for (const directory of localRequire.resolve.paths(args.path) ?? []) onDependency?.(path8.join(directory, packageName));
           }
           const failedDirectory = failedPath ? rendererDependencyDirectory(failedPath) : void 0;
           if (failedPath) {
-            const projectRootEqual = path7.resolve(failedPath) === path7.resolve(projectRoot);
+            const projectRootEqual = path8.resolve(failedPath) === path8.resolve(projectRoot);
             const external = !projectRootEqual && !isCanonicalDescendant(projectRoot, failedPath);
             if (/^file:/i.test(args.path)) {
               if (projectRootEqual) {
@@ -140825,9 +140851,9 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           addRendererDependencyRoot(rendererDependencyRoots, resolved.path);
         }
         let namespace = resolved.namespace;
-        if (!resolved.external && namespace === "file" && [".js", ".jsx", ".ts", ".tsx"].includes(path7.extname(resolved.path))) {
+        if (!resolved.external && namespace === "file" && [".js", ".jsx", ".ts", ".tsx"].includes(path8.extname(resolved.path))) {
           const contents = await readFile4(resolved.path, "utf8");
-          if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache) && ([".ts", ".tsx"].includes(path7.extname(resolved.path)) || await rendererNeedsCommonJsBoundaryNamespace(resolved.path))) {
+          if (await rendererModuleUsesCommonJs(resolved.path, contents, projectRoot, packageModeCache) && ([".ts", ".tsx"].includes(path8.extname(resolved.path)) || await rendererNeedsCommonJsBoundaryNamespace(resolved.path))) {
             namespace = commonJsNamespace;
           }
         }
@@ -140843,10 +140869,10 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         };
       });
       const loadRendererModule = async (args) => {
-        recordTsconfig("", path7.dirname(args.path));
+        recordTsconfig("", path8.dirname(args.path));
         const contents = await readFile4(args.path, "utf8");
         const commonJsModule = await rendererModuleUsesCommonJs(args.path, contents, projectRoot, packageModeCache);
-        const loader = loaders.get(path7.extname(args.path));
+        const loader = loaders.get(path8.extname(args.path));
         if (!loader) return void 0;
         const checksImports = contents.includes("import");
         const requiresTransform = checksImports || commonJsModule;
@@ -140855,7 +140881,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           return {
             contents,
             loader,
-            resolveDir: path7.dirname(args.path),
+            resolveDir: path8.dirname(args.path),
             watchFiles: [args.path]
           };
         }
@@ -140869,7 +140895,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
           format: commonJsModule ? void 0 : "esm",
           jsx: "preserve",
           logLevel: "silent",
-          outdir: path7.join(projectRoot, ".sporades-prerender-transform"),
+          outdir: path8.join(projectRoot, ".sporades-prerender-transform"),
           platform: "node",
           target: "esnext",
           write: false
@@ -140892,7 +140918,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
         return {
           contents: specialized.contents,
           loader: rendererTransformOutputLoader(loader),
-          resolveDir: path7.dirname(args.path),
+          resolveDir: path8.dirname(args.path),
           watchFiles: [args.path]
         };
       };
@@ -140902,7 +140928,7 @@ function preserveRendererImportMetaUrl(esbuildBuild, projectRoot, rendererDepend
   };
 }
 function rendererLocalFilePath(specifier) {
-  if (path7.isAbsolute(specifier)) return specifier;
+  if (path8.isAbsolute(specifier)) return specifier;
   if (!/^file:/i.test(specifier)) return void 0;
   try {
     return fileURLToPath(specifier);
@@ -140917,11 +140943,11 @@ function addRendererDependencyRoot(roots, filePath) {
   return true;
 }
 function rendererDependencyDirectory(filePath) {
-  const directory = path7.dirname(filePath);
-  return directory === path7.parse(directory).root ? void 0 : directory;
+  const directory = path8.dirname(filePath);
+  return directory === path8.parse(directory).root ? void 0 : directory;
 }
 function rendererProjectDiagnosticPrefix(projectRoot, directory) {
-  const relative = path7.relative(projectRoot, directory).split(path7.sep).join("/");
+  const relative = path8.relative(projectRoot, directory).split(path8.sep).join("/");
   return relative ? `<project>/${relative}` : "<project>";
 }
 function rendererRawLocalFileUrlParent(specifier) {
@@ -140937,7 +140963,7 @@ function rendererRawLocalFileUrlPath(specifier) {
   return suffixStart === -1 ? specifier : specifier.slice(0, suffixStart);
 }
 async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, packageModeCache) {
-  const extension = path7.extname(modulePath);
+  const extension = path8.extname(modulePath);
   if (extension === ".cjs" || extension === ".cts") return true;
   if (extension === ".ts" || extension === ".tsx") {
     const { transform } = await import("esbuild");
@@ -140945,7 +140971,7 @@ async function rendererModuleUsesCommonJs(modulePath, contents, projectRoot, pac
     return defaultRendererJavaScriptUsesCommonJs(javascript.code);
   }
   if (extension !== ".js" && extension !== ".jsx") return false;
-  const mode = await nearestRendererPackageMode(path7.dirname(modulePath), projectRoot, packageModeCache);
+  const mode = await nearestRendererPackageMode(path8.dirname(modulePath), projectRoot, packageModeCache);
   if (mode === "module") return false;
   if (mode === "commonjs") return true;
   return defaultRendererJavaScriptUsesCommonJs(contents);
@@ -140973,32 +140999,32 @@ function defaultRendererJavaScriptUsesCommonJs(contents) {
   }
 }
 async function rendererNeedsCommonJsBoundaryNamespace(modulePath) {
-  let directory = path7.dirname(modulePath);
+  let directory = path8.dirname(modulePath);
   while (true) {
-    if (path7.basename(directory) === "node_modules") return true;
+    if (path8.basename(directory) === "node_modules") return true;
     try {
-      await readFile4(path7.join(directory, "package.json"), "utf8");
+      await readFile4(path8.join(directory, "package.json"), "utf8");
       return false;
     } catch (error) {
       if (!isMissingRendererPackageJson(error)) throw error;
     }
-    const parent = path7.dirname(directory);
+    const parent = path8.dirname(directory);
     if (parent === directory) return false;
     directory = parent;
   }
 }
 async function recordRendererPackageManifests(specifier, directory, onDependency, resolvedPath) {
-  if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path7.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
+  if (!onDependency || !specifier || isBuiltin(specifier) || specifier.startsWith(".") || specifier.startsWith("#") || path8.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
   const parts = specifier.split("/").slice(0, specifier.startsWith("@") ? 2 : 1);
   if (parts.length !== (specifier.startsWith("@") ? 2 : 1) || parts.some((part) => !part || part === "." || part === "..")) return;
   const packageName = parts.join("/");
   await recordRendererPackageTargets(specifier, directory, onDependency, packageName);
-  const localRequire = createRequire(path7.join(directory, "__sporades_prerender__.cjs"));
+  const localRequire = createRequire(path8.join(directory, "__sporades_prerender__.cjs"));
   for (const base of localRequire.resolve.paths(specifier) ?? []) {
-    const root = path7.join(base, packageName);
-    onDependency(path7.join(root, "package.json"));
+    const root = path8.join(base, packageName);
+    onDependency(path8.join(root, "package.json"));
     const subpath = specifier.slice(packageName.length + 1);
-    if (subpath) recordRendererLocalResolutionCandidates(path7.join(root, subpath), onDependency);
+    if (subpath) recordRendererLocalResolutionCandidates(path8.join(root, subpath), onDependency);
     await recordRendererPackageTargets(specifier, root, onDependency, packageName, true);
     if (!resolvedPath) continue;
     let canonicalRoot = root;
@@ -141012,8 +141038,8 @@ async function recordRendererPackageManifests(specifier, directory, onDependency
 }
 async function recordRendererPackageTargets(specifier, directory, onDependency, selfPackageName, packageRoot = false) {
   if (!onDependency) return;
-  while (path7.basename(directory) !== "node_modules") {
-    const manifest2 = path7.join(directory, "package.json");
+  while (path8.basename(directory) !== "node_modules") {
+    const manifest2 = path8.join(directory, "package.json");
     onDependency(manifest2);
     let configuration;
     try {
@@ -141021,7 +141047,7 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
     } catch (error) {
       if (isMissingRendererPackageJson(error)) {
         if (packageRoot) return;
-        const parent = path7.dirname(directory);
+        const parent = path8.dirname(directory);
         if (parent === directory) return;
         directory = parent;
         continue;
@@ -141032,7 +141058,7 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
     if (selfPackageName !== void 0) {
       if (packageRoot && specifier === selfPackageName) {
         for (const entry of [configuration?.main, configuration?.module]) {
-          if (typeof entry === "string") recordRendererLocalResolutionCandidates(path7.resolve(directory, entry), onDependency);
+          if (typeof entry === "string") recordRendererLocalResolutionCandidates(path8.resolve(directory, entry), onDependency);
         }
       }
       if (!packageRoot && configuration?.name !== selfPackageName || configuration?.exports == null) return;
@@ -141065,14 +141091,14 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
           const expanded = star < 0 ? value : value.replaceAll("*", match);
           if (expanded.startsWith("#")) visitAlias(expanded);
           else if (expanded.startsWith("./")) {
-            const candidate = path7.resolve(directory, expanded);
+            const candidate = path8.resolve(directory, expanded);
             if (isCanonicalDescendant(directory, candidate)) {
               recordRendererLocalResolutionCandidates(candidate, onDependency);
             }
-          } else if (selfPackageName === void 0 && expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path7.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
+          } else if (selfPackageName === void 0 && expanded && !expanded.startsWith(".") && (!expanded.startsWith("@") || expanded.split("/")[1]) && !path8.isAbsolute(expanded) && !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(expanded)) {
             const packageName = expanded.split("/").slice(0, expanded.startsWith("@") ? 2 : 1).join("/");
-            const localRequire = createRequire(path7.join(directory, "__sporades_prerender__.cjs"));
-            for (const base of localRequire.resolve.paths(expanded) ?? []) onDependency(path7.join(base, packageName));
+            const localRequire = createRequire(path8.join(directory, "__sporades_prerender__.cjs"));
+            for (const base of localRequire.resolve.paths(expanded) ?? []) onDependency(path8.join(base, packageName));
             selfTargets.push(recordRendererPackageTargets(expanded, directory, onDependency, packageName));
           }
         };
@@ -141087,7 +141113,7 @@ async function recordRendererPackageTargets(specifier, directory, onDependency, 
 function recordRendererLocalResolutionCandidates(candidate, onDependency) {
   if (!onDependency) return;
   for (const suffix of ["", ".tsx", ".ts", ".jsx", ".js", ".css", ".json", "/package.json", "/index.tsx", "/index.ts", "/index.jsx", "/index.js", "/index.css", "/index.json"]) onDependency(candidate + suffix);
-  const extension = path7.extname(candidate);
+  const extension = path8.extname(candidate);
   const substitutes = extension === ".js" || extension === ".jsx" ? [".ts", ".tsx"] : extension === ".mjs" ? [".mts"] : extension === ".cjs" ? [".cts"] : [];
   for (const substitute of substitutes) onDependency(candidate.slice(0, -extension.length) + substitute);
 }
@@ -141106,13 +141132,13 @@ function createRendererTsconfigObserver(onDependency) {
         for (const [key, value] of cache) {
           const read = /^readFileSync:(.*):utf8$/.exec(key);
           const exists2 = /^existsSync:(.*)$/.exec(key);
-          if (read) onDependency(path7.resolve(read[1]));
-          else if (exists2 && (value === false || exists2[1].endsWith(".json"))) onDependency(path7.resolve(exists2[1]));
+          if (read) onDependency(path8.resolve(read[1]));
+          else if (exists2 && (value === false || exists2[1].endsWith(".json"))) onDependency(path8.resolve(exists2[1]));
         }
         matchers.set(directory, matcher);
       }
     }
-    if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path7.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
+    if (!specifier || isBuiltin(specifier) || specifier.startsWith(".") || path8.isAbsolute(specifier) || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier)) return;
     for (const candidate of matchers.get(directory)?.(specifier) ?? []) {
       recordRendererLocalResolutionCandidates(candidate, onDependency);
     }
@@ -141120,9 +141146,9 @@ function createRendererTsconfigObserver(onDependency) {
 }
 async function recordRendererLocalPackageBoundaries(modulePath, projectRoot, onDependency) {
   if (!onDependency) return;
-  let directory = path7.dirname(modulePath);
-  while (path7.basename(directory) !== "node_modules") {
-    const manifest2 = path7.join(directory, "package.json");
+  let directory = path8.dirname(modulePath);
+  while (path8.basename(directory) !== "node_modules") {
+    const manifest2 = path8.join(directory, "package.json");
     onDependency(manifest2);
     try {
       await readFile4(manifest2, "utf8");
@@ -141130,8 +141156,8 @@ async function recordRendererLocalPackageBoundaries(modulePath, projectRoot, onD
     } catch (error) {
       if (!isMissingRendererPackageJson(error)) return;
     }
-    const parent = path7.dirname(directory);
-    if (directory === path7.resolve(projectRoot) || parent === directory) return;
+    const parent = path8.dirname(directory);
+    if (directory === path8.resolve(projectRoot) || parent === directory) return;
     directory = parent;
   }
 }
@@ -141139,8 +141165,8 @@ function nearestRendererPackageMode(directory, projectRoot, cache) {
   const cached = cache.get(directory);
   if (cached) return cached;
   const pending = (async () => {
-    if (path7.basename(directory) === "node_modules") return "default";
-    const packagePath = path7.join(directory, "package.json");
+    if (path8.basename(directory) === "node_modules") return "default";
+    const packagePath = path8.join(directory, "package.json");
     try {
       const source = await readFile4(packagePath, "utf8");
       let parsed;
@@ -141157,8 +141183,8 @@ function nearestRendererPackageMode(directory, projectRoot, cache) {
     } catch (error) {
       if (!isMissingRendererPackageJson(error)) throw error;
     }
-    if (path7.resolve(directory) === path7.resolve(projectRoot)) return "default";
-    const parent = path7.dirname(directory);
+    if (path8.resolve(directory) === path8.resolve(projectRoot)) return "default";
+    const parent = path8.dirname(directory);
     if (parent === directory) return "default";
     return nearestRendererPackageMode(parent, projectRoot, cache);
   })();
@@ -141286,7 +141312,7 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `require: ${value}` : value });
     }
     if (node.type === "Identifier" && (node.name === "__dirname" || node.name === "__filename") && isRendererIdentifierReference(node, parent, key, assignmentTargets, deleteOperands) && !rendererScopeBinds(scope, node.name) && !writtenWrapperNames.has(node.name)) {
-      const value = JSON.stringify(node.name === "__dirname" ? path7.dirname(modulePath) : modulePath);
+      const value = JSON.stringify(node.name === "__dirname" ? path8.dirname(modulePath) : modulePath);
       const shorthand = parent?.type === "Property" && parent.shorthand === true && parent.value === node;
       replacements.push({ start: node.start, end: node.end, value: shorthand ? `${String(node.name)}: ${value}` : value });
     }
@@ -141304,9 +141330,9 @@ function specializeCommonJsRendererModule(contents, modulePath, moduleUrl) {
 ${helperName}Module().require = ${helperName};
 ${helperName}Module().filename = ${JSON.stringify(modulePath)};
 ${helperName}Module().id = ${JSON.stringify(modulePath)};
-${helperName}Module().path = ${JSON.stringify(path7.dirname(modulePath))};
+${helperName}Module().path = ${JSON.stringify(path8.dirname(modulePath))};
 ` : "") + (writableRequire && needsModuleRequire ? `var ${writableRequireName} = ${helperName};
-` : "") + writableLocations.map((name2) => `var ${name2} = ${JSON.stringify(name2 === "__dirname" ? path7.dirname(modulePath) : modulePath)};
+` : "") + writableLocations.map((name2) => `var ${name2} = ${JSON.stringify(name2 === "__dirname" ? path8.dirname(modulePath) : modulePath)};
 `).join("")
     });
   }
@@ -141732,13 +141758,13 @@ function scanClientPrerenderHtml(html2) {
   return { bodyEnd, markers, problem };
 }
 function isProjectRelativeModulePath(value) {
-  if (!value || value.includes("\\") || path7.posix.isAbsolute(value) || path7.win32.parse(value).root) return false;
+  if (!value || value.includes("\\") || path8.posix.isAbsolute(value) || path8.win32.parse(value).root) return false;
   const segments = value.split("/");
   return segments.every((segment) => segment && segment !== "." && segment !== "..");
 }
 function isCanonicalDescendant(parent, candidate) {
-  const relative = path7.relative(parent, candidate);
-  return Boolean(relative) && !relative.startsWith("..") && !path7.isAbsolute(relative);
+  const relative = path8.relative(parent, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path8.isAbsolute(relative);
 }
 async function executeBundledRenderer(source, format, modulePath, displayPath, projectRoots) {
   const bootstrap = String.raw`
@@ -141890,7 +141916,7 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
     const runtimeRoots = new Set(projectRoots);
     const aliases = [];
     for (const filename of outcome.dependencies ?? []) {
-      if (path7.isAbsolute(filename) && !projectRoots.some((root) => filename === root || isCanonicalDescendant(root, filename))) {
+      if (path8.isAbsolute(filename) && !projectRoots.some((root) => filename === root || isCanonicalDescendant(root, filename))) {
         addRendererDependencyRoot(runtimeRoots, filename);
       }
     }
@@ -141898,7 +141924,7 @@ process.once("uncaughtException", (error) => post({ kind: "failure", message: sa
       const filename = rendererLocalFilePath(specifier);
       if (!filename) continue;
       const containedRoot = projectRoots.find((root) => filename === root || isCanonicalDescendant(root, filename));
-      const relative = containedRoot ? path7.relative(containedRoot, filename) : path7.basename(filename);
+      const relative = containedRoot ? path8.relative(containedRoot, filename) : path8.basename(filename);
       aliases.push([specifier, { replacement: relative ? `<project>/${relative.replaceAll("\\", "/")}` : "<project>", boundary: "path" }]);
     }
     return { ...outcome, message: boundedMessage(outcome.message, [...runtimeRoots], aliases) };
@@ -142080,7 +142106,7 @@ function validateClientToolchainInput(options) {
 async function buildEsbuild(options) {
   const { build: build2 } = await import("esbuild");
   try {
-    const outputDir = path8.join(path8.dirname(options.clientSourcePath), ".sporades-esbuild-public");
+    const outputDir = path9.join(path9.dirname(options.clientSourcePath), ".sporades-esbuild-public");
     const result = await build2({
       bundle: true,
       format: "esm",
@@ -142110,13 +142136,13 @@ async function buildEsbuild(options) {
       stdin: {
         contents: options.clientSource,
         sourcefile: options.clientSourcePath,
-        resolveDir: path8.dirname(options.clientSourcePath),
+        resolveDir: path9.dirname(options.clientSourcePath),
         loader: options.frameworkConfig.loader
       },
       plugins: [sporadesEsbuildClientPlugin(options.devRefresh === true)]
     });
     const outputs = result.outputFiles ?? [];
-    const clientOutput = outputs.find((output) => path8.relative(outputDir, output.path) === "client.js");
+    const clientOutput = outputs.find((output) => path9.relative(outputDir, output.path) === "client.js");
     if (!clientOutput) throw clientToolchainError("Client bundle failed: esbuild returned no output.", `Fix client/${options.frameworkConfig.entry} and save again.`);
     const clientBundle = [
       "// Sporades client bundle",
@@ -142135,7 +142161,7 @@ async function buildEsbuild(options) {
       publicFiles: [
         { path: "index.html", contents: options.indexHtml },
         ...outputs.map((output) => {
-          const emittedPath = path8.relative(outputDir, output.path).split(path8.sep).join("/");
+          const emittedPath = path9.relative(outputDir, output.path).split(path9.sep).join("/");
           const relativePath = emittedPath === "client.css" || emittedPath === "client.css.map" ? `assets/${emittedPath}` : emittedPath;
           return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
         })
@@ -142149,10 +142175,10 @@ async function buildEsbuild(options) {
 async function buildVite(options) {
   const { build: build2 } = await import("vite");
   const frameworkPlugins = [];
-  let projectRoot = path8.resolve(options.projectDir);
+  let projectRoot = path9.resolve(options.projectDir);
   try {
     projectRoot = await realpath3(options.projectDir);
-    const canonicalIndexHtmlPath = path8.join(projectRoot, path8.basename(options.indexHtmlPath));
+    const canonicalIndexHtmlPath = path9.join(projectRoot, path9.basename(options.indexHtmlPath));
     const projectConfigFile = await findProjectViteConfig(projectRoot);
     if (options.frameworkConfig.framework === "vue") {
       const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
@@ -142268,7 +142294,7 @@ var VITE_CONFIG_NAMES = [
 ];
 async function findProjectViteConfig(projectRoot) {
   for (const name2 of VITE_CONFIG_NAMES) {
-    const candidate = path8.join(projectRoot, name2);
+    const candidate = path9.join(projectRoot, name2);
     try {
       const metadata2 = await lstat7(candidate);
       if (!metadata2.isFile() || metadata2.isSymbolicLink()) {
@@ -142363,12 +142389,12 @@ async function loadProjectInfernoToolchain(projectRoot) {
 async function loadProjectCompilerToolchain(projectRoot, spec) {
   let projectManifest;
   try {
-    projectManifest = JSON.parse(await readFile5(path8.join(projectRoot, "package.json"), "utf8"));
+    projectManifest = JSON.parse(await readFile5(path9.join(projectRoot, "package.json"), "utf8"));
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not read the Capsule package.json.`, spec.installHint);
   }
   const declared = { ...projectManifest.dependencies ?? {}, ...projectManifest.devDependencies ?? {} };
-  const nodeModulesDir = path8.join(projectRoot, "node_modules");
+  const nodeModulesDir = path9.join(projectRoot, "node_modules");
   let canonicalNodeModules;
   try {
     const nodeModulesMetadata = await lstat7(nodeModulesDir);
@@ -142378,17 +142404,17 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   } catch {
     throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
   }
-  const projectRequire = createRequire2(path8.join(projectRoot, "package.json"));
+  const projectRequire = createRequire2(path9.join(projectRoot, "package.json"));
   const resolvedPackages = /* @__PURE__ */ new Map();
   for (const required of spec.requiredPackages) {
     if (typeof declared[required.declaration] !== "string") {
       throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires the Capsule to declare ${required.declaration}.`, spec.installHint);
     }
-    const packageDir = path8.join(projectRoot, "node_modules", ...required.declaration.split("/"));
+    const packageDir = path9.join(projectRoot, "node_modules", ...required.declaration.split("/"));
     let installedManifest;
     let resolved;
     try {
-      installedManifest = JSON.parse(await readFile5(path8.join(packageDir, "package.json"), "utf8"));
+      installedManifest = JSON.parse(await readFile5(path9.join(packageDir, "package.json"), "utf8"));
       try {
         resolved = projectRequire.resolve(required.resolve);
       } catch {
@@ -142396,7 +142422,7 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
         const exported = installedManifest.exports?.[subpath];
         const importTarget = typeof exported === "string" ? exported : typeof exported?.import === "string" ? exported.import : exported?.import?.default;
         if (typeof importTarget !== "string") throw new Error("package has no import export");
-        resolved = path8.resolve(packageDir, importTarget);
+        resolved = path9.resolve(packageDir, importTarget);
       }
       const canonicalPackageDir = await realpath3(packageDir);
       if (!isCanonicalDescendant2(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
@@ -142433,8 +142459,8 @@ async function loadProjectCompilerToolchain(projectRoot, spec) {
   return loaded;
 }
 function isCanonicalDescendant2(parent, candidate) {
-  const relative = path8.relative(parent, candidate);
-  return Boolean(relative) && !relative.startsWith("..") && !path8.isAbsolute(relative);
+  const relative = path9.relative(parent, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path9.isAbsolute(relative);
 }
 function projectToolchainError(_framework, message, hint, diagnostics) {
   return clientToolchainError(message, hint, diagnostics);
@@ -142478,7 +142504,7 @@ function sporadesViteBuildInvariants(indexHtmlPath, frameworkConfig) {
     enforce: "post",
     config() {
       return {
-        root: path8.dirname(indexHtmlPath),
+        root: path9.dirname(indexHtmlPath),
         base: "/",
         publicDir: false,
         envFile: false,
@@ -142563,10 +142589,10 @@ function viteBuildError(error, projectRoots, framework) {
 }
 function safeRelativeDiagnosticPath(projectRoots, fileName) {
   for (const projectRoot of canonicalBuildDiagnosticRoots(projectRoots)) {
-    const relative = path8.relative(projectRoot, fileName).split(path8.sep).join("/");
+    const relative = path9.relative(projectRoot, fileName).split(path9.sep).join("/");
     if (relative && !relative.startsWith("../") && relative !== "..") return relative.slice(0, 240);
   }
-  return path8.basename(fileName).slice(0, 120);
+  return path9.basename(fileName).slice(0, 120);
 }
 function boundedBuildMessage(error, projectRoots = []) {
   const details = errorDetails2(error);
@@ -142900,19 +142926,19 @@ function field(kind) {
 // src/templates/server-bundle-module-graph.ts
 import { readFile as readFile6 } from "node:fs/promises";
 import { isBuiltin as isBuiltin2 } from "node:module";
-import path10 from "node:path";
+import path11 from "node:path";
 
 // src/package-root.ts
 import { existsSync } from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function resolveSporadesPackageRoot() {
-  let directory = path9.dirname(fileURLToPath2(import.meta.url));
+  let directory = path10.dirname(fileURLToPath2(import.meta.url));
   for (; ; ) {
-    if (existsSync(path9.join(directory, "package.json"))) {
+    if (existsSync(path10.join(directory, "package.json"))) {
       return directory;
     }
-    const parent = path9.dirname(directory);
+    const parent = path10.dirname(directory);
     if (parent === directory) {
       throw Object.assign(new Error("Server bundle failed: could not locate the Sporades package root."), {
         hint: "Reinstall the Sporades CLI: its dist/ directory is missing or the install is incomplete."
@@ -142940,7 +142966,7 @@ function resolveServerBundleEntry() {
   const packageRoot = resolveSporadesPackageRoot();
   return {
     packageRoot,
-    entryPath: path10.join(packageRoot, "dist", "templates", "server-bundle-entry.js")
+    entryPath: path11.join(packageRoot, "dist", "templates", "server-bundle-entry.js")
   };
 }
 async function createServerBundleModuleSource(options) {
@@ -142970,7 +142996,7 @@ async function createServerBundleModuleSource(options) {
 ${options.epilogue}
 ` : entrySource,
         sourcefile: entryPath,
-        resolveDir: path10.dirname(entryPath),
+        resolveDir: path11.dirname(entryPath),
         loader: "js"
       },
       plugins: [
@@ -143020,7 +143046,7 @@ ${options.epilogue}
 
 // src/cli/telemetry-profile.ts
 import { chmod as chmod2, mkdir as mkdir4, readFile as readFile7, rename as rename5, writeFile as writeFile2 } from "node:fs/promises";
-import path11 from "node:path";
+import path12 from "node:path";
 
 // src/telemetry-propagation-policy.ts
 function validateTracePropagationOrigins(value) {
@@ -143049,8 +143075,8 @@ function inventoryHost(value) {
 var aliasPattern = /^[a-z][a-z0-9-]{0,39}$/;
 var envPattern = /^[A-Z][A-Z0-9_]{0,79}$/;
 function profilePath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path11.join(process.env.XDG_CONFIG_HOME ?? path11.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path11.join(configDir, "telemetry.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path12.join(process.env.XDG_CONFIG_HOME ?? path12.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path12.join(configDir, "telemetry.json");
 }
 function invalid2(hint) {
   throw commandError2("Invalid Telemetry profile.", hint);
@@ -143082,7 +143108,7 @@ function validateTelemetryProfile(value) {
   if (trust.mode !== "verified" && trust.mode !== "loopback") invalid2("Set TLS mode to verified or loopback.");
   if (trust.mode === "verified" && url.protocol !== "https:") invalid2("Verified Telemetry profiles require HTTPS.");
   if (trust.mode === "loopback" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) invalid2("Loopback Telemetry profiles require an HTTP loopback address.");
-  if (trust.caFile !== void 0 && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path11.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid2("Use an absolute private CA file path with verified TLS.");
+  if (trust.caFile !== void 0 && (trust.mode !== "verified" || typeof trust.caFile !== "string" || !path12.isAbsolute(trust.caFile) || trust.caFile.length > 1024)) invalid2("Use an absolute private CA file path with verified TLS.");
   if (profile.credentialEnv !== void 0 && (typeof profile.credentialEnv !== "string" || !envPattern.test(profile.credentialEnv))) invalid2("Use an uppercase credential environment reference such as TRACE_INGEST_TOKEN.");
   if (profile.inventoryCredentialEnv !== void 0 && (typeof profile.inventoryCredentialEnv !== "string" || !envPattern.test(profile.inventoryCredentialEnv))) invalid2("Use an uppercase inventory credential environment reference.");
   if (profile.inventoryHost !== void 0 && !inventoryHost(profile.inventoryHost)) invalid2("Use a canonical lowercase exact inventory Host identity.");
@@ -143125,7 +143151,7 @@ async function readTelemetryProfiles() {
 }
 async function writeTelemetryProfiles(profiles) {
   const target = profilePath();
-  await mkdir4(path11.dirname(target), { recursive: true, mode: 448 });
+  await mkdir4(path12.dirname(target), { recursive: true, mode: 448 });
   const temp = `${target}.${process.pid}.tmp`;
   try {
     await writeFile2(temp, `${JSON.stringify({ schemaVersion: 1, profiles }, null, 2)}
@@ -143177,7 +143203,7 @@ import { lstat as lstat8, mkdir as mkdir5, readdir as readdir3, readFile as read
 import { randomBytes as randomBytes7 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import path12 from "node:path";
+import path13 from "node:path";
 
 // src/public-tree-contract.ts
 var PUBLIC_TREE_LIMITS = {
@@ -143250,9 +143276,9 @@ var OWNER_HEARTBEAT_INTERVAL_MS = 1e4;
 var OWNER_CLOCK_SKEW_MS = 5e3;
 async function createPublicTree(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${randomBytes7(8).toString("hex")}`;
-  const treesDir = path12.join(buildDir, ".public-trees");
-  const stagingDir = path12.join(treesDir, `.staging-${nonce}`);
-  const publicDir = path12.join(treesDir, nonce);
+  const treesDir = path13.join(buildDir, ".public-trees");
+  const stagingDir = path13.join(treesDir, `.staging-${nonce}`);
+  const publicDir = path13.join(treesDir, nonce);
   const normalizedFiles = normalizePublicFiles(files);
   await mkdir5(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
@@ -143262,8 +143288,8 @@ async function createPublicTree(buildDir, files, options = {}) {
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1, fault: options.cleanupFault });
     await mkdir5(stagingDir, { recursive: false });
     for (const file of normalizedFiles) {
-      const destination = path12.join(stagingDir, ...file.path.split("/"));
-      await mkdir5(path12.dirname(destination), { recursive: true });
+      const destination = path13.join(stagingDir, ...file.path.split("/"));
+      await mkdir5(path13.dirname(destination), { recursive: true });
       await writeFile3(destination, file.contents, { flag: "wx" }).catch((error) => {
         if (error.code === "EEXIST") throw publicTreeError("Invalid public tree.", `Conflicting public path: ${file.path} already exists in the candidate.`);
         throw error;
@@ -143290,11 +143316,11 @@ async function createPublicTree(buildDir, files, options = {}) {
   }
 }
 async function discardPublicTree(tree) {
-  const treesDir = path12.dirname(tree.root);
+  const treesDir = path13.dirname(tree.root);
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     const activeReference = await readActivePublicTreeReference(treesDir);
-    if (activeReference === path12.basename(tree.root)) {
+    if (activeReference === path13.basename(tree.root)) {
       throw publicTreeError(
         "Active public tree cannot be discarded.",
         "Preserve the referenced candidate until the active public tree reference is repaired.",
@@ -143308,18 +143334,18 @@ async function discardPublicTree(tree) {
   }
 }
 async function releasePublicTreeLease(tree) {
-  const treesDir = path12.dirname(tree.root);
+  const treesDir = path13.dirname(tree.root);
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     await removePublicTreeLease(tree.lease);
-    await cleanupPublicTreesUnlocked(path12.dirname(treesDir), { maxCompleted: 1 });
+    await cleanupPublicTreesUnlocked(path13.dirname(treesDir), { maxCompleted: 1 });
   } finally {
     await releaseLock();
   }
 }
 async function readPublicTreeConsumer(buildDir, consumer) {
   validateConsumerName(consumer);
-  const recordPath = path12.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
+  const recordPath = path13.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
   const record3 = await readFile8(recordPath, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
@@ -143328,20 +143354,20 @@ async function readPublicTreeConsumer(buildDir, consumer) {
 }
 async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path12.join(buildDir, ".public-trees");
-  if (path12.dirname(treeRoot) !== treesDir || !isPublicTreeName(path12.basename(treeRoot))) {
+  const treesDir = path13.join(buildDir, ".public-trees");
+  if (path13.dirname(treeRoot) !== treesDir || !isPublicTreeName(path13.basename(treeRoot))) {
     throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
   }
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const consumersDir = path12.join(treesDir, ".consumers");
+    const consumersDir = path13.join(treesDir, ".consumers");
     await mkdir5(consumersDir, { recursive: true });
-    const recordPath = path12.join(consumersDir, `${consumer}.json`);
+    const recordPath = path13.join(consumersDir, `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     await validatePublicTree(treeRoot);
     const record3 = {
       consumer,
-      tree: path12.basename(treeRoot),
+      tree: path13.basename(treeRoot),
       identity,
       token: randomBytes7(16).toString("hex"),
       createdAt: Date.now()
@@ -143355,11 +143381,11 @@ async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, e
 }
 async function restorePublicTreeConsumer(buildDir, consumer, record3, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path12.join(buildDir, ".public-trees");
+  const treesDir = path13.join(buildDir, ".public-trees");
   await mkdir5(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const recordPath = path12.join(treesDir, ".consumers", `${consumer}.json`);
+    const recordPath = path13.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     if (record3 === null) {
       await rm6(recordPath, { recursive: true, force: true });
@@ -143368,9 +143394,9 @@ async function restorePublicTreeConsumer(buildDir, consumer, record3, expectedCu
     if (!validConsumerRecord(record3, consumer)) {
       throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
     }
-    const root = path12.join(treesDir, record3.tree);
+    const root = path13.join(treesDir, record3.tree);
     await validatePublicTree(root);
-    await mkdir5(path12.dirname(recordPath), { recursive: true });
+    await mkdir5(path13.dirname(recordPath), { recursive: true });
     await replaceStateFile(recordPath, `${JSON.stringify(record3)}
 `);
   } finally {
@@ -143379,11 +143405,11 @@ async function restorePublicTreeConsumer(buildDir, consumer, record3, expectedCu
 }
 async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   validateConsumerName(consumer);
-  const treesDir = path12.join(buildDir, ".public-trees");
+  const treesDir = path13.join(buildDir, ".public-trees");
   await mkdir5(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
-    const recordPath = path12.join(treesDir, ".consumers", `${consumer}.json`);
+    const recordPath = path13.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     await rm6(recordPath, { recursive: true, force: true });
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
@@ -143431,7 +143457,7 @@ async function validatePublicTree(root) {
         );
       }
       canonicalPaths.set(canonicalPath2, relativePath);
-      const absolutePath = path12.join(directory, entry.name);
+      const absolutePath = path13.join(directory, entry.name);
       const stats = await lstat8(absolutePath);
       if (stats.isSymbolicLink()) {
         throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
@@ -143458,7 +143484,7 @@ async function validatePublicTree(root) {
     }
   }
   await visit(root);
-  const indexStats = await lstat8(path12.join(root, "index.html")).catch(() => null);
+  const indexStats = await lstat8(path13.join(root, "index.html")).catch(() => null);
   if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
@@ -143485,7 +143511,7 @@ async function validateActivePublicTreeReference(treesDir, raw) {
   if (!(typeof tree === "string" && isPublicTreeName(tree))) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
   }
-  const root = path12.join(treesDir, tree);
+  const root = path13.join(treesDir, tree);
   const stats = await lstat8(root).catch(() => null);
   if (!stats?.isDirectory() || stats.isSymbolicLink()) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
@@ -143494,12 +143520,12 @@ async function validateActivePublicTreeReference(treesDir, raw) {
   return tree;
 }
 async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
-  const treesDir = path12.join(buildDir, ".public-trees");
+  const treesDir = path13.join(buildDir, ".public-trees");
   const entries = await readdir3(treesDir, { withFileTypes: true }).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
-  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path12.dirname(root) === treesDir).map((root) => path12.basename(root)));
+  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path13.dirname(root) === treesDir).map((root) => path13.basename(root)));
   const activeReference = await readActivePublicTreeReference(treesDir);
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
@@ -143508,7 +143534,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const now2 = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now2);
   for (const name2 of liveLeaseNames) keepNames.add(name2);
-  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat8(path12.join(treesDir, entry.name))).mtimeMs })));
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat8(path13.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
   let recoverableCount = 0;
   for (const item of completed) {
@@ -143522,7 +143548,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   for (const entry of entries) {
     if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
     if (keepNames.has(entry.name)) continue;
-    const entryPath = path12.join(treesDir, entry.name);
+    const entryPath = path13.join(treesDir, entry.name);
     try {
       options.fault?.("before-remove", entryPath);
       await rm6(entryPath, { recursive: true, force: true });
@@ -143577,7 +143603,7 @@ function publicAsset(relativePath, contents) {
   };
 }
 function publicContentType(relativePath) {
-  switch (path12.extname(relativePath).toLowerCase()) {
+  switch (path13.extname(relativePath).toLowerCase()) {
     case ".html":
       return "text/html; charset=utf-8";
     case ".js":
@@ -143614,10 +143640,10 @@ function publicContentType(relativePath) {
   }
 }
 async function createPublicTreeLease(treesDir, treeName) {
-  const leasesDir = path12.join(treesDir, ".leases");
+  const leasesDir = path13.join(treesDir, ".leases");
   await mkdir5(leasesDir, { recursive: true });
   const token = randomBytes7(16).toString("hex");
-  const leasePath = path12.join(leasesDir, `${treeName}.json`);
+  const leasePath = path13.join(leasesDir, `${treeName}.json`);
   const processStart = await getProcessStartIdentity(process.pid);
   const record3 = {
     tree: treeName,
@@ -143647,7 +143673,7 @@ async function removePublicTreeLease(lease) {
   LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
 }
 async function publicTreeLeaseStates(treesDir, now2) {
-  const leasesDir = path12.join(treesDir, ".leases");
+  const leasesDir = path13.join(treesDir, ".leases");
   const entries = await readdir3(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
@@ -143656,9 +143682,9 @@ async function publicTreeLeaseStates(treesDir, now2) {
   const stale = /* @__PURE__ */ new Set();
   for (const entry of entries) {
     try {
-      const lease = JSON.parse(await readFile8(path12.join(leasesDir, entry), "utf8"));
+      const lease = JSON.parse(await readFile8(path13.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
-        if (await leaseIsLive(lease, path12.join(leasesDir, entry), now2)) live.add(lease.tree);
+        if (await leaseIsLive(lease, path13.join(leasesDir, entry), now2)) live.add(lease.tree);
         else stale.add(lease.tree);
       } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
     } catch {
@@ -143668,13 +143694,13 @@ async function publicTreeLeaseStates(treesDir, now2) {
   return { live, stale };
 }
 async function removeStalePublicTreeLeases(treesDir, completedNames, now2) {
-  const leasesDir = path12.join(treesDir, ".leases");
+  const leasesDir = path13.join(treesDir, ".leases");
   const entries = await readdir3(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
   for (const entry of entries) {
-    const leasePath = path12.join(leasesDir, entry);
+    const leasePath = path13.join(leasesDir, entry);
     let lease = null;
     try {
       lease = JSON.parse(await readFile8(leasePath, "utf8"));
@@ -143700,7 +143726,7 @@ async function leaseIsLive(lease, recordPath, now2) {
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
-    return await validateActivePublicTreeReference(treesDir, await readFile8(path12.join(treesDir, "active.json"), "utf8"));
+    return await validateActivePublicTreeReference(treesDir, await readFile8(path13.join(treesDir, "active.json"), "utf8"));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw publicTreeError(
@@ -143714,11 +143740,11 @@ function isPublicTreeName(value) {
   return /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(value);
 }
 async function acquirePublicTreeLock(treesDir) {
-  const lockDir = path12.join(treesDir, ".lifecycle-lock");
+  const lockDir = path13.join(treesDir, ".lifecycle-lock");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir5(lockDir);
-      const ownerPath = path12.join(lockDir, "owner.json");
+      const ownerPath = path13.join(lockDir, "owner.json");
       const token = randomBytes7(16).toString("hex");
       const processStart = await getProcessStartIdentity(process.pid);
       const owner = {
@@ -143745,8 +143771,8 @@ async function acquirePublicTreeLock(treesDir) {
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile8(path12.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
-      if (owner !== null && !await ownerIdentityIsLive(owner, path12.join(lockDir, "owner.json"))) {
+      const owner = await readFile8(path13.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      if (owner !== null && !await ownerIdentityIsLive(owner, path13.join(lockDir, "owner.json"))) {
         await rm6(lockDir, { recursive: true, force: true });
         continue;
       }
@@ -143803,8 +143829,8 @@ function startOwnerHeartbeat(recordPath, record3) {
 }
 async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {}) {
   const heartbeatPath = ownerHeartbeatPath(recordPath, token);
-  await mkdir5(path12.dirname(heartbeatPath), { recursive: true });
-  const temporaryPath = path12.join(path12.dirname(heartbeatPath), `${token}.${randomBytes7(8).toString("hex")}.tmp`);
+  await mkdir5(path13.dirname(heartbeatPath), { recursive: true });
+  const temporaryPath = path13.join(path13.dirname(heartbeatPath), `${token}.${randomBytes7(8).toString("hex")}.tmp`);
   try {
     await writeFile3(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
 `, { flag: "wx" });
@@ -143819,9 +143845,9 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
   }
 }
 function ownerHeartbeatPath(recordPath, token) {
-  const ownerDir = path12.dirname(recordPath);
-  const treesDir = [".leases", ".lifecycle-lock"].includes(path12.basename(ownerDir)) ? path12.dirname(ownerDir) : ownerDir;
-  return path12.join(treesDir, ".owner-heartbeats", `${token}.json`);
+  const ownerDir = path13.dirname(recordPath);
+  const treesDir = [".leases", ".lifecycle-lock"].includes(path13.basename(ownerDir)) ? path13.dirname(ownerDir) : ownerDir;
+  return path13.join(treesDir, ".owner-heartbeats", `${token}.json`);
 }
 async function readOwnerHeartbeat(recordPath, owner) {
   try {
@@ -143840,17 +143866,17 @@ async function stopOwnerHeartbeat(token) {
 }
 async function removeOrphanedOwnerHeartbeats(treesDir) {
   const retained = /* @__PURE__ */ new Set();
-  const leaseFiles = await readdir3(path12.join(treesDir, ".leases")).catch(() => []);
+  const leaseFiles = await readdir3(path13.join(treesDir, ".leases")).catch(() => []);
   for (const entry of leaseFiles) {
-    const lease = await readFile8(path12.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    const lease = await readFile8(path13.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
     if (validLeaseRecord(lease)) retained.add(lease.token);
   }
-  const lock = await readFile8(path12.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  const lock = await readFile8(path13.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
   if (validOwnerRecord(lock)) retained.add(lock.token);
-  const heartbeatDir = path12.join(treesDir, ".owner-heartbeats");
+  const heartbeatDir = path13.join(treesDir, ".owner-heartbeats");
   const heartbeatFiles = await readdir3(heartbeatDir).catch(() => []);
   for (const entry of heartbeatFiles) {
-    const entryPath = path12.join(heartbeatDir, entry);
+    const entryPath = path13.join(heartbeatDir, entry);
     if (entry.endsWith(".tmp")) {
       const age = Date.now() - await lstat8(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
       if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
@@ -143863,18 +143889,18 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   }
 }
 async function publicTreeConsumerNames(treesDir) {
-  const consumersDir = path12.join(treesDir, ".consumers");
+  const consumersDir = path13.join(treesDir, ".consumers");
   const entries = await readdir3(consumersDir).catch(() => []);
   const trees = /* @__PURE__ */ new Set();
   for (const entry of entries) {
-    const recordPath = path12.join(consumersDir, entry);
+    const recordPath = path13.join(consumersDir, entry);
     const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
     const record3 = await readFile8(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validConsumerRecord(record3, consumer)) {
       await rm6(recordPath, { recursive: true, force: true });
       continue;
     }
-    const root = path12.join(treesDir, record3.tree);
+    const root = path13.join(treesDir, record3.tree);
     try {
       await validatePublicTree(root);
       trees.add(record3.tree);
@@ -143947,9 +143973,9 @@ function publicTreeError(message, hint, diagnostics) {
 // src/project-public.ts
 import { constants as constants4 } from "node:fs";
 import { lstat as lstat9, open as open4, readdir as readdir4, realpath as realpath4 } from "node:fs/promises";
-import path13 from "node:path";
+import path14 from "node:path";
 async function mergeProjectPublicFiles(projectDir, generated) {
-  const root = path13.join(await realpath4(projectDir), "public");
+  const root = path14.join(await realpath4(projectDir), "public");
   const info2 = await lstat9(root).catch((error) => {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -143960,7 +143986,7 @@ async function mergeProjectPublicFiles(projectDir, generated) {
   const claims = generated.map((file) => ({ path: file.path, size: Buffer.byteLength(file.contents) }));
   const noFollow = process.platform === "darwin" ? 536870912 : constants4.O_NOFOLLOW;
   async function visit(directory, relative, parent) {
-    const target = process.platform === "linux" && parent ? `/proc/self/fd/${parent.fd}/${path13.basename(directory)}` : directory;
+    const target = process.platform === "linux" && parent ? `/proc/self/fd/${parent.fd}/${path14.basename(directory)}` : directory;
     const handle = await open4(target, constants4.O_RDONLY | constants4.O_DIRECTORY | noFollow);
     try {
       const entries = await readdir4(process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : directory);
@@ -143968,11 +143994,11 @@ async function mergeProjectPublicFiles(projectDir, generated) {
         const filePath = relative ? `${relative}/${name2}` : name2;
         if (normalizePublicTreePath(filePath) === null) throw invalid3("Public paths must be bounded safe relative POSIX paths.");
         if (publicTreeCollisionKey(filePath.split("/")[0]) === "__sporades") throw invalid3("public/__sporades is reserved for Sporades HTTP routes.");
-        const source = process.platform === "linux" ? `/proc/self/fd/${handle.fd}/${name2}` : path13.join(directory, name2);
+        const source = process.platform === "linux" ? `/proc/self/fd/${handle.fd}/${name2}` : path14.join(directory, name2);
         const stats = await lstat9(source);
         if (stats.isSymbolicLink()) throw invalid3(`Replace the symbolic link at public/${filePath} with a regular file.`);
         if (stats.isDirectory()) {
-          await visit(path13.join(directory, name2), filePath, handle);
+          await visit(path14.join(directory, name2), filePath, handle);
           continue;
         }
         if (!stats.isFile()) throw invalid3(`Remove the unsupported entry at public/${filePath}.`);
@@ -144035,53 +144061,53 @@ var ENABLED_KEYS = [
 function validatePaymentsConfig(payments) {
   if (payments === void 0) return void 0;
   if (!isPlainRecord3(payments)) {
-    fail3("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
+    fail4("Invalid payments configuration.", "Set `payments` to an object containing `stripe`.");
   }
   const unknownProviders = Object.keys(payments).filter((key) => key !== "stripe");
   if (unknownProviders.length > 0) {
-    fail3("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
+    fail4("Unsupported payment provider configuration.", "Configure only `payments.stripe`.");
   }
   if (payments.stripe === void 0) {
-    fail3("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
+    fail4("Missing Stripe payments configuration.", "Configure `payments.stripe` with an explicit enabled flag.");
   }
   if (!isPlainRecord3(payments.stripe)) {
-    fail3("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
+    fail4("Invalid Stripe payments configuration.", "Set `payments.stripe` to an object with an explicit enabled flag.");
   }
   const stripe = payments.stripe;
   if (stripe.enabled === false) {
     if (Object.keys(stripe).some((key) => key !== "enabled")) {
-      fail3("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
+      fail4("Unsupported dormant Stripe payments configuration.", "Configure only `payments.stripe.enabled` while Stripe payments are disabled.");
     }
     return { stripe: { enabled: false } };
   }
   if (stripe.enabled !== true) {
-    fail3("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
+    fail4("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
   }
   const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
   if (unknownKeys.length > 0) {
-    fail3("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
+    fail4("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
   }
   for (const key of ENABLED_KEYS) {
     if (!(key in stripe)) {
-      fail3("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
+      fail4("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
     }
   }
   if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
-    fail3("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
+    fail4("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
   validatePublicOrigin(stripe.publicOrigin);
   const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
   if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
-    fail3("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
+    fail4("Invalid Stripe callback path.", "Set `payments.stripe.callbackPath` to a same-origin absolute path outside the reserved `__sporades` runtime namespace.");
   }
   if (stripe.apiVersion !== STRIPE_API_VERSION) {
-    fail3("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
+    fail4("Unsupported Stripe API compatibility version.", `Set \`payments.stripe.apiVersion\` to \`${STRIPE_API_VERSION}\` for this Sporades release.`);
   }
   if (typeof stripe.livemode !== "boolean") {
-    fail3("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
+    fail4("Invalid Stripe mode.", "Set `payments.stripe.livemode` to true for live credentials or false for test credentials.");
   }
   if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
-    fail3("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
+    fail4("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
   }
   return {
     stripe: {
@@ -144103,17 +144129,17 @@ function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
   const webhookSecret = serverEnv?.[normalized.stripe.webhookSecretEnv];
   const expectedSecretPrefix = normalized.stripe.livemode ? "sk_live_" : "sk_test_";
   if (typeof secretKey !== "string" || !secretKey.startsWith(expectedSecretPrefix) || secretKey.length <= expectedSecretPrefix.length) {
-    fail3("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
+    fail4("Stripe secret key is unavailable or does not match the configured mode.", "Set the named Stripe secret key in Sealed Server env and make `payments.stripe.livemode` match it.");
   }
   if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
-    fail3("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+    fail4("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
   }
   return normalized;
 }
 function validateStripePaymentsSealedServerEnv(payments, hasSealedEnvelope) {
   const normalized = validatePaymentsConfig(payments);
   if (normalized?.stripe.enabled && !hasSealedEnvelope) {
-    fail3("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
+    fail4("Enabled Stripe payments require Sealed Server env.", "Set both named Stripe credentials with `sporades env set` before building or starting the Capsule.");
   }
   return normalized;
 }
@@ -144127,19 +144153,19 @@ function isServerEnvReference(value) {
 }
 function validatePublicOrigin(value) {
   if (typeof value !== "string") {
-    fail3("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+    fail4("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
   }
   let origin;
   try {
     origin = new URL(value);
   } catch {
-    fail3("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
+    fail4("Invalid Stripe public origin.", "Set `payments.stripe.publicOrigin` to a hosted HTTPS origin or an explicit loopback HTTP origin.");
   }
   const loopback = origin.hostname === "localhost" || origin.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(origin.hostname);
   const secureHosted = origin.protocol === "https:";
   const localHttp = origin.protocol === "http:" && loopback;
   if (!secureHosted && !localHttp || origin.username || origin.password || origin.search || origin.hash || origin.pathname !== "/" || origin.origin !== value.replace(/\/$/, "")) {
-    fail3("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
+    fail4("Invalid Stripe public origin.", "Use an exact hosted HTTPS origin or explicit loopback HTTP origin without credentials, a path, query, or fragment.");
   }
 }
 function canonicalSameOriginAbsolutePath(value) {
@@ -144152,7 +144178,7 @@ function canonicalSameOriginAbsolutePath(value) {
     return null;
   }
 }
-function fail3(message, hint) {
+function fail4(message, hint) {
   const error = new Error(message);
   error.code = "INVALID_STRIPE_PAYMENTS_CONFIG";
   error.hint = hint;
@@ -144177,15 +144203,15 @@ async function createBundle(projectDir, config, options = {}) {
   } catch (error) {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
   }
-  const buildDir = path14.join(projectDir, ".sporades", "build");
+  const buildDir = path15.join(projectDir, ".sporades", "build");
   const paths = {
-    config: path14.join(projectDir, "sporades.json"),
-    serverEntry: path14.join(projectDir, "server", "index.ts"),
-    clientEntry: path14.join(projectDir, "client", frameworkBundleConfig.entry),
-    indexHtml: path14.join(projectDir, "index.html"),
-    serverEnv: path14.join(projectDir, ".env.sporades.server"),
-    serverBundle: path14.join(buildDir, "server.mjs"),
-    clientBundle: path14.join(buildDir, "client.js")
+    config: path15.join(projectDir, "sporades.json"),
+    serverEntry: path15.join(projectDir, "server", "index.ts"),
+    clientEntry: path15.join(projectDir, "client", frameworkBundleConfig.entry),
+    indexHtml: path15.join(projectDir, "index.html"),
+    serverEnv: path15.join(projectDir, ".env.sporades.server"),
+    serverBundle: path15.join(buildDir, "server.mjs"),
+    clientBundle: path15.join(buildDir, "client.js")
   };
   const indexHtml = await readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.").catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
@@ -144259,8 +144285,8 @@ async function createBundle(projectDir, config, options = {}) {
     }
     const publishedFiles = publication.preserveServerBundle ? legacyFiles.slice(1) : legacyFiles;
     let previous;
-    const activeTreePath = path14.join(buildDir, ".public-trees", "active.json");
-    const candidateTreeName = path14.basename(publicTree.root);
+    const activeTreePath = path15.join(buildDir, ".public-trees", "active.json");
+    const candidateTreeName = path15.basename(publicTree.root);
     let previousActiveTree;
     try {
       previous = await Promise.all(publishedFiles.map(async (file) => ({
@@ -144283,7 +144309,7 @@ async function createBundle(projectDir, config, options = {}) {
         options.activeReferenceFault?.("after-active-write");
       } catch (error) {
         const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path14.dirname(activeTreePath));
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path15.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
         await restoreLegacyBundleFiles(buildDir, previous);
         throw error;
@@ -144300,7 +144326,7 @@ async function createBundle(projectDir, config, options = {}) {
         options.activeReferenceFault?.("after-active-restore");
       } catch {
         const activeState = await inspectActiveTreeState(activeTreePath);
-        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path14.dirname(activeTreePath));
+        const previousState = previousActiveTree === null ? { kind: "missing" } : await parseActiveTreeState(previousActiveTree.toString("utf8"), path15.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
       }
       await restoreLegacyBundleFiles(buildDir, previous);
@@ -144339,8 +144365,8 @@ async function createBundle(projectDir, config, options = {}) {
     staticFiles: {
       publicTree,
       publicDir: publicTree.root,
-      indexHtml: path14.join(publicTree.root, "index.html"),
-      clientBundle: clientBundle === null ? null : path14.join(publicTree.root, "client.js")
+      indexHtml: path15.join(publicTree.root, "index.html"),
+      clientBundle: clientBundle === null ? null : path15.join(publicTree.root, "client.js")
     },
     containerMounts: {
       files: [
@@ -144363,7 +144389,7 @@ async function restoreLegacyBundleFiles(buildDir, previous) {
 }
 async function inspectActiveTreeState(filePath) {
   try {
-    return await parseActiveTreeState(await readFile9(filePath, "utf8"), path14.dirname(filePath));
+    return await parseActiveTreeState(await readFile9(filePath, "utf8"), path15.dirname(filePath));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") return { kind: "missing" };
     return { kind: "invalid" };
@@ -144398,7 +144424,7 @@ async function replaceBundleStateFile(filePath, contents) {
 }
 async function publishLegacyBundles(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const stagingDir = path14.join(buildDir, `.legacy-staging-${nonce}`);
+  const stagingDir = path15.join(buildDir, `.legacy-staging-${nonce}`);
   const states = [];
   let preserveStaging = false;
   await mkdir6(stagingDir, { recursive: false });
@@ -144411,9 +144437,9 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
         throw commandError3("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
       }
-      const candidate = path14.join(stagingDir, `candidate-${index}`);
+      const candidate = path15.join(stagingDir, `candidate-${index}`);
       await writeFile4(candidate, file.contents);
-      states.push({ target: file.target, candidate, backup: path14.join(stagingDir, `backup-${index}`), moved: false, published: false });
+      states.push({ target: file.target, candidate, backup: path15.join(stagingDir, `backup-${index}`), moved: false, published: false });
     }
     try {
       for (const state of states) {
@@ -144444,8 +144470,8 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
         preserveStaging = true;
         throw commandError3(
           "Legacy Bundle recovery is incomplete.",
-          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path14.basename(stagingDir)}.`,
-          { failedFiles: recoveryFailures.length, recoveryDirectory: path14.basename(stagingDir) }
+          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path15.basename(stagingDir)}.`,
+          { failedFiles: recoveryFailures.length, recoveryDirectory: path15.basename(stagingDir) }
         );
       }
       throw error;
@@ -144477,7 +144503,7 @@ async function bundleServerCapsuleModule(options) {
       stdin: {
         contents: options.serverSource,
         sourcefile: options.serverSourcePath,
-        resolveDir: path14.dirname(options.serverSourcePath),
+        resolveDir: path15.dirname(options.serverSourcePath),
         loader: "ts"
       },
       plugins: [sporadesServerPlugin()]
@@ -144761,10 +144787,10 @@ function sporadesServerPlugin() {
         contents: serverRuntimeModuleSource()
       }));
       build2.onResolve({ filter: /^sporades\/server\/stripe$/ }, () => ({
-        path: path14.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js")
+        path: path15.join(resolveSporadesPackageRoot(), "dist", "stripe-payment-integration.js")
       }));
       build2.onResolve({ filter: /^sporades:html$/ }, () => ({
-        path: path14.join(resolveSporadesPackageRoot(), "dist", "html.js")
+        path: path15.join(resolveSporadesPackageRoot(), "dist", "html.js")
       }));
     }
   };
@@ -144807,7 +144833,7 @@ function tagBuildError(error, phase, framework, toolchain) {
 // src/file-transaction.ts
 import { randomBytes as randomBytes8 } from "node:crypto";
 import { lstat as lstat11, rename as rename8, rm as rm8, writeFile as writeFile5 } from "node:fs/promises";
-import path15 from "node:path";
+import path16 from "node:path";
 var defaultExecutor = async (_operation, action) => action();
 async function replaceFilesAtomically(replacements, options = {}) {
   if (replacements.length === 0) {
@@ -144819,9 +144845,9 @@ async function replaceFilesAtomically(replacements, options = {}) {
   const entries = [];
   try {
     for (const [index, replacement] of replacements.entries()) {
-      const directory = path15.dirname(replacement.path);
-      const basename = path15.basename(replacement.path);
-      const artifactStem = path15.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
+      const directory = path16.dirname(replacement.path);
+      const basename = path16.basename(replacement.path);
+      const artifactStem = path16.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
       const entry = {
         ...replacement,
         temporaryPath: `${artifactStem}.tmp`,
@@ -145019,7 +145045,7 @@ function recoveryFailure(action, label, cause) {
 function validateDistinctTargets(replacements) {
   const identities = /* @__PURE__ */ new Set();
   for (const replacement of replacements) {
-    const identity = path15.resolve(replacement.path);
+    const identity = path16.resolve(replacement.path);
     if (identities.has(identity)) {
       throw transactionError({
         operation: {
@@ -159414,32 +159440,6 @@ function escapeHtml2(value) {
     "'": "&#39;"
   };
   return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
-}
-
-// src/cli/host-backups.ts
-import path17 from "node:path";
-function fail4(message) {
-  throw helperError(message, "Inspect protected Host backup configuration and restic repository access; no credentials are included in diagnostics.");
-}
-function absolute(value) {
-  return typeof value === "string" && value.length < 4096 && path17.isAbsolute(value) && path17.normalize(value) === value && !/[\x00-\x1f\x7f]/.test(value);
-}
-function validateHostBackupPolicy(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) fail4("Invalid Host backup policy.");
-  const v2 = value;
-  if (Object.keys(v2).some((k) => !["repository", "passwordFile", "credentialsFile", "schedule", "retention", "retentionDays", "maxAgeHours"].includes(k))) fail4("Unknown Host backup policy field.");
-  let repository = absolute(v2.repository);
-  if (typeof v2.repository === "string" && v2.repository.startsWith("s3:https://")) {
-    let url;
-    try {
-      url = new URL(v2.repository.slice(3));
-    } catch {
-      return fail4("Invalid Host backup repository.");
-    }
-    repository = !!url.hostname && !url.username && !url.password && !url.search && !url.hash && /^\/[^/]+/.test(url.pathname);
-  }
-  if (!repository || !absolute(v2.passwordFile) || v2.credentialsFile !== void 0 && !absolute(v2.credentialsFile) || ![null, "hourly", "daily", "weekly"].includes(v2.schedule) || !Number.isSafeInteger(v2.retention) || v2.retention < 1 || v2.retention > 1e4 || v2.retentionDays !== void 0 && (!Number.isSafeInteger(v2.retentionDays) || v2.retentionDays < 1 || v2.retentionDays > 3650) || !Number.isSafeInteger(v2.maxAgeHours) || v2.maxAgeHours < 1 || v2.maxAgeHours > 87600) fail4("Invalid Host backup policy.");
-  return { repository: v2.repository, passwordFile: v2.passwordFile, ...v2.credentialsFile ? { credentialsFile: v2.credentialsFile } : {}, schedule: v2.schedule, retention: v2.retention, ...v2.retentionDays !== void 0 ? { retentionDays: v2.retentionDays } : {}, maxAgeHours: v2.maxAgeHours };
 }
 
 // src/dev-clamav-sidecar.ts

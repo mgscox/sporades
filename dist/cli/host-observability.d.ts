@@ -36,7 +36,7 @@ export declare const OBSERVABILITY_ROUTE_FILE = "__sporades-observability.caddy"
 export declare function renderObservabilityRoutes(host: HostHelperHost, ports: {
     errors: number;
     analytics: number;
-} | null): string;
+} | null): Promise<string>;
 export declare function observabilityDirectory(host: HostHelperHost): string;
 export declare function observabilityProject(host: HostHelperHost): string;
 export declare function readObservabilityState(host: HostHelperHost): Promise<State | null>;
@@ -245,10 +245,10 @@ export declare function enableObservability(host: HostHelperHost, applyRoutes: (
         analytics: string;
     };
 }>;
-export declare function observabilityUrls(host: HostHelperHost): {
+export declare function observabilityUrls(host: HostHelperHost): Promise<{
     errors: string;
     analytics: string;
-};
+}>;
 export declare function disableObservability(host: HostHelperHost, applyRoutes: () => Promise<void>, uninstall?: boolean): Promise<{
     enabled: boolean;
     installed: boolean;

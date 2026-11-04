@@ -5,12 +5,14 @@ import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, statfs, write
 import path from "node:path";
 import { helperError } from "./cli-support.js";
 import { atomicBackupJson, trustedBackupPath, readHostBackupPolicy, restic, listHostBackups, pruneHostBackups, hostBackupDirectory, publishHostBackupMetric } from "./host-backups.js";
+import { readObservabilityAnalyticsDomain } from "./host-domain-aliases.js";
 // Release-owned pins. Changes require the real-provider acceptance test.
 export const OBSERVABILITY_IMAGES = Object.freeze({ glitchtip: "glitchtip/glitchtip:v5.2.1", umami: "ghcr.io/umami-software/umami:postgresql-v2.20.2", postgres: "postgres:16.10-alpine", valkey: "valkey/valkey:8.1.3-alpine" });
 export const OBSERVABILITY_MINIMUM = Object.freeze({ cpus: 2, memoryBytes: 2 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 });
 export const OBSERVABILITY_ROUTE_FILE = "__sporades-observability.caddy";
-export function renderObservabilityRoutes(host, ports) {
-    return ["errors", "analytics"].map(service => `${service}.${host.domain} {\n  ${ports ? `reverse_proxy 127.0.0.1:${ports[service]}` : 'respond "Service disabled" 503'}\n}\n`).join("\n");
+export async function renderObservabilityRoutes(host, ports) {
+    const analyticsDomain = await readObservabilityAnalyticsDomain(host);
+    return ["errors", "analytics"].map(service => `${service === "analytics" ? analyticsDomain : `errors.${host.domain}`} {\n  ${ports ? `reverse_proxy 127.0.0.1:${ports[service]}` : 'respond "Service disabled" 503'}\n}\n`).join("\n");
 }
 export function observabilityDirectory(host) { return path.join(host.remoteRoot, "hosts", host.domain, "services", "observability"); }
 export function observabilityProject(host) { return `sporades-observe-${createHash("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`; }
@@ -173,9 +175,9 @@ export async function enableObservability(host, applyRoutes) {
         await publishHostBackupMetric(host, "_observability");
     state.disclosed = true;
     await atomicBackupJson(path.join(directory, "secrets.json"), state);
-    return { enabled: true, ready: true, urls: observabilityUrls(host), ...(credentials ? { credentials } : {}) };
+    return { enabled: true, ready: true, urls: await observabilityUrls(host), ...(credentials ? { credentials } : {}) };
 }
-export function observabilityUrls(host) { return { errors: `https://errors.${host.domain}`, analytics: `https://analytics.${host.domain}` }; }
+export async function observabilityUrls(host) { return { errors: `https://errors.${host.domain}`, analytics: `https://${await readObservabilityAnalyticsDomain(host)}` }; }
 export async function disableObservability(host, applyRoutes, uninstall = false) {
     const state = await readObservabilityState(host);
     if (!state)
@@ -202,12 +204,13 @@ export async function statusObservability(host) {
     await publishObservabilityMetric(host, healthy ? 1 : 0, state.enabled);
     if (state.enabled && await readHostBackupPolicy(host))
         await publishHostBackupMetric(host, "_observability");
-    return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: observabilityUrls(host), images: OBSERVABILITY_IMAGES };
+    return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
 }
 export async function provisionObservability(host, target) {
     const state = await readObservabilityState(host);
     if (!state?.enabled || !state.ready)
         return { connected: false, reason: "observability-disabled" };
+    const analyticsDomain = await readObservabilityAnalyticsDomain(host);
     if (!target || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(target.subname) || !target.domain?.split(".").every(l => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || target.domain.length > 253 || typeof target.publicKey !== "string" || target.publicKey.length > 8192)
         fail("Invalid observability Capsule target.");
     const { sealServerEnv } = await import("../sealed-server-env.js");
@@ -237,7 +240,7 @@ export async function provisionObservability(host, target) {
         const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
         if (!await api(host, "umami", `/api/websites/${id}`, login.token, undefined, true))
             await api(host, "umami", "/api/websites", login.token, { id, name: identity.slice(0, 100), domain: identity });
-        values.ANALYTICS_ENDPOINT = `https://analytics.${host.domain}/api/send`;
+        values.ANALYTICS_ENDPOINT = `https://${analyticsDomain}/api/send`;
         values.ANALYTICS_WEBSITE_ID = id;
     }
     return { connected: true, identity, env: sealServerEnv(values, target.publicKey, { source: "host-services", identity }) };
