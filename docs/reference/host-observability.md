@@ -54,7 +54,45 @@ both services have initialized. Route validation/reload failure restores the
 previous route file. Compose projects and volumes are isolated by remote root
 and Hosted domain.
 
+## Public analytics hostname
+
+The operator can select an exact public Umami hostname independently of the
+Host registry/Compose domain. In the protected services directory
+`<remote-root>/hosts/<hosted-domain>/services/observability/`, install a
+helper-owned mode-`0600` regular file named `public.json`:
+
+```json
+{"version":1,"analyticsDomain":"analytics.example.com"}
+```
+
+Point that hostname's DNS to the services Host and rerun
+`sporades host services enable observability --on <services-host> --json`.
+The generated route proxies directly to Umami's current loopback port, preserving
+the public Host/Origin for authenticated requests. Status and Capsule provisioning
+use this hostname too. Do not use a second proxy route that rewrites the Host to
+a legacy domain. Remove an existing operator alias route before applying the
+managed replacement, retaining its protected rollback copy until validation.
+
+The hostname is reserved against Capsule aliases while the service intent
+exists, including while disabled. Invalid configuration fails closed; absent
+configuration retains `analytics.<hosted-domain>`. The file is operator routing
+intent: disable/uninstall and database restore leave it in place. Preserve it
+with the protected services directory during Host disaster recovery; database
+snapshots do not replace the destination's routing configuration.
+
+Verify an authenticated dashboard after a hostname change, including a page
+refresh and website navigation. Heartbeat/login API success alone does not
+establish that dashboard Server Actions work.
+
 ## Connect Capsules
+
+The services Host and Capsule Host may use different infrastructure providers.
+Umami collection is also usable from Dev/Container deployments or other hosting
+environments through the explicit Server env configuration in
+[Errors and analytics](./errors-and-analytics.md#umami-pageviews). Installing a
+cloud Host is not required to configure the runtime collection tunnel. Deployment
+policy may require analytics for every production SaaS Capsule while Sporades'
+runtime remains opt-in.
 
 Declare `observability.errors` and/or `analytics.provider: "umami"` in
 `sporades.json`, using the env names shown in the runtime guide. Then register:

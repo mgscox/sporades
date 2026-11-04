@@ -6,6 +6,7 @@ import path from "node:path";
 import { helperError } from "./cli-support.js";
 import { atomicBackupJson, trustedBackupPath, readHostBackupPolicy, restic, listHostBackups, pruneHostBackups, hostBackupDirectory, publishHostBackupMetric } from "./host-backups.js";
 import type { HostHelperHost } from "./hosted-capsule-contract.js";
+import { readObservabilityAnalyticsDomain } from "./host-domain-aliases.js";
 
 // Release-owned pins. Changes require the real-provider acceptance test.
 export const OBSERVABILITY_IMAGES = Object.freeze({ glitchtip: "glitchtip/glitchtip:v5.2.1", umami: "ghcr.io/umami-software/umami:postgresql-v2.20.2", postgres: "postgres:16.10-alpine", valkey: "valkey/valkey:8.1.3-alpine" });
@@ -13,8 +14,9 @@ export const OBSERVABILITY_MINIMUM = Object.freeze({ cpus: 2, memoryBytes: 2 * 1
 type State = { version: 1; enabled: boolean; ready: boolean; disclosed: boolean; secrets: { database: string; umamiDatabase: string; django: string; app: string; errorsPassword: string; analyticsPassword: string; token: string }; };
 export type ObservabilityTarget = { domain: string; subname: string; publicKey: string; errors: boolean; analytics: boolean };
 export const OBSERVABILITY_ROUTE_FILE = "__sporades-observability.caddy";
-export function renderObservabilityRoutes(host: HostHelperHost, ports: { errors: number; analytics: number } | null) {
-  return (["errors", "analytics"] as const).map(service => `${service}.${host.domain} {\n  ${ports ? `reverse_proxy 127.0.0.1:${ports[service]}` : 'respond "Service disabled" 503'}\n}\n`).join("\n");
+export async function renderObservabilityRoutes(host: HostHelperHost, ports: { errors: number; analytics: number } | null) {
+  const analyticsDomain = await readObservabilityAnalyticsDomain(host);
+  return (["errors", "analytics"] as const).map(service => `${service === "analytics" ? analyticsDomain : `errors.${host.domain}`} {\n  ${ports ? `reverse_proxy 127.0.0.1:${ports[service]}` : 'respond "Service disabled" 503'}\n}\n`).join("\n");
 }
 export function observabilityDirectory(host: HostHelperHost) { return path.join(host.remoteRoot, "hosts", host.domain, "services", "observability"); }
 export function observabilityProject(host: HostHelperHost) { return `sporades-observe-${createHash("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`; }
@@ -141,9 +143,9 @@ export async function enableObservability(host: HostHelperHost, applyRoutes: (po
   if (await readHostBackupPolicy(host)) await publishHostBackupMetric(host, "_observability");
   state.disclosed = true;
   await atomicBackupJson(path.join(directory, "secrets.json"), state);
-  return { enabled: true, ready: true, urls: observabilityUrls(host), ...(credentials ? { credentials } : {}) };
+  return { enabled: true, ready: true, urls: await observabilityUrls(host), ...(credentials ? { credentials } : {}) };
 }
-export function observabilityUrls(host: HostHelperHost) { return { errors: `https://errors.${host.domain}`, analytics: `https://analytics.${host.domain}` }; }
+export async function observabilityUrls(host: HostHelperHost) { return { errors: `https://errors.${host.domain}`, analytics: `https://${await readObservabilityAnalyticsDomain(host)}` }; }
 export async function disableObservability(host: HostHelperHost, applyRoutes: () => Promise<void>, uninstall = false) {
   const state = await readObservabilityState(host);
   if (!state) return { enabled: false, installed: false };
@@ -161,11 +163,12 @@ export async function statusObservability(host: HostHelperHost) {
   if (state.enabled) try { await api(host, "web", "/api/0/"); await api(host, "umami", "/api/heartbeat"); healthy = true; } catch { /* status is secret-free */ }
   await publishObservabilityMetric(host, healthy ? 1 : 0, state.enabled);
   if (state.enabled && await readHostBackupPolicy(host)) await publishHostBackupMetric(host, "_observability");
-  return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: observabilityUrls(host), images: OBSERVABILITY_IMAGES };
+  return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
 }
 export async function provisionObservability(host: HostHelperHost, target: ObservabilityTarget) {
   const state = await readObservabilityState(host);
   if (!state?.enabled || !state.ready) return { connected: false, reason: "observability-disabled" };
+  const analyticsDomain = await readObservabilityAnalyticsDomain(host);
   if (!target || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(target.subname) || !target.domain?.split(".").every(l => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || target.domain.length > 253 || typeof target.publicKey !== "string" || target.publicKey.length > 8192) fail("Invalid observability Capsule target.");
   const { sealServerEnv } = await import("../sealed-server-env.js");
   if (typeof target.errors !== "boolean" || typeof target.analytics !== "boolean" || (!target.errors && !target.analytics)) fail("Choose at least one Capsule integration.");
@@ -188,7 +191,7 @@ export async function provisionObservability(host: HostHelperHost, target: Obser
     const login = await loginUmami(host, state);
     const id = `${hash.slice(0,8)}-${hash.slice(8,12)}-4${hash.slice(13,16)}-a${hash.slice(17,20)}-${hash.slice(20,32)}`;
     if (!await api(host, "umami", `/api/websites/${id}`, login.token, undefined, true)) await api(host, "umami", "/api/websites", login.token, { id, name: identity.slice(0,100), domain: identity });
-    values.ANALYTICS_ENDPOINT = `https://analytics.${host.domain}/api/send`;
+    values.ANALYTICS_ENDPOINT = `https://${analyticsDomain}/api/send`;
     values.ANALYTICS_WEBSITE_ID = id;
   }
   return { connected: true, identity, env: sealServerEnv(values, target.publicKey, { source: "host-services", identity }) };

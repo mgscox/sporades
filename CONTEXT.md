@@ -837,4 +837,8 @@ It owns private provisioning credentials, per-Capsule API identities, automatic
 TLS routes, health checks and database backups. Registration/connect seals only
 declared integrations into local Server env for the normal push flow. Services
 may live on a dedicated ops Host; ordinary Capsules remain unchanged.
+Protected per-Host `public.json` routing intent can select an exact analytics
+hostname independently of the Host/data identity. The generated direct route,
+service URLs and Capsule provisioning share that hostname, preserving browser
+Host/Origin checks; the hostname remains reserved while the service is disabled.
 See [Host-managed observability](docs/reference/host-observability.md).

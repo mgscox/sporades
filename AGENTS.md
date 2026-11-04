@@ -34,3 +34,7 @@ This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/
 ### Host provisioning
 
 Cloud Host server creation and Sporades installation use the common contract in `docs/agents/host-provisioning.md`.
+
+Every production SaaS Capsule must also follow `docs/agents/saas-provisioning.md`:
+use shared Umami at `analytics.kimatt.com` regardless of hosting provider, and
+verify stored pageviews before considering provisioning complete.

@@ -1723,6 +1723,11 @@ Opt-in `host services enable observability` installs release-pinned GlitchTip
 and Umami behind automatic-TLS Caddy routes. Host-local generated credentials
 are disclosed once. Register/connect provisions deterministic per-Capsule API
 identities and seals explicitly declared integration env; existing apps and
-external providers remain unchanged. Resource refusal, retry convergence,
+external providers remain unchanged. An operator may configure a protected exact
+public analytics hostname independent of the Host/data identity; direct routing,
+status and provisioning use the same reserved hostname without rewriting browser
+Host/Origin authority. Disabled services retain this routing intent, and database
+restore preserves the destination's operator-selected hostname.
+Resource refusal, retry convergence,
 disable/uninstall, scheduled restic database backups and monitored health are
 part of this contract. See [the operator runbook](./reference/host-observability.md).
