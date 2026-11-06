@@ -179,7 +179,11 @@ operator-controlled backups, separate from application database dumps.
 
 ### Acceptance evidence
 
-The disposable local acceptance command is:
+Run the disposable local acceptance from a Linux checkout with protected
+ancestors, Docker Compose v2, OpenSSL and restic `0.18.1` (the tested version).
+The older restic `0.14` emits short backup summary IDs that the existing helper
+rejects. A container runner can bind the checkout under protected ancestors;
+keep its CLI configuration inside that checkout. The command is:
 
 ```sh
 SPORADES_CONFIG_DIR="$PWD/.tmp/observability-config" SPORADES_OBSERVABILITY_SMTP_TEST=1 SPORADES_OBSERVABILITY_BACKUP_TEST=1 node scripts/verify-host-observability.mjs
