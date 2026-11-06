@@ -54,7 +54,14 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
   for (let attempt = 0; attempt < 2000; attempt++) {
     assert.ok(!failed && child.exitCode === null, 'Synthetic Capsule exited before readiness');
     const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
-    if (signal) return { origin: `http://127.0.0.1:${signal.listening}` };
+    if (signal) {
+      const lines = serverModuleSource.split("\n");
+      const line = lines.findIndex(value => value.includes("throw new Error(" + JSON.stringify(failureMarker)));
+      assert.ok(line >= 0, "Generated failure site is available for coordinate assertions");
+      return { origin: `http://127.0.0.1:${signal.listening}`, expectedFailureFrame: {
+        filename: "sporades://capsule/server.mjs", lineno: line + 1, colno: lines[line].indexOf("new Error") + 1,
+      } };
+    }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.fail('Synthetic Capsule readiness timed out');

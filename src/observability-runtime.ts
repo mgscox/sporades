@@ -1,3 +1,5 @@
+import { exceptionFrames } from "./exception-stack.js";
+import { safePrivilegedAuditErrorCode } from "./acl-runtime.js";
 import { collectionLoaderSource } from "./templates/observability-loader.js";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -96,7 +98,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   const acquireIngress = budget(8, 120);
   const acquirePublicDelivery = budget(4, 60);
   const acquireServerDelivery = budget(4, 60);
-  const safeText = (value: unknown, limit: number) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
+  const safeText = (value: unknown, limit: number) => redactDiagnosticText((typeof value === "string" ? value : "Error").slice(0, 65536).replace(/data:[^\s)]+/gi, "[embedded source]"), env).slice(0, limit);
   const send = async (url: URL, body: string, headers: Record<string, string>) => {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(2000)]) });
     // Provider bodies/headers never flow back to the browser or logs.
@@ -119,30 +121,68 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
     if (!sentryUrl) return;
     void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {});
   };
-  const captureError = (error: any, surface: string, address: string | null | undefined, acquire: typeof acquirePublicDelivery) => {
+  const captureError = (error: any, surface: string, address: string | null | undefined, acquire: typeof acquirePublicDelivery, context: { handler?: string } = {}) => {
     try {
       if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData
         || expectedDiagnosticErrorCodes.includes(error?.code)
         || Math.random() >= (errors.sampleRate ?? 1)) return;
-      const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line: string) => {
-        const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
-        return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
-      }).reverse() : [];
+      const values: RecordValue[] = [], seen = new Set();
+      let current = error, frameBudget = 20, textBudget = 2048;
+      const privileged = error?.code === "PRIVILEGED_RUN_FAILED" || error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+      for (let depth = 0; depth < 4 && !seen.has(current); depth++) {
+        seen.add(current);
+        const currentPrivileged = current?.code === "PRIVILEGED_RUN_FAILED" || current?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+        const fallback = surface === "client" && depth === 0 && !current?.stack && current?.location;
+        const parsed = exceptionFrames(current?.stack, surface === "client" ? "sporades://embedded/module" : "sporades://capsule/server.mjs");
+        if (fallback && typeof fallback.filename === "string" && fallback.filename && fallback.filename.length <= 4096) {
+          const filename = /^(data|blob):/i.test(fallback.filename) ? "sporades://embedded/module" : fallback.filename.split(/[?#]/, 1)[0];
+          parsed.push({ filename, function: "<anonymous>",
+            ...(Number.isInteger(fallback.lineno) && fallback.lineno > 0 ? { lineno: fallback.lineno } : {}),
+            ...(Number.isInteger(fallback.colno) && fallback.colno > 0 ? { colno: fallback.colno } : {}),
+          });
+        }
+        const frames = (frameBudget ? parsed.slice(-frameBudget) : [])
+          .map(frame => ({ ...frame, filename: safeText(frame.filename, 512), function: safeText(frame.function, 128) }));
+        frameBudget -= frames.length;
+        const message = current?.message ?? (typeof current === "object" && current !== null ? "Non-Error exception" : String(current));
+        const value = safeText(message, textBudget);
+        textBudget -= value.length;
+        const errorCode = typeof current?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(current.code) ? safeText(current.code, 64) : undefined;
+        values.unshift({
+          type: safeText(current?.name ?? (typeof current === "object" ? "Error" : "NonError"), 64), value, stacktrace: { frames },
+          mechanism: { type: "generic", data: {
+            stack_source: frames.length ? fallback ? "error_event" : "original" : "absent",
+            ...(errorCode ? { error_code: errorCode } : {}),
+            ...(currentPrivileged ? { cause_code: safeText(safePrivilegedAuditErrorCode(current.cause, "errored"), 64) } : {}),
+          } },
+        });
+        // Privileged causes are opaque: the existing audit policy supplies a safe code only.
+        if (currentPrivileged || !current || (typeof current !== "object" && typeof current !== "function") || current.cause === undefined) break;
+        current = current.cause;
+      }
+      const code = typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : undefined;
       const event = {
         ...eventBase(surface === "client" ? "javascript" : "node"), level: "error",
-        tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
-        exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
+        tags: { capsule: safeText(config.name ?? "capsule", 128), surface,
+          ...(surface !== "client" && typeof context.handler === "string" ? { handler: safeText(context.handler, 128) } : {}),
+          ...(code ? { error_code: safeText(code, 64) } : {}),
+          ...(privileged ? { cause_code: safeText(safePrivilegedAuditErrorCode(error.cause, "errored"), 64) }
+            : typeof error?.cause?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.cause.code) ? { cause_code: safeText(error.cause.code, 64) } : {}),
+        } as RecordValue,
+        exception: { values },
         ...(address ? { user: { ip_address: address } } : {}),
       };
+      event.tags.correlation_id = event.event_id;
       deliver(event, acquire);
+      return event.event_id;
     } catch { /* Error reporting must never replace the original failure. */ }
   };
   return {
     enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
     clientErrors: !!(sentryUrl && errors.client),
     analytics: !!analyticsUrl,
-    capture(error: any, surface: string, address?: string | null) {
-      captureError(error, surface, address, acquireServerDelivery);
+    capture(error: any, surface: string, address?: string | null, context: { handler?: string } = {}) {
+      return captureError(error, surface, address, acquireServerDelivery, context);
     },
     /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
     captureCspViolation(violation: CspViolation) {
@@ -160,7 +200,15 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
     async collect(input: RecordValue, origin: string, request: IncomingMessage, database: RecordValue) {
       if (input.type === "error") {
         if (!sentryUrl || !errors.client || typeof input.message !== "string" || (input.stack !== undefined && typeof input.stack !== "string")) throw new Error();
-        captureError({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request), acquirePublicDelivery);
+        // Public DTOs cannot supply handler, codes, release, surface or correlation IDs.
+        const clientError: RecordValue = { name: typeof input.name === "string" ? input.name : "Error", message: input.message, stack: input.stack, location: input.location };
+        let target = clientError;
+        if (Array.isArray(input.causes)) for (const cause of input.causes.slice(0, 3)) {
+          if (!cause || typeof cause.message !== "string") break;
+          target.cause = { name: typeof cause.name === "string" ? cause.name : "Error", message: cause.message, stack: typeof cause.stack === "string" ? cause.stack : undefined };
+          target = target.cause;
+        }
+        captureError(clientError, "client", trustedClientAddress(database, request), acquirePublicDelivery);
         return;
       }
       if (!analyticsUrl || input.type !== "pageview") throw new Error();

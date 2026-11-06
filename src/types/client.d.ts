@@ -2,8 +2,14 @@
 export type SporadesError = {
   code?: string; message: string;
   hint?: string;
+  /** Opaque server diagnostic identity when original capture is available; never a stack. */
+  eventId?: string;
   [key: string]: unknown;
 };
+
+/** Detail of the window `sporades:error` event. Server transport mirrors retain
+ * their opaque DTO and are excluded from browser exception collection. */
+export type SporadesErrorEventDetail = SporadesError & { sporadesSource?: "server" };
 
 /**
  * Standard result envelope for client SDK calls.

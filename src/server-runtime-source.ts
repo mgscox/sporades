@@ -3875,7 +3875,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
       : new Function(`return (${endpoint.handlerSource});`)();
   validateEndpointSessionDeclaration({ ...endpoint, handler });
   if ((endpoint as LooseRecord).options?.session === "none") {
-    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath, (endpoint as LooseRecord).name);
   }
   const runtimeOwnedProviderCallback = (endpoint as LooseRecord).runtimeOwnedEmailEvent || (endpoint as LooseRecord).runtimeOwnedStripeCallback;
   // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
@@ -4074,7 +4074,7 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
-    database.observability?.capture(error, "endpoint");
+    database.observability?.capture(error, "endpoint", undefined, { handler: (endpoint as LooseRecord).name });
     if (outerCommitted) throw error;
     if ((endpointRequest as LooseRecord).multipart) {
       try { await database.log.emit({ category: "platform", event: "file.ingress.failed", level: "warn", message: "Multipart ingress lifecycle event", data: { schema: "v1", outcome: "failed", code: "INGRESS_ROLLBACK" } }); } catch {}
@@ -4411,7 +4411,7 @@ function endpointRequestHead(database: LooseRecord, requestUrl: URL, request: an
 }
 
 // Construct this context independently: no identity, holder, transaction or middleware ever exists.
-async function runSessionlessEndpoint(database: LooseRecord, handler: Function, requestUrl: URL, request: any, requestPath: string) {
+async function runSessionlessEndpoint(database: LooseRecord, handler: Function, requestUrl: URL, request: any, requestPath: string, handlerName?: string) {
   try {
     const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
     const signal = request.__sporadesEndpointSignal ?? request.signal;
@@ -4441,7 +4441,7 @@ async function runSessionlessEndpoint(database: LooseRecord, handler: Function, 
     }
     return result;
   } catch (error) {
-    database.observability?.capture(error, "endpoint");
+    database.observability?.capture(error, "endpoint", undefined, { handler: handlerName });
     throw error;
   }
 }
@@ -5794,7 +5794,7 @@ export function createWebSocketHub(
       });
   }
 
-  function sendUnhandledMessageError(client: LooseRecord, rawMessage: string, error: any) {
+  function sendUnhandledMessageError(client: LooseRecord, rawMessage: string, error: any, eventId?: string) {
     let id = null;
     try {
       id = JSON.parse(rawMessage)?.id ?? null;
@@ -5805,6 +5805,7 @@ export function createWebSocketHub(
       id,
       type: "error",
       error: {
+        ...(eventId ? { eventId } : {}),
         message: error?.message || "WebSocket message failed.",
         hint: error?.hint ?? "Retry the request. If this keeps happening, restart the Sporades session.",
       },
@@ -6111,7 +6112,7 @@ export function createWebSocketHub(
       if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void runSubscriptionQueries(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error: any, eventId?: string) => sendUnhandledMessageError(client, rawMessage, error, eventId), operation);
       return;
     }
 
@@ -6650,19 +6651,21 @@ export function createWebSocketHub(
     });
   }
 
-  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void, operation = startOperation(client, "query", subscription.name)) {
+  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any, eventId?: string) => void, operation = startOperation(client, "query", subscription.name)) {
     if (client.replacingTerminatedSession) { operation.end("cancelled"); return; }
     queryOperations.get(subscription)?.end("cancelled");
     queryOperations.set(subscription, operation);
     return operation.run(async () => {
       const generation = (subscription.generation ?? 0) + 1;
       subscription.generation = generation;
+      let eventId: string | undefined;
       try {
         const database = getDatabase();
         const readTables = new Set<string>();
         const result: any = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
           sessionToken: client.session.token,
           clientAddress: client.clientAddress,
+          onDiagnostic: (id?: string) => { eventId = id; },
         }));
         // A failed run may not have read what a successful one would, so it re-runs on every refresh.
         if (subscription.generation === generation) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
@@ -6683,7 +6686,7 @@ export function createWebSocketHub(
         operation.end(operationOutcome(error));
         if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
         subscription.readTables = null;
-        try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
+        try { onError(error, eventId); } catch { /* A closed transport already owns cleanup. */ }
       } finally {
         if (queryOperations.get(subscription) === operation) queryOperations.delete(subscription);
       }
@@ -6706,7 +6709,7 @@ export function createWebSocketHub(
           for (const table of dirty) running.dirty.add(table);
         } else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
           void runSubscriptionQueries(client, subscription,
-            (error: any) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error));
+            (error: any, eventId?: string) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error, eventId));
         }
       }
     }
@@ -6724,7 +6727,7 @@ export function createWebSocketHub(
     queryOperations.delete(subscription);
   }
 
-  async function runSubscriptionQueries(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void, operation?: RuntimeWebSocketOperation) {
+  async function runSubscriptionQueries(client: LooseRecord, subscription: LooseRecord, onError: (error: any, eventId?: string) => void, operation?: RuntimeWebSocketOperation) {
     const running = { pending: false, unscoped: false, dirty: new Set<string>(), cancelled: false };
     queryRefreshes.set(subscription, running);
     try {
@@ -7111,13 +7114,14 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     if (queryHandler) admitCredentialHandler(queryHandler, context, "query");
     context = await applyContextMiddleware(database, context, "query");
   } catch (error: any) {
-    database.observability?.capture(error, "query");
+    const eventId = database.observability?.capture(error, "query", undefined, { handler: customHandler?.name });
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
     return {
       rows: null as any,
       error: {
+        ...(eventId ? { eventId } : {}),
         ...(error?.code ? { code: error.code } : {}),
         message: error.message,
         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
@@ -7160,7 +7164,8 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
   return { rows, error: null };
   })();
   } catch (error) {
-    database.observability?.capture(error, "query");
+    const eventId = database.observability?.capture(error, "query", undefined, { handler: customHandler?.name });
+    try { options.onDiagnostic?.(eventId); } catch { /* Diagnostics cannot replace the original failure. */ }
     primaryError = error;
     throw error;
   } finally {
@@ -7204,13 +7209,14 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
-    database.observability?.capture(error, "query");
+    const eventId = database.observability?.capture(error, "query", undefined, { handler: handler.name });
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
     return {
       data: null as any,
       error: {
+        ...(eventId ? { eventId } : {}),
         ...(error?.code ? { code: error.code } : {}),
         message: error?.message || "Query handler failed.",
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
@@ -7442,8 +7448,8 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error: any) {
-    database.observability?.capture(error, "mutation");
-    if (outerCommitted) return createHookErrorResult(error);
+    const eventId = database.observability?.capture(error, "mutation", undefined, { handler: database.mutations.find((candidate: LooseRecord) => candidate.name === mutationName)?.name });
+    if (outerCommitted) return createHookErrorResult(error, eventId);
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -7457,7 +7463,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
-    return createHookErrorResult(error);
+    return createHookErrorResult(error, eventId);
   }
 }
 
@@ -7550,6 +7556,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     await dispatchPendingJobs(context);
     return response;
   } catch (error: any) {
+    const eventId = database.observability?.capture(error, "message", undefined, { handler: handler.name });
     dropPendingCurrentUserFileByteDeletes(context);
     dropPendingJobCancellationAborts(context);
     dropAccessKeyLifecycleAuditEvents(context);
@@ -7561,6 +7568,7 @@ export async function runAppMessage(database: LooseRecord, auth: any, messageNam
     return {
       data: null,
       error: {
+        ...(eventId ? { eventId } : {}),
         ...(error?.code ? { code: error.code } : {}),
         message: error?.message || "App message handler failed.",
         hint: error?.hint ?? "Check the Capsule message handler and retry the app message.",
@@ -8424,7 +8432,7 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
             error = atomicStripeAbortError();
           }
         }
-        if (handlerStarted) database.observability?.capture(error, "job");
+        if (handlerStarted) database.observability?.capture(error, "job", undefined, { handler: row.handler });
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
@@ -8489,10 +8497,11 @@ export async function runCurrentUserJobWorker(database: LooseRecord) {
     if (rerunRequested && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
   }
 }
-function createHookErrorResult(error: any) {
+function createHookErrorResult(error: any, eventId?: string) {
   return {
     ok: false,
     error: {
+      ...(eventId ? { eventId } : {}),
       ...(error?.code ? { code: error.code } : {}),
       message: error?.message || "Mutation hook failed.",
       hint: error?.hint ?? "Check the Capsule mutation hooks and retry the mutation.",
