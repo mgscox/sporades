@@ -10,7 +10,7 @@ import type {
 } from "./hosted-capsule-contract.js";
 
 export type HostHelperAction =
-  | "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore"
+  | "host.services.mail-configure" | "host.services.mail-apply" | "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore"
   | "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune"
   | "host.backup.configure" | "host.backup.status"
   | "capsule.canonical.set"
@@ -108,6 +108,7 @@ export type HostHelperRequestBase = JsonObject & {
   verification?: HostHelperVerification;
   accessKeys?: JsonObject;
   diagnostics?: { queryCredential: string };
+  mail?: { stagedFile?: string };
   services?: import("./host-observability.js").ObservabilityTarget;
   backup?: { policy?: import("./host-backups.js").HostBackupPolicy; sourceSubname?: string; id?: string; confirm?: string };
   telemetry?: { tracePropagationOrigins?: string[]; endpoint: string; credential: string; inventoryCredential?: string; inventoryHost?: string; caPem?: string; metricsIntervalMs?: number; eventLoopDelayResolutionMs?: number };
@@ -227,7 +228,7 @@ export type HostAdmissionPublishRequest = HostHelperRequestBase & {
   admission: { contents: string | null };
 };
 export type HostHelperRequest =
-  | (HostHelperRequestBase & { action: "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore" })
+  | (HostHelperRequestBase & { action: "host.services.mail-configure" | "host.services.mail-apply" | "host.services.enable" | "host.services.disable" | "host.services.uninstall" | "host.services.status" | "host.services.connect" | "host.services.backup" | "host.services.backups" | "host.services.prune" | "host.services.restore" })
   | (HostHelperRequestBase & { action: "capsule.backup.create" | "capsule.backup.list" | "capsule.backup.restore" | "capsule.backup.prune" | "host.backup.configure" | "host.backup.status" })
   | (HostHelperRequestBase & { action: "capsule.canonical.set"; capsule: HostHelperCapsuleTarget; canonical: { domain: string | null } })
   | HostAdmissionPublishRequest

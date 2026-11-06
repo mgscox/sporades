@@ -66,7 +66,8 @@ import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } 
 import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
-import { enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
+import { configureObservabilityMail } from "./host-observability-mail.js";
+import { applyObservabilityMail, enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
 import { type HostBackupResumeDiagnostics, configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
 import { hostedTelemetryConfig, hostedTelemetryCoverage } from "./hosted-telemetry-coverage.js";
 import {
@@ -580,6 +581,8 @@ function managedRouteMutationLockIdentity(request: HostHelperRequest) {
     case "capsule.backup.restore":
     case "capsule.backup.list":
     case "capsule.backup.prune": validateLifecycleRequest(request); break;
+    case "host.services.mail-configure":
+    case "host.services.mail-apply":
     case "host.services.enable":
     case "host.services.disable":
     case "host.services.uninstall":
@@ -983,7 +986,9 @@ async function dispatchMain(request: HostHelperRequest) {
     const host = request.host;
     if (host.domain.includes(":")) throw helperError("Observability requires a DNS Hosted domain.", "Use a Hosted domain without a port.");
     let data;
-    if (operation === "enable") {
+    if (operation === "mail-configure") data = await configureObservabilityMail(host, request.mail?.stagedFile);
+    else if (operation === "mail-apply") data = await applyObservabilityMail(host);
+    else if (operation === "enable") {
       await assertHostnamesAvailable(host.remoteRoot, [`errors.${host.domain}`, await readObservabilityAnalyticsDomain(host)], `observability:${host.domain}`);
       const master = path.join(host.remoteRoot, "caddy", "Caddyfile");
       if (!await pathExists(master)) throw helperError("Bootstrap the Hosted domain first.", "Run host bootstrap before enabling observability.");

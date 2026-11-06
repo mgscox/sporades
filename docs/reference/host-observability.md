@@ -43,8 +43,8 @@ the passwords from that protected file. Do not copy it into a Capsule or commit
 it. Status never returns passwords or provider tokens. The GlitchTip admin is
 `ops@<hosted-domain>`; the Umami admin is `admin`. Public self-registration is
 disabled. GlitchTip host and CSRF origin checks explicitly allow its managed
-HTTPS hostname (plus loopback API access). No SMTP credentials are provisioned: configure notification delivery
-separately if email alerts are wanted.
+HTTPS hostname (plus loopback API access). Mail defaults to console-only output. Configure protected SMTP below if email
+alerts are wanted; Capsule `mail.smtp` is a separate subsystem.
 
 Retry the same enable after a failed installation. Intent is written before
 starting containers; service hostnames remain reserved through partial installs,
@@ -83,6 +83,117 @@ snapshots do not replace the destination's routing configuration.
 Verify an authenticated dashboard after a hostname change, including a page
 refresh and website navigation. Heartbeat/login API success alone does not
 establish that dashboard Server Actions work.
+
+## Protected GlitchTip SMTP
+
+The installed helper and CLI must include `mail-configure` and `mail-apply`.
+Installing that version is a separate operator-controlled deployment. Applying or
+rotating SMTP on a compatible installation does **not** require `host upgrade` or
+restarting the whole stack. These commands target the services Host (`--on`).
+
+Stage a JSON file **on the services Host**, using the helper's OS user. Use an
+operator password manager or a protected editor with backup/swap disabled; never
+put credentials in a shell command, environment override, command history, chat,
+or a diagnostic capture. The staged file and its eventual `mail.json` must be
+regular single-link files owned by that user with exact mode `0600`. All parent
+directories must be helper/root-owned and not writable by group/other. Symbolic
+links, hard links, unsafe ownership/modes, unknown fields and partial input fail
+closed. Keep staging outside `/tmp` and outside Capsule-readable directories.
+
+For example, create `<remote-root>/mail-staging/` with mode `0700`, then use the
+protected editor to write `<remote-root>/mail-staging/glitchtip.json` with mode
+`0600`. Its complete schema is:
+
+```json
+{
+  "version": 1,
+  "transport": "smtp-ssl",
+  "host": "smtp.example.com",
+  "port": 465,
+  "username": "synthetic-user@example.com",
+  "password": "synthetic-replace-in-protected-editor",
+  "from": "alerts@example.com"
+}
+```
+
+Only authenticated implicit TLS is supported. Supply an exact lowercase DNS
+hostname, an integer port `1..65535` (including `465`), nonempty printable ASCII credentials and
+a plain sender mailbox without a display name. The helper encodes credentials
+for the pinned provider's `smtp+ssl://` URL. Certificate and hostname verification
+use the provider container's normal CA store. There is no insecure, plaintext,
+STARTTLS fallback, arbitrary environment input, or verification bypass.
+
+From the configuring workstation, publish the on-Host staged file and apply it:
+
+```sh
+sporades host services mail-configure observability --on ops --file /srv/sporades/mail-staging/glitchtip.json --json
+sporades host services mail-apply observability --on ops --json
+sporades host services status observability --on ops --json
+```
+
+Substitute the actual protected remote root in `--file`; this is an absolute
+**remote** path, not a file uploaded/read from the workstation. Publication is
+atomic and synced to disk under the Host lock. It writes the validated setting to
+`<remote-root>/hosts/<hosted-domain>/services/observability/mail.json`, without
+printing credentials. Remove the staged copy securely after publication according
+to the operator's storage policy. Status reports only `mail.configured` and
+`mail.transport`; it does not test authentication, message acceptance or receipt.
+
+`mail-apply` requires an enabled, ready stack with no interrupted restore. It
+updates the mail fields in the protected Compose file and pins the existing web
+listener so Caddy keeps its working route, then recreates exactly
+**web and worker**, using `up -d --no-deps --force-recreate web worker`. There is a
+brief GlitchTip interruption. Postgres, Valkey, Umami, Caddy, Capsules, volumes,
+image pins, project identities, DSNs and analytics routing remain in place.
+Readiness checks the web API; it is not SMTP acceptance. Configuration may also be
+staged while services are disabled or before initial installation; the next
+`enable` consumes it. Repeated enable and disable/uninstall/re-enable retain it.
+Do not edit the generated Compose file to configure mail.
+
+### Rotation, rollback and recovery
+
+Keep a protected rollback copy in the operator credential store. Stage a complete
+replacement with the new credential, run `mail-configure`, then `mail-apply`.
+Verify a real GlitchTip notification before revoking the previous credential.
+If apply fails or stops between recreations, retain both credentials and retry
+`mail-apply`; the desired config remains durable. For rollback, stage the previous
+complete JSON and run the same two commands. Provider authentication responses
+are omitted from helper diagnostics; investigate with the provider's protected
+operator tooling without publishing raw responses or container environment dumps.
+
+To return to console-only behavior, stage `{"version":1,"transport":"console"}`
+and publish/apply it the same way. Console mail writes notification content into
+GlitchTip logs. Removing `mail.json` also restores the historical default at the
+next apply/enable, so loss of this file must be treated as lost configuration.
+Malformed/unsafe installed config fails closed: repair ownership/mode or quarantine
+the damaged file in protected storage, then republish a complete known-good copy.
+Never repair by printing its contents. If credentials are lost, issue a replacement
+through the provider's operator process and stage it; do not infer them from logs.
+
+Database backup/restore does not back up or replace SMTP credentials or `public.json`.
+After database restore, enable reads the **destination's current** mail setting.
+For Host disaster recovery, separately restore `mail.json`, `public.json` and the
+existing protected service secrets with their ownership/modes. Preserve the old
+integration identities and database history. Keep these files in encrypted
+operator-controlled backups, separate from application database dumps.
+
+### Acceptance evidence
+
+The disposable local acceptance command is:
+
+```sh
+SPORADES_CONFIG_DIR="$PWD/.tmp/observability-config" SPORADES_OBSERVABILITY_SMTP_TEST=1 SPORADES_OBSERVABILITY_BACKUP_TEST=1 node scripts/verify-host-observability.mjs
+```
+
+It uses the pinned providers, synthetic credentials, an isolated TLS SMTP receiver
+on internal port 465, and a real GlitchTip worker alert for a stored issue. It
+checks rejection of the receiver's initially untrusted certificate, then adds its
+test CA **only to the disposable containers**, and repeats delivery after enable,
+database restore and disable/re-enable. No receiver port is published. A passing
+receiver acceptance proves authenticated SMTP acceptance; it does **not** prove
+external inbox receipt, spam placement, SPF/DKIM/DMARC alignment or live delivery.
+Jem owns operator deployment and live acceptance, including sender verification,
+a real notification, provider acceptance and separately confirmed inbox receipt.
 
 ## Connect Capsules
 

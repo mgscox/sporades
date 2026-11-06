@@ -1,3 +1,5 @@
+import type { HostObservabilityMail } from "./host-observability-mail.js";
+import { readObservabilityMail, observabilityMailEnvironment, observabilityMailStatus } from "./host-observability-mail.js";
 import { spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
@@ -40,10 +42,10 @@ function command(args: string[], input?: string | Buffer, maxBuffer = 4 * 1024 *
   if (r.error || r.status !== 0) fail();
   return r.stdout;
 }
-export function observabilityCompose(host: HostHelperHost, state: State) {
+export function observabilityCompose(host: HostHelperHost, state: State, mail: HostObservabilityMail | null = null) {
   const common = { restart: "unless-stopped", security_opt: ["no-new-privileges:true"], logging: { driver: "json-file", options: { "max-size": "10m", "max-file": "3" } } };
   const pg = (name: string, password: string) => ({ ...common, image: OBSERVABILITY_IMAGES.postgres, environment: { POSTGRES_USER: name, POSTGRES_DB: name, POSTGRES_PASSWORD: password }, volumes: [`${name}-db:/var/lib/postgresql/data`], healthcheck: { test: ["CMD-SHELL", `pg_isready -U ${name}`], interval: "5s", timeout: "5s", retries: 30 } });
-  const environment = { DATABASE_URL: `postgresql://glitchtip:${state.secrets.database}@errors-db:5432/glitchtip`, REDIS_URL: "redis://valkey:6379/0", SECRET_KEY: state.secrets.django, GLITCHTIP_DOMAIN: `https://errors.${host.domain}`, CSRF_TRUSTED_ORIGINS: `https://errors.${host.domain}`, ALLOWED_HOSTS: `errors.${host.domain},127.0.0.1`, DEFAULT_FROM_EMAIL: `ops@${host.domain}`, EMAIL_URL: "consolemail://", ENABLE_USER_REGISTRATION: "false", ENABLE_SOCIAL_APPS_USER_REGISTRATION: "false", ENABLE_ORGANIZATION_CREATION: "false", PORT: "8080", UWSGI_WORKERS: "2", CELERY_WORKER_CONCURRENCY: "2", CELERY_WORKER_POOL: "threads" };
+  const environment = { DATABASE_URL: `postgresql://glitchtip:${state.secrets.database}@errors-db:5432/glitchtip`, REDIS_URL: "redis://valkey:6379/0", SECRET_KEY: state.secrets.django, GLITCHTIP_DOMAIN: `https://errors.${host.domain}`, CSRF_TRUSTED_ORIGINS: `https://errors.${host.domain}`, ALLOWED_HOSTS: `errors.${host.domain},127.0.0.1`, ...observabilityMailEnvironment(mail, host.domain), ENABLE_USER_REGISTRATION: "false", ENABLE_SOCIAL_APPS_USER_REGISTRATION: "false", ENABLE_ORGANIZATION_CREATION: "false", PORT: "8080", UWSGI_WORKERS: "2", CELERY_WORKER_CONCURRENCY: "2", CELERY_WORKER_POOL: "threads" };
   return { name: observabilityProject(host), services: {
     "errors-db": pg("glitchtip", state.secrets.database), "analytics-db": pg("umami", state.secrets.umamiDatabase),
     valkey: { ...common, image: OBSERVABILITY_IMAGES.valkey, command: ["valkey-server", "--save", "", "--appendonly", "no"], cap_drop: ["ALL"], user: "999:999", read_only: true, tmpfs: ["/tmp"] },
@@ -102,6 +104,7 @@ async function loginUmami(host: HostHelperHost, state: State) {
 // Call under the Host-wide route lock. The durable intent reserves hostnames even
 // if installation crashes. No route is exposed until both admin accounts are safe.
 export async function enableObservability(host: HostHelperHost, applyRoutes: (ports: { errors: number; analytics: number }) => Promise<void>) {
+  const mail = await readObservabilityMail(host);
   await trustedBackupPath(host.remoteRoot, true);
   const info = JSON.parse(command(["info", "--format", "{{json .}}"]).toString());
   const disk = await statfs(host.remoteRoot);
@@ -117,7 +120,7 @@ export async function enableObservability(host: HostHelperHost, applyRoutes: (po
   }
   state.enabled = true;
   await atomicBackupJson(path.join(directory, "secrets.json"), state);
-  await atomicBackupJson(path.join(directory, "compose.json"), observabilityCompose(host, state));
+  await atomicBackupJson(path.join(directory, "compose.json"), observabilityCompose(host, state, mail));
   observabilityDocker(host, ["up", "-d", "--wait", "errors-db", "analytics-db", "valkey"]);
   observabilityDocker(host, ["run", "--rm", "--no-deps", "web", "./manage.py", "migrate", "--noinput"]);
   observabilityDocker(host, ["up", "-d"]);
@@ -157,13 +160,14 @@ export async function disableObservability(host: HostHelperHost, applyRoutes: ()
   return { enabled: false, dataRetained: true, credentialsRetained: true, uninstalled: uninstall };
 }
 export async function statusObservability(host: HostHelperHost) {
+  const mail = observabilityMailStatus(await readObservabilityMail(host));
   const state = await readObservabilityState(host);
-  if (!state) return { installed: false, enabled: false };
+  if (!state) return { installed: false, enabled: false, mail };
   let healthy = false;
   if (state.enabled) try { await api(host, "web", "/api/0/"); await api(host, "umami", "/api/heartbeat"); healthy = true; } catch { /* status is secret-free */ }
   await publishObservabilityMetric(host, healthy ? 1 : 0, state.enabled);
   if (state.enabled && await readHostBackupPolicy(host)) await publishHostBackupMetric(host, "_observability");
-  return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
+  return { mail, installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
 }
 export async function provisionObservability(host: HostHelperHost, target: ObservabilityTarget) {
   const state = await readObservabilityState(host);
@@ -323,4 +327,37 @@ export async function installObservabilityMonitor(host: HostHelperHost, enabled:
     }
   }
   for (const args of [["daemon-reload"], [enabled ? "enable" : "disable", "--now", `${units.name}.timer`]]) if (spawnSync("systemctl", args, { timeout: 30_000 }).status !== 0) fail("Could not reconcile observability monitoring; retry the services command.");
+}
+
+/** Caller holds the Host-wide lock; retry after interrupted recreation. */
+export async function applyObservabilityMail(host: HostHelperHost) {
+  const mail = await readObservabilityMail(host);
+  const state = await readObservabilityState(host);
+  if (!state?.enabled || !state.ready) fail("Enable observability before applying mail configuration.");
+  const directory = observabilityDirectory(host);
+  if (await lstat(path.join(directory, "restore.json")).then(() => true, e => { if (e.code === "ENOENT") return false; throw e; })) fail("Finish the interrupted service restore before applying mail configuration.");
+  const file = path.join(directory, "compose.json");
+  await trustedBackupPath(file, true);
+  const details = await lstat(file);
+  if (!details.isFile() || details.nlink !== 1) fail("Invalid protected observability Compose file.");
+  let compose;
+  try { compose = JSON.parse(await readFile(file, "utf8")); } catch { return fail("Invalid protected observability Compose file."); }
+  if (compose.name !== observabilityProject(host) || !compose.services?.web?.environment || !compose.services?.worker?.environment) fail("Invalid protected observability Compose file.");
+  // Compose's anonymous port would move on recreation, leaving Caddy's route stale.
+  // Retain the published listener in desired state so an interrupted apply retries it.
+  const ports = compose.services.web.ports;
+  if (!Array.isArray(ports) || ports.length !== 1 || typeof ports[0] !== "string" || !/^127\.0\.0\.1:(?:[0-9]+)?:8080$/.test(ports[0])) fail("Invalid protected observability web listener.");
+  const retained = /^127\.0\.0\.1:([0-9]+):8080$/.exec(ports[0]);
+  const port = retained ? Number(retained[1]) : observabilityPort(host, "web");
+  if (port < 1024 || port > 65535) fail("Invalid protected observability web listener.");
+  compose.services.web.ports = [`127.0.0.1:${port}:8080`];
+  for (const role of ["web", "worker"]) {
+    const env = compose.services[role].environment;
+    if (typeof env !== "object" || Array.isArray(env)) fail("Invalid protected observability Compose environment.");
+    Object.assign(env, observabilityMailEnvironment(mail, host.domain));
+  }
+  await atomicBackupJson(file, compose);
+  observabilityDocker(host, ["up", "-d", "--no-deps", "--force-recreate", "web", "worker"]);
+  await waitReady(host, "web");
+  return { mail: observabilityMailStatus(mail), recreated: ["web", "worker"] };
 }
