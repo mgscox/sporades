@@ -124,9 +124,29 @@ outage. Explicit connect requires removing conflicting sealed keys first.
 
 Provider identity is deterministic from the exact Capsule subname and Hosted
 domain, so retrying after an API success or local sealing failure reuses the same
-project/site. GlitchTip project names are `capsule-<32 hex digest>` because this
-pinned version derives slugs from names. Identical subnames on different Hosted
-domains have separate identities. Custom domain aliases do not create new sites.
+project/site. The GlitchTip slug remains
+`capsule-<first 32 lowercase hex characters of SHA256(subname + "." + domain)>`.
+GlitchTip `v5.2.1` derives the initial slug from the name, so provisioning first
+creates with both name and slug set to that hashed identity. It then uses
+`PUT /api/0/projects/sporades/<slug>/` with only
+`{"name":"<subname>.<Hosted domain>","slug":"<unchanged slug>"}`. The readable
+name uses the **Capsule's Hosted domain**, even on a dedicated services Host,
+and is truncated to the pinned API's 64-character name limit. Hashing always
+uses the full identity. Identical subnames on different Hosted domains have
+separate identities. Custom and canonical domain aliases change neither name
+nor identity and do not create new sites.
+
+On a subsequent registration/connect, only an exact hashed default name equal
+to that project's deterministic slug is migrated. Any other existing name is
+treated as operator-owned and preserved, including already readable names.
+No background sweep or production reprovisioning is required. Interruption
+after create or rename is safe to retry: provisioning looks up the same slug
+and never rotates keys to reconcile a name. Before using keys, it validates the
+provider's project ID, slug and name; the rename response must retain the same
+ID and slug and return the requested name. A mismatch stops with an opaque
+error rather than creating a replacement or repairing provider identity. The
+DSN must reference that project ID. Project IDs, slugs, keys/DSNs and collected
+history are retained.
 Disable/unregister does not delete collected history. A public DSN grants event
 ingestion only; provisioning credentials stay on the ops Host.
 
@@ -194,8 +214,11 @@ local contracts. Run `node scripts/verify-host-observability.mjs` against a
 `SPORADES_OBSERVABILITY_BACKUP_TEST=1` with restic installed to include real
 database backup/restore. The harness creates unique projects and removes only
 its own containers/volumes. It exercises interrupted enable recovery, repeated
-enable, per-Capsule API identities, encrypted env, stored runtime error and
-pageview, disable/re-enable and uninstall. It uses loopback collection URLs and
+enable, per-Capsule API identities, readable-name creation and hashed-default
+migration, interrupted rename retries, operator-name preservation, unchanged
+IDs/slugs/key responses and history, no duplicate projects, encrypted env,
+continued DSN ingestion and stored pageviews, disable/re-enable and uninstall.
+It uses loopback collection URLs and
 a route callback; public DNS/TLS and systemd reboot behavior require the final
 disposable Linux Host rehearsal.
 

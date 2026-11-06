@@ -78,14 +78,16 @@ export function observabilityPort(host: HostHelperHost, service: "web" | "umami"
   if (!match || +match[1] < 1024 || +match[1] > 65535) fail("Observability service has no private published port.");
   return +match[1];
 }
-async function api(host: HostHelperHost, service: "web" | "umami", route: string, token?: string, body?: unknown, optional = false) {
+async function api(host: HostHelperHost, service: "web" | "umami", route: string, token?: string, body?: unknown, optional = false, method = body === undefined ? "GET" : "POST") {
   try {
-    const response = await fetch(`http://127.0.0.1:${observabilityPort(host, service)}${route}`, { method: body === undefined ? "GET" : "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(`http://127.0.0.1:${observabilityPort(host, service)}${route}`, { method, headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(10_000) });
     if (optional && response.status === 404) return null;
     if (!response.ok) fail();
     const text = await response.text();
     if (text.length > 1024 * 1024) fail();
-    return text ? JSON.parse(text) : {};
+    const value = text ? JSON.parse(text) : {};
+    if (service === "web" && value === null) fail(); // GlitchTip requires an explicit 404; Umami returns null for missing websites.
+    return value;
   } catch { return fail(); }
 }
 async function waitReady(host: HostHelperHost, service: "web" | "umami") {
@@ -178,13 +180,25 @@ export async function provisionObservability(host: HostHelperHost, target: Obser
   const slug = `capsule-${hash.slice(0, 32)}`;
   const values: Record<string, string> = {};
   if (target.errors) {
-    if (!await api(host, "web", `/api/0/projects/sporades/${slug}/`, state.secrets.token, undefined, true)) await api(host, "web", "/api/0/teams/sporades/capsules/projects/", state.secrets.token, { name: slug, slug, platform: "node" });
+    const route = `/api/0/projects/sporades/${slug}/`;
+    const existing = await api(host, "web", route, state.secrets.token, undefined, true);
+    // GlitchTip v5.2.1 derives the initial slug from name; create with the legacy identity first.
+    const project = existing ?? await api(host, "web", "/api/0/teams/sporades/capsules/projects/", state.secrets.token, { name: slug, slug, platform: "node" });
+    if (!project || typeof project.id !== "string" || !/^[1-9]\d*$/.test(project.id) || project.slug !== slug || typeof project.name !== "string" || !project.name || (!existing && project.name !== slug)) fail();
+    // Only migrate hashed defaults. Any other name belongs to the operator.
+    if (project.name === slug) {
+      const name = identity.slice(0, 64);
+      const updated = await api(host, "web", route, state.secrets.token, { name, slug }, false, "PUT");
+      if (!updated || updated.id !== project.id || updated.slug !== slug || updated.name !== name) fail();
+    }
     let keys = await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token);
-    if (!Array.isArray(keys)) keys = keys.items ?? keys.results;
-    if (!keys?.length) keys = [await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token, { name: "Sporades" })];
-    const dsn = new URL(keys[0].dsn.public);
+    if (!Array.isArray(keys)) keys = keys?.items ?? keys?.results;
+    if (!Array.isArray(keys)) fail();
+    if (!keys.length) keys = [await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token, { name: "Sporades" })];
+    let dsn: URL;
+    try { dsn = new URL(keys[0].dsn.public); } catch { return fail(); }
     // Never trust a provider-supplied destination. Pin the public endpoint to this Host.
-    if (!/\/\d+$/.test(dsn.pathname) || !/^[a-f0-9]{32}$/.test(dsn.username)) fail();
+    if (!/\/\d+$/.test(dsn.pathname) || dsn.pathname.split("/").at(-1) !== project.id || !/^[a-f0-9]{32}$/.test(dsn.username)) fail();
     values.ERROR_DSN = `https://${dsn.username}@errors.${host.domain}${dsn.pathname}`;
   }
   if (target.analytics) {
