@@ -779,3 +779,10 @@ their local project and then the usual push. A separate services Host requires
 `host register <subname> --host <Capsule-host> --on <ops-host>`. Configure the
 backup policy on that services Host. Verify fresh errors/pageviews, backup
 restore and systemd/TLS behavior on disposable infrastructure before go-live.
+
+Managed GlitchTip mail is an optional, separately staged protected setting. Use
+`host services mail-configure observability --file <absolute-on-Host-file>` and
+`mail-apply observability` on a compatible helper to recreate only web/worker.
+See the [SMTP operator procedure](../reference/host-observability.md#protected-glitchtip-smtp)
+for credential custody, rotation, recovery and acceptance; agents must not run
+production SMTP configuration or live acceptance as part of issue implementation.

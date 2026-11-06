@@ -841,4 +841,7 @@ Protected per-Host `public.json` routing intent can select an exact analytics
 hostname independently of the Host/data identity. The generated direct route,
 service URLs and Capsule provisioning share that hostname, preserving browser
 Host/Origin checks; the hostname remains reserved while the service is disabled.
+Protected helper-owned GlitchTip mail configuration supports authenticated implicit
+TLS SMTP; publication and web/worker-only apply preserve database and routing
+identities. Console-only mail remains the default.
 See [Host-managed observability](docs/reference/host-observability.md).
