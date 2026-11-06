@@ -1,5 +1,6 @@
 // Disposable LOCAL Docker acceptance. Never connects to a Host, SSH or cloud.
 import assert from 'node:assert/strict';
+import { acceptObservability } from '../dist/cli/observability-acceptance.js';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
@@ -17,6 +18,17 @@ process.env.DOCKER_HOST = 'unix:///var/run/docker.sock';
 for (const key of ['DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH']) delete process.env[key];
 process.env.SPORADES_CONFIG_DIR = path.join(directory, 'config');
 process.env.COMPOSE_PROJECT_NAME = observabilityProject(host);
+// Synchronous Docker setup can outlive provider keep-alive while blocking FIN processing.
+// Keep this disposable client on loopback and avoid reusing those idle sockets.
+const nativeFetch = globalThis.fetch;
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : input);
+  assert.equal(url.protocol, 'http:');
+  assert.equal(url.hostname, '127.0.0.1', 'Disposable acceptance refuses non-loopback requests');
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+  headers.set('connection', 'close');
+  return nativeFetch(input, { ...init, headers, redirect: 'error' });
+};
 const cleanup = [];
 const fixture = { after: callback => cleanup.push(callback) };
 const marker = `acceptance-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
@@ -99,6 +111,44 @@ try {
   assert.ok(views>0,'Umami stores the query-free pageview');
   assert.equal((await statusObservability(host)).healthy,true);
   process.stdout.write('Stored exact endpoint failure and browser error/rejection verified in the provisioned GlitchTip project, with Capsule/release/environment and redaction; direct capture verified separately. Umami pageview stored.\n');
+  // Exercise the opt-in operator gate against these same disposable providers.
+  const gateCapsule = await startCollectionCapsule(fixture, { config, serverEnv, dynamicFailureMarker: true });
+  const gateTarget = { origin: gateCapsule.origin, capsule: config.name, release: config.release.id, environment: 'local-acceptance' };
+  const gate = await acceptObservability({ version: 1, target: gateTarget, surfaces: Object.fromEntries(
+    ['server-error', 'browser-error', 'browser-rejection'].map(surface => [surface, {
+      provider: 'glitchtip', project: projectId, state: 'enabled',
+      diagnostic: { path: surface === 'server-error' ? '/failure' : '/__sporades/observe.js', approval: 'disposable-fixture-334' },
+    }])) }, {
+    async probe(context) {
+      if (context.surface === 'server-error') {
+        const response = await fetch(gateCapsule.origin + '/failure?marker=' + context.marker, { signal: context.signal });
+        assert.equal(response.status, 500);
+        assert.equal(await response.text(), failureBody);
+        assert.deepEqual(await (await fetch(gateCapsule.origin + '/state', { signal: context.signal })).json(), []);
+      } else {
+        const prefix = context.marker.slice(0, -(context.surface.length + 1));
+        await emitCollectionBrowserFailures(fixture, gateCapsule.origin, prefix, [context.surface]);
+      }
+      return { capture: 'app-runtime', target: gateTarget, redactionCanaries: context.surface === 'server-error'
+        ? ['synthetic-server-password'] : ['synthetic-password', 'synthetic-query', 'synthetic-fragment', 'synthetic-stack', 'synthetic-location'] };
+    },
+    async readBack(context) {
+      const rows = JSON.parse(sql('errors-db', 'glitchtip', `SELECT COALESCE(json_agg(json_build_object('id', e.id, 'timestamp', COALESCE(to_jsonb(e)->>'timestamp', e.data->>'timestamp', to_jsonb(e)->>'created'), 'project', i.project_id, 'message', e.data #>> '{exception,values,0,value}', 'tags', e.tags, 'release', r.version, 'data', e.data)), '[]'::json) FROM issue_events_issueevent e JOIN issue_events_issue i ON i.id=e.issue_id LEFT JOIN releases_release r ON r.id=e.release_id WHERE e.data #>> '{exception,values,0,value}' LIKE '${context.marker}%'`, Date.now() + 5000));
+      if (!rows.length) return null;
+      assert.equal(rows.length, 1);
+      const row = rows[0];
+      return { handle: String(row.id), project: String(row.project), marker: row.message.split(' ')[0],
+        timestamp: /^\d+(\.\d+)?$/.test(row.timestamp) ? new Date(Number(row.timestamp) * 1000).toISOString() : row.timestamp,
+        capsule: row.tags.capsule, release: row.release, environment: row.tags.environment === row.data.environment ? row.data.environment : 'invalid-environment-tags',
+        surface: row.tags.surface === 'endpoint' && row.data.platform === 'node' ? 'server-error' : row.tags.surface === 'client' && row.data.platform === 'javascript' ? row.message.split(' ')[0].slice(-context.surface.length) : row.tags.surface,
+        payload: row };
+    },
+    async cleanup() {}, // The enclosing finally owns both Capsules and this exact Compose project.
+  }, { authorizeTarget: gateTarget.origin, release: gateTarget.release, timeoutMs: 90000 });
+  assert.equal(gate.status, 'pass', JSON.stringify(gate));
+  assert.equal(gate.surfaces['analytics-pageview'].status, 'skipped');
+  assert.equal(gate.surfaces['notification-inbox'].status, 'skipped');
+  process.stdout.write(JSON.stringify({ observabilityAcceptance: gate }) + '\n');
   if (process.env.SPORADES_OBSERVABILITY_BACKUP_TEST === '1') {
     const {spawnSync}=await import('node:child_process');
     const {writeFile}=await import('node:fs/promises');
@@ -152,5 +202,5 @@ try {
     }
     finally { observabilityDocker(host,['down','--volumes','--remove-orphans']); }
   }
-  finally { await rm(directory,{recursive:true,force:true}); }
+  finally { globalThis.fetch = nativeFetch; await rm(directory,{recursive:true,force:true}); }
 }
