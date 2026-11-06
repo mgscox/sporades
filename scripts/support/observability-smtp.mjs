@@ -5,7 +5,7 @@ import path from 'node:path';
 import { configureObservabilityMail } from '../../dist/cli/host-observability-mail.js';
 import { applyObservabilityMail, observabilityDocker, observabilityPort, observabilityProject } from '../../dist/cli/host-observability.js';
 
-export async function smtpAcceptance(host) {
+export async function smtpAcceptance(host, marker) {
  const directory=path.join(host.remoteRoot,'smtp-receiver');await mkdir(directory,{mode:0o700});
  const mail={version:1,transport:'smtp-ssl',host:'smtp.example.test',port:465,username:'synthetic@example.test',password:'synthetic@:/?#%$! space',from:'alerts@example.test'};
  const staged=path.join(directory,'receiver.json');await writeFile(staged,JSON.stringify(mail),{mode:0o600});
@@ -66,7 +66,7 @@ export async function smtpAcceptance(host) {
     const after=await readFile(path.join(directory,'accepted.jsonl'),'utf8').catch(()=> '');
     if(after.length>before.length){
      const accepted=JSON.parse(after.trim().split('\n').at(-1));
-     assert.match(accepted.body,/X-Mailer: GlitchTip/);assert.match(accepted.body,/From: alerts@example.test/);assert.match(accepted.body,/disposable observability acceptance/);
+     assert.match(accepted.body,/X-Mailer: GlitchTip/);assert.match(accepted.body,/From: alerts@example.test/);assert.ok(accepted.body.includes(marker),'Notification contains this run’s synthetic error marker');
      process.stdout.write('Authenticated TLS SMTP accepted a real GlitchTip worker notification (synthetic receiver only).\n');return;
     }
     await new Promise(r=>setTimeout(r,1000));

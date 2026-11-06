@@ -6,6 +6,7 @@ import { createRuntimeObservability, routeCollection } from '../dist/observabili
 import { clientAddressBoundaryToken } from '../dist/client-address.js';
 import { nestedUrlGroups } from './support/diagnostic-nested-urls.js';
 import { failClosedProbe, spacedContainerGroups } from './support/diagnostic-spaced-containers.js';
+import { startCollectionCapsule, assertCollectionBusinessSemantics, emitCollectionBrowserFailures } from './support/collection-capsule.mjs';
 
 async function listen(t, handler) {
   const server = createServer(handler).listen(0, '127.0.0.1');
@@ -563,33 +564,15 @@ test('tunnel rejects cross-origin, malformed and unsupported events; spoofed for
   assert.equal(received[0].headers['x-forwarded-for'], undefined);
 });
 
-async function generatedCollectionFixture(t, serverEnv = {}) {
-  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
-  const path = await import('node:path');
-  const { spawn } = await import('node:child_process');
-  const { createServerBundleModuleSource } = await import('../dist/templates/server-bundle-module-graph.js');
-  const { bundleServerCapsuleModule } = await import('../dist/bundle-pipeline.js');
-  const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'collect-bundle-'));
-  let child;
-  t.after(async () => {
-    if (child && child.exitCode === null && child.signalCode === null) { const ended = once(child, 'exit'); child.kill('SIGTERM'); const timer = setTimeout(() => child.kill('SIGKILL'), 4000); try { await ended; } finally { clearTimeout(timer); } }
-    await rm(root, { recursive: true, force: true });
-  });
+async function generatedCollectionFixture(t, serverEnv = {}, { mode = 'available' } = {}) {
   const received = [];
-  const receiver = await listen(t, async (request, response) => { let body = ''; for await (const part of request) body += part; received.push({ headers: request.headers, body }); response.writeHead(200).end(); });
-  const config = { name: 'bundle-collection', observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } }, analytics: { provider: 'umami', endpointEnv: 'ANALYTICS', websiteIdEnv: 'WEBSITE' }, security: { csp: { mode: 'enforce', reportTo: 'observability', directives: { 'script-src': ["'self'"], 'connect-src': ["'self'"] } } } };
-  const serverSource = 'import { capsule, endpoint } from "sporades/server"; export default capsule({ name: "bundle-collection", schema: {}, endpoints: { fail: endpoint({ method: "GET", path: "/failure" }, () => { throw new Error("generated server failure"); }) } });';
-  const serverModuleSource = await bundleServerCapsuleModule({ serverSource, serverSourcePath: path.join(root, 'server', 'index.ts') });
-  await mkdir(path.join(root, 'public'), { recursive: true });
-  await writeFile(path.join(root, 'public', 'index.html'), '<!doctype html><html><head></head><body>Collection fixture</body></html>');
-  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret', ...serverEnv }, serverSource, serverModuleSource, epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");' }));
-  child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: { ...process.env, PORT: '0', SPORADES_CONFIG_DIR: path.join(root, 'config') }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = '', errors = '', origin;
-  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
-  for (let i = 0; i < 2000; i++) { assert.equal(child.exitCode, null, errors); const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening)); if (signal) { origin = `http://127.0.0.1:${signal.listening}`; break; } await new Promise(resolve => setTimeout(resolve, 10)); }
-  assert(origin, errors);
+  const receiver = await listen(t, async (request, response) => { let body = ''; for await (const part of request) body += part; received.push({ headers: request.headers, body }); response.writeHead(mode === 'unavailable' ? 503 : 200).end(); });
+  const config = { name: 'bundle-collection', ...(mode === 'absent' ? {} : { observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } }, analytics: { provider: 'umami', endpointEnv: 'ANALYTICS', websiteIdEnv: 'WEBSITE' } }), security: { csp: { mode: 'enforce', ...(mode === 'absent' ? {} : { reportTo: 'observability' }), directives: { 'script-src': ["'self'"], 'connect-src': ["'self'"] } } } };
+  const { origin } = await startCollectionCapsule(t, { config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret', ...serverEnv } });
   const document = await fetch(origin + '/', { headers: { 'sec-fetch-dest': 'document' } });
-  assert.match(await document.text(), /src="\/__sporades\/observe.js"/);
+  const html = await document.text();
+  if (mode === 'absent') assert.doesNotMatch(html, /__sporades\/observe\.js/);
+  else assert.match(html, /src="\/__sporades\/observe.js"/);
   assert.match(document.headers.get('content-security-policy'), /script-src 'self'(?:;|$)/);
   const script = await (await fetch(origin + '/__sporades/observe.js')).text();
   assert.doesNotMatch(script, /server-only-secret|website-234|DSN|127\.0\.0\.1/);
@@ -615,6 +598,42 @@ test('generated Capsule reserves server delivery after public outbound and ingre
   const serverEvent = JSON.parse(received[60].body.trim().split('\n')[2]);
   assert.equal(serverEvent.tags.surface, 'endpoint');
   assert.equal(serverEvent.exception.values[0].value, 'generated server failure');
+});
+
+test('generated Capsule preserves opaque failure, rollback and later commits with available, unavailable or absent errors integration', async t => {
+  for (const mode of ['available', 'unavailable', 'absent']) await t.test(mode, async t => {
+    const { origin, received } = await generatedCollectionFixture(t, {}, { mode });
+    await assertCollectionBusinessSemantics(origin);
+    if (mode !== 'absent') {
+      for (let i = 0; i < 100 && received.length === 0; i++) await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(received.length, 1);
+      const event = JSON.parse(received[0].body.trim().split('\n')[2]);
+      assert.equal(event.tags.surface, 'endpoint');
+      assert.equal(event.exception.values[0].value, 'generated server failure');
+    } else assert.equal(received.length, 0);
+    if (mode === 'absent') {
+      assert.equal((await fetch(origin + '/__sporades/observe.js')).status, 404);
+      assert.equal((await fetch(origin + '/__sporades/collect', { method: 'POST' })).status, 404);
+    }
+  });
+});
+
+test('generated Capsule separately delivers browser errors and unhandled rejections with credential and URL redaction', async t => {
+  const { origin, received } = await generatedCollectionFixture(t);
+  const markers = await emitCollectionBrowserFailures(t, origin, 'acceptance-browser');
+  for (let i = 0; i < 100 && received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length < 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const events = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').map(event => JSON.parse(event.body.trim().split('\n')[2]));
+  assert.equal(events.length, 2);
+  for (const marker of markers) {
+    const event = events.find(event => event.exception.values[0].value.startsWith(marker + ' '));
+    assert.ok(event, marker);
+    assert.equal(event.tags.surface, 'client');
+    assert.equal(event.tags.capsule, 'bundle-collection');
+    assert.equal(event.platform, 'javascript');
+    assert.match(event.exception.values[0].value, /REDACTED/);
+    assert.deepEqual(event.exception.values[0].stacktrace.frames, [{ filename: 'https://example.test/client.js', function: 'execute', lineno: 12, colno: 8 }]);
+    assert.doesNotMatch(JSON.stringify(event), /synthetic-(password|query|fragment|stack|location)/);
+  }
 });
 
 test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
