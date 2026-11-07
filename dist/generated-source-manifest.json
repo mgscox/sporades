@@ -58,6 +58,7 @@
       "src/cli/inventory-contract.ts",
       "src/cli/monitoring-maintenance.ts",
       "src/cli/monitoring-stack.ts",
+      "src/cli/observability-acceptance.ts",
       "src/cli/project-config.ts",
       "src/cli/schedule-inspection-envelope.ts",
       "src/cli/server-env-check.ts",
@@ -152,6 +153,7 @@
       "src/types/host-backups.d.ts",
       "src/types/host-observability.d.ts",
       "src/types/monitoring.d.ts",
+      "src/types/observability-acceptance.d.ts",
       "src/types/observability.d.ts",
       "src/types/server.d.ts",
       "src/types/stripe-testing.d.ts",
@@ -162,7 +164,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "b264e9e2a5b4392e56af606ffe74c88fcfb0f105db5d20a0c033725f6fe409fc"
+    "digest": "9b67506c851258874abe3bbba412c6900e30b6785d7bb92ab5b12263368391c6"
   },
   "outputs": {
     "files": [
@@ -364,6 +366,10 @@
       "dist/cli/monitoring-stack.d.ts.map",
       "dist/cli/monitoring-stack.js",
       "dist/cli/monitoring-stack.js.map",
+      "dist/cli/observability-acceptance.d.ts",
+      "dist/cli/observability-acceptance.d.ts.map",
+      "dist/cli/observability-acceptance.js",
+      "dist/cli/observability-acceptance.js.map",
       "dist/cli/project-config.d.ts",
       "dist/cli/project-config.d.ts.map",
       "dist/cli/project-config.js",
@@ -722,6 +728,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "663a0f68ba870d8c6b1daf26dfd6ea3d259ed2949bf230e9372a6d394b7ca901"
+    "digest": "c39371ec34ea0b17fbe85f14631a57532e4184b572c5ee34868265ce5c7707bf"
   }
 }
