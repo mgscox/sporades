@@ -125,9 +125,12 @@ export const CONFORMANCE_SURFACE = {
         assert.deepEqual(runs, [1, 1]);
         const write = async (name, expected) => {
           events.length = 0;
-          const result = await send({ id: `write-${name}`, type: "mutation.run", mutation: "write", args: [name] });
-          assert.equal(result.error, null);
-          await pause();
+          const trigger = async () => {
+            const result = await send({ id: `write-${name}`, type: "mutation.run", mutation: "write", args: [name] });
+            assert.equal(result.error, null);
+          };
+          if (name === "transport_audits") { await trigger(); await pause(); }
+          else await expectResult(name, "mutation", trigger);
           await send({ id: `sentinel-${name}`, type: "auth.get" });
           assert.deepEqual(runs, expected);
           assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), name === "transport_audits" ? [] : [name]);
@@ -137,8 +140,7 @@ export const CONFORMANCE_SURFACE = {
         await write("transport_notes", [2, 2]);
         events.length = 0;
         assert.equal((await send({ id: "enqueue", type: "mutation.run", mutation: "enqueue" })).error, null);
-        await runCurrentUserJobWorker(database);
-        await pause();
+        await expectResult("transport_notes", "job", () => runCurrentUserJobWorker(database));
         assert.deepEqual(runs, [2, 3]);
         assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), ["transport_notes"]);
 

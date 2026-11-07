@@ -1,3 +1,4 @@
+import { waitForHttp } from "./support/http-readiness.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
@@ -344,26 +345,7 @@ async function getAvailablePort() {
   return port;
 }
 
-async function waitForHttp(url, child) {
-  const deadline = Date.now() + 5000;
-  let lastError;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) {
-      throw new Error(`Server bundle exited before serving ${url}`);
-    }
-    try {
-      const response = await fetch(url);
-      if (response.ok) {
-        return response;
-      }
-      lastError = new Error(`Unexpected status ${response.status}`);
-    } catch (error) {
-      lastError = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw lastError;
-}
+
 
 async function stopChild(child) {
   if (child.exitCode !== null) {

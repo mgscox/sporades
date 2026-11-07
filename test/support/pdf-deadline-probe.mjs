@@ -1,6 +1,6 @@
+import { isolatedIngressRuntime } from "./isolated-ingress-runtime.js";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { mock } from "node:test";
 
 const { bytes: encodedBytes, timeouts, wallClock, expiryMode } = JSON.parse(process.argv[2]);
@@ -29,16 +29,16 @@ const pdfjs = await import(${JSON.stringify(actualPdfJsUrl)});
 export const getDocument = pdfjs.getDocument;
 `)}`;
 // Use the same isolated generated-runtime seam as the transient-import test.
-// Keeping the copy beside dist dependencies also supports Node 22.13, which
-// predates synchronous module-loader hooks. Each probe owns and removes its copy.
-const runtimeUrl = new URL(`../../dist/.pdf-deadline-runtime-${randomUUID()}.mjs`, import.meta.url);
+// Absolute dependency imports support Node 22.13 without loader hooks and keep
+// the generated tree stable while sibling tests pack the CLI.
+let fixture;
 
 try {
   const source = await readFile(new URL("../../dist/file-ingress-runtime.js", import.meta.url), "utf8");
   const importExpression = 'import("pdfjs-dist/legacy/build/pdf.mjs")';
   assert.ok(source.includes(importExpression), "generated runtime must retain the lazy PDF.js import seam");
-  await writeFile(runtimeUrl, source.replace(importExpression, `import(${JSON.stringify(gatedModuleUrl)})`));
-  const { validatePdfIngress } = await import(runtimeUrl.href);
+  fixture = await isolatedIngressRuntime(source.replace(importExpression, `import(${JSON.stringify(gatedModuleUrl)})`));
+  const { validatePdfIngress } = await import(fixture.runtimeUrl.href);
   mock.timers.enable({ apis: ["setTimeout"] });
   let now = 0n;
   let importHooks = 0;
@@ -71,5 +71,5 @@ try {
   mock.timers.reset();
   Date.now = actualWallNow;
   delete globalThis.__pdfDeadlineProbe;
-  await rm(runtimeUrl, { force: true });
+  if (fixture) await rm(fixture.directory, { recursive: true, force: true });
 }

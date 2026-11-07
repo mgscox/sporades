@@ -336,7 +336,7 @@ async function streamedEcho(base) {
   });
 }
 
-for (const session of ['container', 'hosted']) test(`generated ${session} admission lifecycle boundary (${native ? 'native driver check; deployment proof pending' : 'Docker'})`, { skip: !enabled, timeout: 240000 }, async t => {
+for (const session of ['container', 'hosted']) test(`generated ${session} admission lifecycle boundary (${native ? 'native driver check; deployment proof pending' : 'Docker'})`, { skip: !enabled && "Set SPORADES_REAL_ADMISSION_LIFECYCLE=1 with Docker or SPORADES_ADMISSION_DRIVER_CHECK=1 for native driver coverage", timeout: 240000 }, async t => {
   if (!native) await localDockerOnly();
   await mkdir(proofRoot, {recursive:true});
   const root = await mkdtemp(path.join(proofRoot, 'lifecycle-'));

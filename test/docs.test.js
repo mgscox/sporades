@@ -1314,7 +1314,7 @@ test("File inspection docs keep runtime probe authentication unconditional", asy
   const [files, runtimeSource, hostTests] = await Promise.all([
     readProjectFile("docs/reference/files-and-realtime.md"),
     readProjectFile("src/http-runtime.ts"),
-    readProjectFile("test/host.test.js"),
+    Promise.all(["test/host.test.js", "test/host-part-2.test.js", "test/host-part-3.test.js"].map(readProjectFile)).then(parts => parts.join("\n")),
   ]);
   const contract = files.match(/The private\s+health route[\s\S]*?(?=\n\nThe Base image)/)?.[0];
   const route = runtimeSource.match(/export async function routeRuntimeHealth[\s\S]*?(?=\nasync function createRuntimeHealthResult)/)?.[0];

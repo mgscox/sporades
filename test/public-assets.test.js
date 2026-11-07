@@ -1,3 +1,4 @@
+import { waitForHttp } from "./support/http-readiness.js";
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -84,10 +85,7 @@ async function withGeneratedServer(project, bundle, fn) {
   const url = `http://127.0.0.1:${port}`;
   const runtime = spawn(process.execPath, [bundle.paths.serverBundle], { cwd: project, env: { ...env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(project, '.sporades', 'generated.db') }, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
-    for (let attempt = 0; ; attempt++) {
-      try { await fetch(url); break; } catch (error) { if (attempt === 100) throw error; }
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    await waitForHttp(url, runtime, 'any');
     await fn(url);
   } finally { runtime.kill('SIGTERM'); await once(runtime, 'exit'); }
 }
@@ -160,7 +158,7 @@ for (const toolchain of ['esbuild', 'vite']) test(`nonce HTML and runtime inject
 });
 
 for (const toolchain of ['esbuild', 'vite']) test(`Chromium blocks unmarked scripts in Dev and generated ${toolchain} Bundles`, {
-  skip: process.env.SPORADES_REAL_CSP_BROWSER !== '1',
+  skip: process.env.SPORADES_REAL_CSP_BROWSER !== '1' && 'Set SPORADES_REAL_CSP_BROWSER=1 with Playwright Chromium',
 }, async () => {
   const { chromium } = await import('playwright').catch(() => {
     throw new Error('Install Playwright and Chromium to run SPORADES_REAL_CSP_BROWSER=1 node --test test/public-assets.test.js.');

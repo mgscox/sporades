@@ -1,3 +1,4 @@
+import { isolatedIngressRuntime } from "./support/isolated-ingress-runtime.js";
 import { unixSocketPath } from "./support/unix-socket-path.js";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -8,7 +9,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import { EventEmitter } from "node:events";
@@ -354,14 +355,14 @@ test("PDF xref streams validate DecodeParms even without a Filter", async () => 
 
 test("PDF inspection fails closed and retries after a transient lazy module failure", async () => {
   const token = randomUUID();
-  const runtimePath = path.join(process.cwd(), "dist", `.file-ingress-runtime-${token}.mjs`);
+  let fixture;
   const loaderName = `.pdfjs-retry-${token}.mjs`;
-  const loaderPath = path.join(process.cwd(), "dist", loaderName);
   try {
     const source = await readFile(path.join(process.cwd(), "dist", "file-ingress-runtime.js"), "utf8");
     assert.match(source, /import\("pdfjs-dist\/legacy\/build\/pdf\.mjs"\)/);
-    await writeFile(runtimePath, source.replace('import("pdfjs-dist/legacy/build/pdf.mjs")', `import("./${loaderName}")`));
-    const isolated = await import(`${pathToFileURL(runtimePath).href}?${token}`);
+    fixture = await isolatedIngressRuntime(source.replace('import("pdfjs-dist/legacy/build/pdf.mjs")', `import("./${loaderName}")`));
+    const loaderPath = path.join(fixture.directory, loaderName);
+    const isolated = await import(`${fixture.runtimeUrl.href}?${token}`);
     assert.equal(await isolated.validatePdfIngress(minimalPdf()), false);
     await writeFile(loaderPath, `export function getDocument() {
   const page = { async getOperatorList() { return {}; }, async getJSActions() { return null; }, async getAnnotations() { return []; } };
@@ -370,8 +371,7 @@ test("PDF inspection fails closed and retries after a transient lazy module fail
 }\n`);
     assert.equal(await isolated.validatePdfIngress(minimalPdf()), true);
   } finally {
-    await rm(runtimePath, { force: true });
-    await rm(loaderPath, { force: true });
+    if (fixture) await rm(fixture.directory, { recursive: true, force: true });
   }
 });
 
