@@ -98,17 +98,68 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   const acquireIngress = budget(8, 120);
   const acquirePublicDelivery = budget(4, 60);
   const acquireServerDelivery = budget(4, 60);
-  // Treat case variants and audit-normalized Server env values as secret too.
-  const secretPatterns = [...new Set(Object.values(env)
+  // Include URL forms that can survive parsing before diagnostic redaction runs.
+  const secretForms = [...new Set(Object.values(env)
     .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .flatMap(value => [value, value.toUpperCase(), value.toLowerCase(), safePrivilegedAuditErrorCode({ code: value })])
+    .flatMap(value => {
+      const forms = [value, redactDiagnosticText(value)];
+      if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(value)) {
+        forms.push(value.split(/[?#]|%(?:3f|23)/i, 1)[0]);
+        try {
+          const url = new URL(value, "https://redacted.invalid");
+          if (url.pathname !== "/") forms.push(url.pathname);
+          if (url.search) forms.push(url.search, url.search.slice(1));
+        } catch { /* Malformed URL secrets still receive literal matching. */ }
+      }
+      return forms.filter(Boolean).flatMap(form => [form, form.toUpperCase(), form.toLowerCase(), safePrivilegedAuditErrorCode({ code: form })]);
+    })
     .filter((value): value is string => value !== null))]
-    .sort((a, b) => b.length - a.length)
-    .map(value => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"));
+    .sort((a, b) => b.length - a.length);
+  const secretPattern = secretForms.length ? new RegExp(secretForms.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi") : null;
+  const overlappingSecrets = secretPattern ? new RegExp(`(?=(${secretPattern.source}))`, "gi") : null;
   const safeText = (value: unknown, limit: number) => {
-    let text = redactDiagnosticText((typeof value === "string" ? value : "Error").slice(0, 65536).replace(/data:[^\s)]+/gi, "[embedded source]"), env);
-    for (const pattern of secretPatterns) text = text.replace(pattern, "[REDACTED]");
-    return text.slice(0, limit);
+    const text = (typeof value === "string" ? value : "Error").slice(0, 65536);
+    // Identify overlapping secrets before transformations can split their bytes.
+    const spans: { start: number; end: number }[] = [];
+    if (overlappingSecrets) for (const match of text.matchAll(overlappingSecrets)) {
+      const start = match.index, end = start + match[1].length, last = spans.at(-1);
+      if (last && start <= last.end) last.end = Math.max(last.end, end);
+      else spans.push({ start, end });
+    }
+    // The shared policy must see original URL, header and inline-source syntax.
+    const safe = redactDiagnosticText(text.replace(/data:[^\s)]+/gi, "[embedded source]"));
+    if (!spans.length) return (secretPattern ? safe.replace(secretPattern, "[REDACTED]") : safe).slice(0, limit);
+    const rawLines = text.split("\n"), safeLines = safe.split("\n");
+    if (rawLines.length !== safeLines.length) return "[REDACTED]".slice(0, limit);
+    let offset = 0, spanIndex = 0, result = "";
+    for (let index = 0; index < rawLines.length; index++) {
+      const raw = rawLines[index], line = safeLines[index], end = offset + raw.length;
+      let prefix = 0;
+      while (prefix < raw.length && prefix < line.length && raw[prefix] === line[prefix]) prefix++;
+      while (spanIndex < spans.length && spans[spanIndex].end <= offset) spanIndex++;
+      const local: { start: number; end: number }[] = [];
+      let cutoff = line.length, privateNewline = false;
+      for (let cursor = spanIndex; cursor < spans.length && spans[cursor].start <= end; cursor++) {
+        const span = spans[cursor], start = Math.max(0, span.start - offset), stop = Math.min(raw.length, span.end - offset);
+        if (start < stop) {
+          local.push({ start, end: stop });
+          // A transformed suffix cannot be mapped back safely: conceal it as a unit.
+          if (stop > prefix) cutoff = Math.min(cutoff, start, prefix);
+        }
+        if (span.start <= end && span.end > end) privateNewline = true;
+      }
+      let copied = 0;
+      for (const span of local) {
+        if (span.start >= Math.min(prefix, cutoff)) break;
+        result += line.slice(copied, span.start) + "[REDACTED]";
+        copied = Math.min(span.end, prefix, cutoff);
+      }
+      result += line.slice(copied, cutoff) + (cutoff < line.length ? "[REDACTED]" : "");
+      if (index < rawLines.length - 1) result += privateNewline ? "[REDACTED]" : "\n";
+      offset = end + 1;
+    }
+    if (secretPattern) result = result.replace(secretPattern, "[REDACTED]");
+    return result.replace(/(?:\[REDACTED\]){2,}/g, "[REDACTED]").slice(0, limit);
   };
   const privilegedCauseCode = (cause: any) => {
     const candidate = cause && typeof cause === "object" ? cause.code : undefined;

@@ -268,6 +268,52 @@ for (const thrown of ['plain rejection', 42, null, { arbitrary: 'synthetic-priva
   });
 }
 
+for (const [casing, transform] of [
+  ['upper', value => value.toUpperCase()],
+  ['lower', value => value.toLowerCase()],
+  ['mixed', value => [...value].map((char, index) => index % 2 ? char.toUpperCase() : char.toLowerCase()).join('')],
+]) {
+  const secret = 'https://api.example.invalid/TOKENABC123?mode=x';
+  const forms = { full: secret, surviving: 'https://api.example.invalid/TOKENABC123', path: '/TOKENABC123', query: 'mode=x' };
+  for (const [form, value] of Object.entries(forms)) {
+    test(`ordinary cause conceals ${casing} URL-secret ${form} in the complete envelope`, async t => {
+      const cause = new TypeError(`credential ${transform(value)}`);
+      cause.stack = 'TypeError: private cause\n    at fail (/safe/cause.js:7:9)';
+      const { event, envelope } = await captured(t, new Error('public outer', { cause }), undefined, { SERVICE_SECRET: secret });
+      assert.doesNotMatch(envelope, /tokenabc123|mode=x/i);
+      assert.deepEqual(event.exception.values.map(value => value.type), ['TypeError', 'Error']);
+      assert.equal(event.exception.values[1].value, 'public outer');
+      assert.deepEqual(event.exception.values[0].stacktrace.frames[0], { filename: '/safe/cause.js', function: 'fail', lineno: 7, colno: 9 });
+    });
+  }
+  for (const form of ['full', 'surviving', 'path']) {
+    test(`ordinary cause frame fields conceal ${casing} URL-secret ${form}`, async t => {
+      const source = transform(forms[form]);
+      const cause = Object.assign(new Error('private location'), { stack: `Error: private location\n    at ${source} (${source}:7:9)` });
+      const { event, envelope } = await captured(t, new Error('public outer', { cause }), undefined, { SERVICE_SECRET: secret });
+      assert.doesNotMatch(envelope, /tokenabc123|mode=x/i);
+      assert.equal(event.exception.values.length, 2);
+      assert.deepEqual(event.exception.values[0].stacktrace.frames[0], { filename: '[REDACTED]', function: '[REDACTED]', lineno: 7, colno: 9 });
+    });
+  }
+}
+
+test('URL-secret matching cannot collide with diagnostic text', async t => {
+  for (const [message, env] of [
+    ['private sporades://redacted TOKENABC999', { SERVICE_SECRET: 'private sporades://redacted TOKENABC999' }],
+    ['private https://api.example.invalid/base TOKENABC999', { SERVICE_SECRET: 'private https://api.example.invalid/base TOKENABC999', ENDPOINT: 'https://api.example.invalid/base' }],
+    ['https://api.example.invalid/TOKENABC999?mode=x', { SERVICE_SECRET: 'https://api.example.invalid/TOKENABC999?mode=x', DOMAIN: 'api.example.invalid' }],
+    ['private https://api.example.invalid/base TOKENABC999 TOKENOVERLAP999', { FIRST_SECRET: 'private https://api.example.invalid/base TOKENABC999', SECOND_SECRET: 'TOKENABC999 TOKENOVERLAP999' }],
+    ['Authorization: Bearer TOKENUNDECLARED999', { LABEL: 'Authorization', SCHEME: 'Bearer' }],
+    ['data:text/javascript;base64,VE9LRU5JTkxJTkVTUkM5OTk=', { LABEL: 'data' }],
+  ]) {
+    const { envelope } = await captured(t, new Error('public outer', { cause: new Error(message) }), undefined, env);
+    assert.doesNotMatch(envelope, /tokenabc999|tokenoverlap999|tokenundeclared999|VE9LRU5JTkxJTkVTUkM5OTk=/i);
+  }
+  const { event } = await captured(t, new Error('public sporades://redacted marker'));
+  assert.equal(event.exception.values[0].value, 'public sporades://redacted marker');
+});
+
 test('hostile, malformed and oversized stacks have bounded output and no inline source', async t => {
   for (const stack of [null, {}, 'at nonsense', 'at data:text/javascript,' + 'x'.repeat(1024 * 1024 - 'at data:text/javascript,'.length - ':7:9'.length) + ':7:9' + 'trailing', 'at ' + ':'.repeat(1_100_000), 'at data:text/javascript,' + 'x'.repeat(1_100_000) + ':1:1']) {
     const { event, envelope } = await captured(t, { message: 'hostile stack', stack });

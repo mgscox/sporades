@@ -77,9 +77,12 @@ opaque `eventId` for correlation, with no original diagnostics sent to browsers.
 cause code; raw privileged cause messages and stacks stay private. Only explicit
 string cause codes are considered, with Server env redaction applied before and
 after code normalization. Case variants and audit-normalized forms of Server env
-values are also redacted from diagnostic fields. Primitive causes and missing or
-secret-bearing codes report `UNKNOWN_ERROR`. Query/mutation arguments, request headers and customer payloads
-are never added as context.
+values are also redacted from diagnostic fields. URL-valued Server env secrets
+also protect their surviving URL, pathname and query renderings in any case.
+Matching preserves private URL suffix boundaries until the suffix is concealed.
+Primitive causes and missing or secret-bearing codes report `UNKNOWN_ERROR`.
+Query/mutation arguments, request headers and customer payloads are never added
+as context.
 
 Embedded `data:` module filenames become `sporades://capsule/server.mjs` in server
 events; browser embedded modules use `sporades://embedded/module`. Compound eval
