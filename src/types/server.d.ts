@@ -825,8 +825,10 @@ export type CurrentUserTeamBillingApi = {
 export type TeamBillingAuthorityContext<Schema extends SchemaDefinition = SchemaDefinition> = Pick<CapsuleContext<Schema>, "app" | "auth" | "env" | "log"> & {
   /** Transaction-bound app-table reads. Runtime billing tables and mutations are unavailable. */
   db: ReadOnlyDatabaseFromSchema<Schema>;
-  /** Transaction-bound exact accepted-member count for the Team under authority evaluation. */
-  teams: Pick<PrivilegedTeamsApi, "countMembers">;
+  /** Exact accepted-member and administrator counts from the same lifecycle-locked transaction snapshot. Only the Team under authority evaluation may be inspected. */
+  teams: {
+    countMembers(teamId: string): Promise<Readonly<TeamMemberCountResult & { adminCount: number }>>;
+  };
 };
 export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   /** Exact allow-list of product keys and distinct Stripe sandbox/live Price bindings. */

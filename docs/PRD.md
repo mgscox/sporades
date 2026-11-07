@@ -92,7 +92,9 @@ The repository currently includes:
   explicit Team. The declaration names 1-32 stable product keys, exact distinct
   Stripe sandbox/live Price bindings, fixed or accepted-Team-member quantity
   with an optional positive integer billable-seat floor,
-  and one transaction-bound read-only authorization policy. Sporades first
+  and one transaction-bound read-only authorization policy. Its exact-Team
+  `countMembers` inspection returns `{ totalCount, adminCount }` from the same
+  lifecycle-locked snapshot for Capsule-owned staff limits. Sporades first
   requires the current linked caller to remain an administrator of the exact
   Team, then rechecks Capsule policy on every operation without issuing a
   reusable capability. Runtime-owned tables retain private Customer,
