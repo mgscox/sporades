@@ -99,6 +99,13 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   const acquirePublicDelivery = budget(4, 60);
   const acquireServerDelivery = budget(4, 60);
   const safeText = (value: unknown, limit: number) => redactDiagnosticText((typeof value === "string" ? value : "Error").slice(0, 65536).replace(/data:[^\s)]+/gi, "[embedded source]"), env).slice(0, limit);
+  const privilegedCauseCode = (cause: any) => {
+    const candidate = cause && typeof cause === "object" ? cause.code : undefined;
+    if (typeof candidate !== "string" || candidate.length > 65536) return "UNKNOWN_ERROR";
+    // Redaction must see the original bytes before audit-code normalization changes them.
+    const redacted = safeText(candidate, 65536);
+    return redacted === candidate ? safePrivilegedAuditErrorCode({ code: redacted }, "errored") : "UNKNOWN_ERROR";
+  };
   const send = async (url: URL, body: string, headers: Record<string, string>) => {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(2000)]) });
     // Provider bodies/headers never flow back to the browser or logs.
@@ -153,10 +160,10 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
           mechanism: { type: "generic", data: {
             stack_source: frames.length ? fallback ? "error_event" : "original" : "absent",
             ...(errorCode ? { error_code: errorCode } : {}),
-            ...(currentPrivileged ? { cause_code: safeText(safePrivilegedAuditErrorCode(current.cause, "errored"), 64) } : {}),
+            ...(currentPrivileged ? { cause_code: safeText(privilegedCauseCode(current.cause), 64) } : {}),
           } },
         });
-        // Privileged causes are opaque: the existing audit policy supplies a safe code only.
+        // Privileged causes are opaque: only explicit, redacted audit codes may be exported.
         if (currentPrivileged || !current || (typeof current !== "object" && typeof current !== "function") || current.cause === undefined) break;
         current = current.cause;
       }
@@ -166,7 +173,7 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
         tags: { capsule: safeText(config.name ?? "capsule", 128), surface,
           ...(surface !== "client" && typeof context.handler === "string" ? { handler: safeText(context.handler, 128) } : {}),
           ...(code ? { error_code: safeText(code, 64) } : {}),
-          ...(privileged ? { cause_code: safeText(safePrivilegedAuditErrorCode(error.cause, "errored"), 64) }
+          ...(privileged ? { cause_code: safeText(privilegedCauseCode(error.cause), 64) }
             : typeof error?.cause?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.cause.code) ? { cause_code: safeText(error.cause.code, 64) } : {}),
         } as RecordValue,
         exception: { values },

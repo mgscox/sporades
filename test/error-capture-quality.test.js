@@ -12,9 +12,9 @@ function receivedEnvelopes(t) {
   return transports.get(t);
 }
 
-async function captured(t, error, context) {
+async function captured(t, error, context, serverEnv = {}) {
   const envelopes = receivedEnvelopes(t), before = envelopes.length;
-  const collector = createRuntimeObservability({ name: 'quality', release: { id: 'quality-release' }, observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: 'http://synthetic@127.0.0.1:5218/1', SECRET: 'synthetic-private-marker' });
+  const collector = createRuntimeObservability({ name: 'quality', release: { id: 'quality-release' }, observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } } }, { DSN: 'http://synthetic@127.0.0.1:5218/1', SECRET: 'synthetic-private-marker', ...serverEnv });
   t.after(() => collector.close());
   collector.capture(error, 'query', undefined, context);
   await collector.flush();
@@ -129,6 +129,79 @@ test('privileged wrappers export audit-safe cause codes without raw cause diagno
   assert.equal(event.tags.cause_code, 'SAFE_PROVIDER_REFUSAL');
   assert.equal(event.tags.handler, 'protectedJob');
   assert.doesNotMatch(envelope, /synthetic-private-marker|private cause|private\.test|args/);
+});
+
+for (const wrapper of ['run', 'audit']) for (const nested of [false, true]) {
+  for (const kind of ['primitive', 'explicit code', 'safe code']) {
+    test(`${wrapper} privileged ${kind} is redacted before normalization (nested=${nested})`, async t => {
+      const { createPrivilegedRunPublicError, createPrivilegedAuditEmissionPublicError } = await import('../dist/acl-runtime.js');
+      const secret = 'abcDef123-token';
+      const cause = kind === 'primitive' ? secret : Object.assign(new Error('raw private cause'), {
+        code: kind === 'explicit code' ? secret : 'safe.provider-refusal',
+      });
+      const wrapped = (wrapper === 'run' ? createPrivilegedRunPublicError : createPrivilegedAuditEmissionPublicError)(cause);
+      const error = nested ? new Error('ordinary outer', { cause: wrapped }) : wrapped;
+      const { event, envelope } = await captured(t, error, undefined, { SERVICE_SECRET: secret });
+      const expected = kind === 'safe code' ? 'SAFE.PROVIDER-REFUSAL' : 'UNKNOWN_ERROR';
+      assert.equal(event.exception.values[0].mechanism.data.cause_code, expected);
+      assert.equal(event.tags.cause_code, nested ? wrapped.code : expected);
+      assert.equal(event.exception.values.length, nested ? 2 : 1);
+      assert.doesNotMatch(envelope, /abcdef123-token|raw private cause/i);
+    });
+  }
+}
+
+test('nested privileged wrappers stop before secret causes for both wrapper orders', async t => {
+  const { createPrivilegedRunPublicError, createPrivilegedAuditEmissionPublicError } = await import('../dist/acl-runtime.js');
+  for (const [outer, inner] of [[createPrivilegedRunPublicError, createPrivilegedAuditEmissionPublicError], [createPrivilegedAuditEmissionPublicError, createPrivilegedRunPublicError]]) {
+    const wrapped = inner(Object.assign(new Error('raw private cause'), { code: 'abcDef123-token' }));
+    const { event, envelope } = await captured(t, outer(wrapped), undefined, { SERVICE_SECRET: 'abcDef123-token' });
+    assert.equal(event.exception.values.length, 1);
+    assert.equal(event.tags.cause_code, wrapped.code);
+    assert.equal(event.exception.values[0].mechanism.data.cause_code, wrapped.code);
+    assert.doesNotMatch(envelope, /abcdef123-token|raw private cause/i);
+  }
+});
+
+test('privileged cause codes reject nonstring and oversized candidates without coercion', async t => {
+  const { createPrivilegedRunPublicError } = await import('../dist/acl-runtime.js');
+  for (const code of [undefined, 42, { toString() { throw new Error('must not coerce'); } }, 'x'.repeat(65537)]) {
+    const { event } = await captured(t, createPrivilegedRunPublicError({ code }));
+    assert.equal(event.tags.cause_code, 'UNKNOWN_ERROR');
+    assert.equal(event.exception.values[0].mechanism.data.cause_code, 'UNKNOWN_ERROR');
+  }
+});
+
+test('mutations throwing mixed-case Server env secrets through Privileged export no secret variants', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const { openDevDatabase, runMutation, resolveAnonymousSession } = await import('../dist/server-runtime-source.js');
+  const { mutation } = await import('../dist/server.js');
+  const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'quality-privileged-secret-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = { DSN: 'http://synthetic@127.0.0.1:5218/1', SERVICE_SECRET: 'abcDef123-token' };
+  const envelopes = receivedEnvelopes(t);
+  const db = await openDevDatabase(path.join(root, 'data.db'), '', env, { name: 'quality-privileged-secret', observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, {
+    mutations: {
+      primitive: mutation(ctx => ctx.privileged.run({ operation: 'quality.primitive', targetResourceKind: 'quality-resource' }, () => { throw ctx.env.SERVICE_SECRET; })),
+      code: mutation(ctx => ctx.privileged.run({ operation: 'quality.code', targetResourceKind: 'quality-resource' }, () => { throw Object.assign(new Error('raw private cause'), { code: ctx.env.SERVICE_SECRET }); })),
+    },
+  });
+  t.after(() => db.close());
+  await db.init();
+  const { auth } = await resolveAnonymousSession(db);
+  for (const name of ['primitive', 'code']) {
+    const before = envelopes.length;
+    const result = await runMutation(db, auth, name, []);
+    await db.observability.flush();
+    assert.equal(result.error.code, 'PRIVILEGED_RUN_FAILED');
+    assert.equal(envelopes.length, before + 1);
+    const envelope = envelopes.at(-1), event = JSON.parse(envelope.trim().split('\n')[2]);
+    assert.equal(event.exception.values.length, 1);
+    assert.equal(event.tags.cause_code, 'UNKNOWN_ERROR');
+    assert.equal(event.exception.values[0].mechanism.data.cause_code, 'UNKNOWN_ERROR');
+    assert.doesNotMatch(JSON.stringify({ result, envelope }), /abcdef123-token|raw private cause/i);
+  }
 });
 
 for (const thrown of ['plain rejection', 42, null, { arbitrary: 'synthetic-private-marker' }]) {

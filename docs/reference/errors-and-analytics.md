@@ -74,8 +74,11 @@ Server events include the runtime-declared `handler`, safe `error_code` and
 `cause_code` when available, and `correlation_id` equal to the generated opaque
 `event_id`. Captured query, mutation and app-message error DTOs may include this
 opaque `eventId` for correlation, with no original diagnostics sent to browsers. Privileged wrappers retain their wrapper stack and existing audit-safe
-cause code; raw privileged cause messages and stacks stay private. Query/mutation
-arguments, request headers and customer payloads are never added as context.
+cause code; raw privileged cause messages and stacks stay private. Only explicit
+string cause codes are considered, with Server env redaction applied before code
+normalization. Primitive causes and missing or secret-bearing codes report
+`UNKNOWN_ERROR`. Query/mutation arguments, request headers and customer payloads
+are never added as context.
 
 Embedded `data:` module filenames become `sporades://capsule/server.mjs` in server
 events; browser embedded modules use `sporades://embedded/module`. Compound eval
