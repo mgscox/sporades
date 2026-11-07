@@ -313,7 +313,7 @@ async function writeFakeProcEntry(procRoot, pid, target, environment = []) {
 }
 
 
-async function waitForFileText(filePath, predicate, timeoutMs = 2000, signal) {
+async function waitForFileText(filePath, predicate, timeoutMs = 15000, signal) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && !signal?.aborted) {
     try {
@@ -354,7 +354,7 @@ async function stopHostHelper(action) {
 }
 
 
-async function waitForPath(filePath, timeoutMs = 2000) {
+async function waitForPath(filePath, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -369,7 +369,7 @@ async function waitForPath(filePath, timeoutMs = 2000) {
 }
 
 
-async function waitForChildPid(parentPid, timeoutMs = 2000) {
+async function waitForChildPid(parentPid, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const children = spawnSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
@@ -652,6 +652,7 @@ if (args[0] === "exec") {
   if (statePath) writeFileSync(statePath, String(count + 1));
   if (result.stdout !== undefined) process.stdout.write(result.stdout);
   else { const checks = result.body?.data?.checks; const runtime = result.body?.data?.runtime; const hasFileMaxSizeBytes = runtime?.fileMaxSizeBytes !== undefined; const hasHttpMaxBodyBytes = runtime?.httpMaxBodyBytes !== undefined; const validBounds = (!hasFileMaxSizeBytes && !hasHttpMaxBodyBytes) || (hasFileMaxSizeBytes && hasHttpMaxBodyBytes && Number.isInteger(runtime.fileMaxSizeBytes) && runtime.fileMaxSizeBytes > 0 && Number.isInteger(runtime.httpMaxBodyBytes) && runtime.httpMaxBodyBytes > 0); process.stdout.write(JSON.stringify({ kind: "response", status: result.status, valid: typeof result.body?.ok === "boolean" && typeof runtime?.ready === "boolean" && validBounds && typeof checks?.sqlite?.ok === "boolean" && typeof checks?.fileStorage?.ok === "boolean" && (checks?.fileInspection === undefined || typeof checks.fileInspection?.ok === "boolean"), ok: result.body?.ok === true, ready: runtime?.ready === true, sqlite: checks?.sqlite?.ok === true, fileStorage: checks?.fileStorage?.ok === true, fileInspection: checks?.fileInspection === undefined ? null : checks.fileInspection?.ok === true })); }
+  if (process.env.FAKE_DOCKER_RUNTIME_PROBE_CLOCK_TICK_FILE) writeFileSync(process.env.FAKE_DOCKER_RUNTIME_PROBE_CLOCK_TICK_FILE, "replied");
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(Number(result.exitStatus || "0"));
 }

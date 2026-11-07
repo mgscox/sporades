@@ -1,3 +1,4 @@
+import { waitForProcessJson } from './process-json.js';
 import { waitForHttp } from "./http-readiness.js";
 import { preservedDeployFilePath } from "../../dist/deploy-files.js";
 import assert from "node:assert/strict";
@@ -732,42 +733,7 @@ async function getAvailablePort() {
 
 
 
-async function waitForJsonStdoutLine(child) {
-  return new Promise((resolve, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for JSON stdout.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, 5000);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      child.stdout.off("data", onStdout);
-      child.stderr.off("data", onStderr);
-      child.off("exit", onExit);
-    }
-    function onStdout(chunk) {
-      stdout += chunk;
-      const line = stdout.split("\n").find((candidate) => candidate.trim());
-      if (line) {
-        cleanup();
-        resolve(JSON.parse(line));
-      }
-    }
-    function onStderr(chunk) {
-      stderr += chunk;
-    }
-    function onExit(code) {
-      cleanup();
-      reject(new Error(`Server bundle exited with ${code} before JSON stdout.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }
-
-    child.stdout.on("data", onStdout);
-    child.stderr.on("data", onStderr);
-    child.on("exit", onExit);
-  });
-}
+function waitForJsonStdoutLine(child) { return waitForProcessJson(child, { label: "Server bundle" }); }
 
 
 async function stopChild(child) {

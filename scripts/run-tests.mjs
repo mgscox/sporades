@@ -21,7 +21,7 @@ const partial = new Map();
 const skippedLanes = new Set();
 const children = new Map();
 let timedOut = false, interrupted = false, infrastructureFailures = 0, selected = [], timer, socketAliases;
-const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, '.tmp/qa-config'), SPORADES_TEST_QA: qa ? '1' : '0' };
+const env = { ...process.env, GOMAXPROCS: process.env.GOMAXPROCS || '2', SPORADES_CONFIG_DIR: path.join(root, '.tmp/qa-config'), SPORADES_TEST_QA: qa ? '1' : '0' };
 // A gate can itself be exercised by node --test without inheriting its IPC context.
 delete env.NODE_TEST_CONTEXT;
 const postgresVariables = ['SPORADES_POSTGRES_TEST_URL', 'SPORADES_TELEMETRY_POSTGRES_TEST_URL', 'SPORADES_TELEMETRY_POSTGRES_BUNDLE_URL'];
@@ -173,7 +173,7 @@ try {
       skippedLanes.add(`${key}: PostgreSQL unavailable (3s loopback probe)`);
     }
   }
-  const pythonFiles = new Set(['host.test.js', 'host-part-2.test.js', 'host-part-3.test.js', 'host-backups.test.js', 'host-observability.test.js', 'host-observability-mail.test.js', 'host-inventory-reconnect.test.js', 'lifecycle-inventory.test.js']);
+  const pythonFiles = new Set(['host.test.js', 'host-locks.test.js', 'host-part-2.test.js', 'host-part-3.test.js', 'host-backups.test.js', 'host-observability.test.js', 'host-observability-mail.test.js', 'host-inventory-reconnect.test.js', 'lifecycle-inventory.test.js']);
   if (!await available('python3', ['-c', 'import fcntl'])) {
     selected = selected.filter(file => {
       if (!pythonFiles.has(path.basename(file))) return true;
@@ -204,35 +204,62 @@ try {
       // acceptance can share image tags/ports and also runs alone.
       const sharedDatabase = postgresVariables.some(key => env[key]) && /postgres|database-adapter-(?:engines|conformance)/i.test(source);
       const realService = Object.entries(env).some(([key, value]) => value && source.includes(key) && /^SPORADES_.*(?:REAL_|DOCKER|ACCEPTANCE|STACK_DIRECTORY|TEST_ROOT|LEGACY_CLI_PATH)/.test(key));
-      (sharedDatabase || realService || ["dev-watch.test.js", "container-services-dev.test.js", "oauth-provider-deadline.test.js", "facebook-oauth.test.js"].includes(path.basename(file)) ? serial : parallel).push(file);
+      (sharedDatabase || realService || ["dev-watch.test.js", "container-services-dev.test.js", "oauth-provider-deadline.test.js", "facebook-oauth.test.js", "host-locks.test.js", "telemetry-websocket-bundle.test.js", "file-ingress-deadline.test.js"].includes(path.basename(file)) ? serial : parallel).push(file);
     }
-    // These files dominate the measured serial run. Start them together so a
-    // large late-alphabet file does not extend the tail of the desk gate.
+    // Start the longest measured files together, so large late-alphabet
+    // files do not extend the tail of the desk gate.
     const slow = [
-      "host.test.js",
-      "host-part-2.test.js",
-      "host-part-3.test.js",
-      "deploy.test.js",
-      "deploy-part-2.test.js",
-      "job-scheduling.test.js",
-      "file-ingress.test.js",
       "collection-tunnel.test.js",
+      "file-ingress.test.js",
+      "job-scheduling.test.js",
+      "host-part-2.test.js",
+      "deploy-part-2.test.js",
+      "deploy.test.js",
+      "host-part-3.test.js",
       "dev-part-2.test.js",
+      "database-adapter-conformance-coverage.test.js",
       "dev.test.js",
       "dev-part-3.test.js",
       "resource-transactions.test.js",
-      "dev-part-6.test.js",
       "dev-part-5.test.js",
-      "database-adapter-conformance-coverage.test.js",
-      "dev-part-4.test.js",
-      "monitoring-release-verifier.test.js",
-      "postgres-emitted-sql-quoting.test.js",
+      "dev-part-6.test.js",
       "database-adapter.test.js",
-      "notification-intents.test.js",
-      "mail.test.js",
+      "host.test.js",
+      "dev-part-4.test.js",
+      "database-adapter-conformance-auth-storage.test.js",
       "team-destructive-policy.test.js",
-      "stripe-webhook.test.js"
-];
+      "monitoring-release-verifier.test.js",
+      "stripe-webhook.test.js",
+      "postgres-emitted-sql-quoting.test.js",
+      "server-bundle-module-graph.test.js",
+      "teams-runtime.test.js",
+      "mail.test.js",
+      "notification-intents.test.js",
+      "teams.test.js",
+      "oauth-provider.test.js",
+      "monitoring-maintenance.test.js",
+      "email-events.test.js",
+      "table-acl.test.js",
+      "job-retry-cancel.test.js",
+      "user-journey-expiry.test.js",
+      "telemetry-jobs-bundle.test.js",
+      "stripe-job-retention.test.js",
+      "public-assets.test.js",
+      "team-create-admission.test.js",
+      "password-reset.test.js",
+      "resource-process.test.js",
+      "human-identity-termination.test.js",
+      "telemetry-websocket-bundle.test.js",
+      "job-queue.test.js",
+      "server-files.test.js",
+      "job-time-domain.test.js",
+      "public-origin-bundle.test.js",
+      "team-billing-checkout-concurrency.test.js",
+      "file-policy.test.js",
+      "password-reset-transport.test.js",
+      "facebook-oauth.test.js",
+      "email-signup-transition.test.js",
+    ];
     const priority = file => { const i = slow.indexOf(path.basename(file)); return i < 0 ? slow.length : i; };
     parallel.sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
     for (const [name, files, limit] of [['parallel', parallel, concurrency], ['serial shared-service', serial, 1]]) {

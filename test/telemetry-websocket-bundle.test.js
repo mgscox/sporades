@@ -73,7 +73,7 @@ async function fixture(run, { samplingRatio = 1, rejectExports = false, dev = fa
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
-    const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
     try { assert.deepEqual(await exited, [0, null], 'runtime exits cleanly'); } finally { clearTimeout(timer); }
   };
   try {

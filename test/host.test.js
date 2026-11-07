@@ -1989,46 +1989,10 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
 });
 
 
-test("sporades host helper automatically releases the OS route lock after its owner is killed", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
-    });
-    const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    assert.equal((await stat(fixture.lockDir)).isFile(), true);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
-    await holder.result;
-
-    const recoveredDocker = await installFakeDocker(path.join(dir, "recovered"));
-    const recovered = await runHostHelper(fixture.request, {
-      cwd: dir,
-      env: { ...recoveredDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500" },
-    });
-    assert.equal(recovered.code, 0, recovered.stderr);
-    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
-    assert.equal((await stat(fixture.lockDir)).isFile(), true, "the inert lock file may persist while its OS lock is released");
-  });
-});
 
 
-test("sporades host helper releases the OS route lock to one waiting successor", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "300" },
-    });
-    const predecessor = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const successor = runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
 
-    const [predecessorResult, successorResult] = await Promise.all([predecessor.result, successor]);
-    assert.equal(JSON.parse(predecessorResult.stdout).ok, true, predecessorResult.stdout);
-    assert.equal(JSON.parse(successorResult.stdout).ok, true, successorResult.stdout);
-    assert.equal((await stat(fixture.lockDir)).isFile(), true);
-  });
-});
+
 
 
 test("sporades host helper preserves malformed-action validation without entering a route lock", async () => {
@@ -2140,51 +2104,7 @@ test("sporades host helper rejects symlink route entries and unsafe writable rou
 });
 
 
-test("Host bootstrap and Capsule route mutations share a global lock without deadlock", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "1000" },
-    });
-    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
-    const env = {
-      ...fixture.docker.env,
-      ...caddyUser.env,
-      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${fixture.docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
-    };
-    const mutation = startHostHelper(fixture.request, { cwd: dir, env });
-    await waitForPath(fixture.lockDir);
-    const bootstrap = startHostHelper({
-      action: "host.bootstrap",
-      host: fixture.request.host,
-      capsule: null,
-      bootstrap: { tls: { mode: "automatic" } },
-    }, { cwd: dir, env });
-    let bootstrapSettled = false;
-    bootstrap.result.then(() => { bootstrapSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    assert.equal(bootstrapSettled, false, "global bootstrap must wait for an active Capsule route mutation");
-    assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
-    assert.equal(JSON.parse((await bootstrap.result).stdout).ok, true);
 
-    const exclusiveBootstrap = startHostHelper({
-      action: "host.bootstrap",
-      host: fixture.request.host,
-      capsule: null,
-      bootstrap: { tls: { mode: "automatic" } },
-    }, { cwd: dir, env: { ...env, SPORADES_FAKE_HOST_GLOBAL_ROUTE_LOCK_PAUSE_MS: "700" } });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const laterMutation = startHostHelper(fixture.request, {
-      cwd: dir,
-      env: { ...env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "0" },
-    });
-    let mutationSettled = false;
-    laterMutation.result.then(() => { mutationSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    assert.equal(mutationSettled, false, "Capsule mutation must wait for exclusive global bootstrap");
-    assert.equal(JSON.parse((await exclusiveBootstrap.result).stdout).ok, true);
-    assert.equal(JSON.parse((await laterMutation.result).stdout).ok, true);
-  });
-});
 
 
 test("sporades host helper scavenges a dead pre-publication claim after SIGKILL", async () => {

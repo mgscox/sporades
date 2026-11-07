@@ -48,7 +48,8 @@ function events(child) {
     }
   });
   const next = async (predicate, from = 0) => {
-    for (let attempt = 0; attempt < 200; attempt++) {
+    const deadline = performance.now() + 60000;
+    while (performance.now() < deadline) {
       const event = history.slice(from).find(predicate); if (event) return event;
       if (child.exitCode !== null) throw new Error(`Runtime exited: ${stderr}`);
       await new Promise(resolve => setTimeout(resolve, 50));

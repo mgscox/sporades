@@ -1,3 +1,4 @@
+import { waitForProcessJson } from './process-json.js';
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
@@ -39,6 +40,7 @@ const cliPath = path.join(repoRoot, "bin", "sporades.js");
 
 // Fixture startup may include several parallel compiler processes; behavior assertions keep their own budgets.
 const TEST_PROCESS_EVENT_TIMEOUT_MS = 30000;
+const TEST_STARTUP_TIMEOUT_MS = 60000;
 
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
@@ -417,42 +419,7 @@ async function rawHttpResponse(baseUrl, requestTarget, options = {}) {
 }
 
 
-async function waitForJsonLine(child) {
-  return new Promise((resolve, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for JSON output.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      child.stdout.off("data", onStdout);
-      child.stderr.off("data", onStderr);
-      child.off("exit", onExit);
-    }
-    function onStdout(chunk) {
-      stdout += chunk;
-      const line = stdout.split("\n").find((candidate) => candidate.trim());
-      if (line) {
-        cleanup();
-        resolve(JSON.parse(line));
-      }
-    }
-    function onStderr(chunk) {
-      stderr += chunk;
-    }
-    function onExit(code) {
-      cleanup();
-      reject(new Error(`Process exited with ${code} before JSON output.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }
-
-    child.stdout.on("data", onStdout);
-    child.stderr.on("data", onStderr);
-    child.on("exit", onExit);
-  });
-}
+function waitForJsonLine(child) { return waitForProcessJson(child); }
 
 
 async function waitForJsonEvent(child, predicate) {
@@ -462,7 +429,7 @@ async function waitForJsonEvent(child, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for JSON event.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
+    }, TEST_STARTUP_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -544,7 +511,7 @@ function captureJsonEvents(child) {
         waiter.timeout = setTimeout(() => {
           waiters.delete(waiter);
           reject(new Error(`Timed out waiting for captured JSON event.\nstderr:\n${stderr}`));
-        }, TEST_PROCESS_EVENT_TIMEOUT_MS);
+        }, TEST_STARTUP_TIMEOUT_MS);
         waiters.add(waiter);
       });
     },
@@ -579,7 +546,7 @@ async function waitForStdoutLine(child, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for stdout line.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
+    }, TEST_STARTUP_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -1194,6 +1161,7 @@ async function openSocket(baseUrl, sessionToken = null) {
     const url = new URL("/__sporades/ws", baseUrl);
     url.searchParams.set("connectionToken", connectionToken);
     const socket = new WebSocket(url);
+    socketMessageQueue(socket);
     installSessionTokenEnvelope(socket, sessionToken);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
@@ -1497,6 +1465,7 @@ function readSocketMessage(socket) {
 
 function captureSocketMessages(socket) {
   const messages = [];
+  let closed;
   const history = [];
   const waiters = new Set();
   const onMessage = (event) => {
@@ -1519,6 +1488,12 @@ function captureSocketMessages(socket) {
     }
     waiters.clear();
   };
+  const onClose = event => {
+    closed = new Error(`WebSocket closed before expected message (code ${event.code ?? "unknown"}).`);
+    for (const waiter of waiters) { clearTimeout(waiter.timeout); waiter.reject(closed); }
+    waiters.clear();
+  };
+  socket.addEventListener("close", onClose);
   socket.addEventListener("message", onMessage);
   socket.addEventListener("error", onError);
   return {
@@ -1527,6 +1502,7 @@ function captureSocketMessages(socket) {
     next(predicate) {
       const existingIndex = messages.findIndex(predicate);
       if (existingIndex >= 0) return Promise.resolve(messages.splice(existingIndex, 1)[0]);
+      if (closed) return Promise.reject(closed);
       return new Promise((resolve, reject) => {
         const waiter = { predicate, resolve, reject, timeout: null };
         waiter.timeout = setTimeout(() => {
@@ -1537,6 +1513,7 @@ function captureSocketMessages(socket) {
       });
     },
     dispose() {
+      socket.removeEventListener("close", onClose);
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("error", onError);
       for (const waiter of waiters) clearTimeout(waiter.timeout);
@@ -1594,6 +1571,7 @@ async function openWebSocket(url) {
   webSocketUrl.searchParams.set("connectionToken", await readPageConnectionToken(pageBaseUrl));
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(webSocketUrl);
+    socketMessageQueue(socket);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", () => reject(new Error("WebSocket connection failed")), { once: true });
   });

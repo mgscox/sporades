@@ -217,3 +217,12 @@ test('the gate retains test diagnostics and stdout/stderr context', async t => {
   assert.equal(result.code, 0, result.output);
   for (const message of ['diagnostic-canary', 'stdout-canary', 'stderr-canary']) assert.match(result.output, new RegExp(message));
 });
+
+test('the gate bounds Go helper parallelism and preserves an explicit override', async t => {
+  const { file } = await fixture(t, `import test from 'node:test'; import assert from 'node:assert/strict';
+    test('helper budget', () => assert.equal(process.env.GOMAXPROCS, process.env.EXPECTED_GO_BUDGET));`);
+  for (const [configured, expected] of [[undefined, '2'], ['3', '3']]) {
+    const result = await run([file], { env: { GOMAXPROCS: configured, EXPECTED_GO_BUDGET: expected } });
+    assert.equal(result.code, 0, result.output);
+  }
+});

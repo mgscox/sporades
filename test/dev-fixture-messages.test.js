@@ -74,3 +74,51 @@ test('the fixture close waiter accepts an already closed socket', async () => {
     assert.equal(await Promise.race([closed.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 100))]), true);
   } finally { socket.dispatchEvent(new Event('close')); }
 });
+
+test('fixture message waits report a closed socket immediately', async () => {
+  const socket = new EventTarget();
+  const waiting = readSocketMessage(socket);
+  const closed = new Event('close');
+  Object.defineProperty(closed, 'code', { value: 1008 });
+  socket.dispatchEvent(closed);
+  try {
+    const result = await Promise.race([waiting.then(() => 'resolved', error => error.message), new Promise(resolve => setTimeout(() => resolve('still waiting'), 100))]);
+    assert.match(result, /closed.*1008/i);
+  } finally { socket.dispatchEvent(new Event('error')); }
+});
+
+test('the fixture retains a protocol frame coalesced with the socket open event', async () => {
+  const { openSocket } = await import('./support/dev-fixture.js');
+  const originalFetch = globalThis.fetch;
+  const originalWebSocket = globalThis.WebSocket;
+  let socket;
+  class OpeningSocket extends EventTarget {
+    constructor() {
+      super();
+      queueMicrotask(() => { this.dispatchEvent(new Event('open')); emit(this, { id: 'first-packet' }); });
+    }
+    send() {}
+  }
+  globalThis.fetch = async () => new Response('window.__SPORADES_CONNECTION_TOKEN="synthetic"');
+  globalThis.WebSocket = OpeningSocket;
+  try {
+    socket = await openSocket('http://127.0.0.1:9/');
+    const message = readSocketMessage(socket).then(value => value.id, error => error.message);
+    assert.equal(await Promise.race([message, new Promise(resolve => setTimeout(() => resolve('message lost'), 100))]), 'first-packet');
+  } finally {
+    socket?.dispatchEvent(new Event('error'));
+    globalThis.fetch = originalFetch;
+    globalThis.WebSocket = originalWebSocket;
+  }
+});
+
+test('fixture reads retain buffered protocol frames after the socket closes', async () => {
+  const socket = new EventTarget();
+  const first = readSocketMessage(socket);
+  emit(socket, { id: 'mutation' });
+  emit(socket, { id: 'query' });
+  socket.dispatchEvent(new Event('close'));
+  assert.equal((await first).id, 'mutation');
+  assert.equal((await readSocketMessage(socket)).id, 'query');
+  await assert.rejects(readSocketMessage(socket), /closed before expected message/);
+});

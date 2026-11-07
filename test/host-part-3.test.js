@@ -359,80 +359,7 @@ process.stdout.write(JSON.stringify({
 });
 
 
-test("first Host helper upgrade drains legacy actions and blocks new commands behind an atomic dispatcher", async () => {
-  await withTempDir(async (dir) => {
-    const remoteBin = path.join(dir, "remote", "bin");
-    const target = path.join(remoteBin, "sporades-host-helper");
-    const procRoot = path.join(dir, "proc");
-    await mkdir(remoteBin, { recursive: true });
-    await mkdir(procRoot, { recursive: true });
-    await copyFile(hostHelperPath, target); // A raw installed bundle contains the dispatcher marker as JavaScript source.
-    await chmod(target, 0o755);
-    const helperBytes = await readFile(hostHelperPath);
-    const checksum = createHash("sha256").update(helperBytes).digest("hex");
-    const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
-    await copyFile(hostHelperPath, stage);
-    await chmod(stage, 0o755);
-    await writeFakeProcEntry(procRoot, 41001, target);
-    const installerLookalike = path.join(procRoot, "41000");
-    await mkdir(installerLookalike, { recursive: true });
-    await writeFile(path.join(installerLookalike, "cmdline"), Buffer.from(`${process.execPath}\0${stage}\0--install-host-helper\0${target}\0`, "utf8"));
-    await writeFile(path.join(installerLookalike, "environ"), Buffer.from("\0", "utf8"));
-    const env = {
-      SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
-      SPORADES_TEST_SHA256_PATH: path.join(repoRoot, "test", "support", "sha256sum.mjs"),
-      SPORADES_TEST_PROC_ROOT: procRoot,
-      SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "2000",
-      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
-    };
-    const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env });
-    await Promise.race([
-      waitForFileText(target, (contents) => contents.startsWith("#!/bin/sh\n# SPORADES_HOST_HELPER_DISPATCHER_V1\n")),
-      upgrade.result.then((result) => assert.fail(`upgrade exited before dispatcher publication: ${JSON.stringify(result)}`)),
-    ]);
-    await writeFakeProcEntry(procRoot, 41002, target, [], "start-during-replacement window");
 
-    const request = `${JSON.stringify({
-      action: "host.version",
-      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote") },
-    })}\n`;
-    const command = startExecutable(target, [], { cwd: dir, env, input: request });
-    let commandSettled = false;
-    command.result.then(() => { commandSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(commandSettled, false, "a new command must wait behind the exclusive upgrade barrier");
-
-    await rm(path.join(procRoot, "41001"), { recursive: true, force: true });
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(commandSettled, false, "a legacy action starting during replacement must also drain");
-    await rm(path.join(procRoot, "41002"), { recursive: true, force: true });
-
-    const upgraded = await upgrade.result;
-    assert.equal(upgraded.code, 0, upgraded.stderr || upgraded.stdout);
-    const commandResult = await command.result;
-    assert.equal(commandResult.code, 0, commandResult.stderr);
-    assert.equal(JSON.parse(commandResult.stdout).data.version, rootPackageJson.version, commandResult.stdout);
-    const payloadName = (await readFile(path.join(remoteBin, ".sporades-host-helper.active"), "utf8")).trim();
-    assert.equal(payloadName, `.sporades-host-helper-payload-${checksum}.mjs`);
-    assert.equal(createHash("sha256").update(await readFile(path.join(remoteBin, payloadName))).digest("hex"), checksum);
-    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.upgrade-blocked")), { code: "ENOENT" });
-    await assert.rejects(stat(path.join(remoteBin, ".sporades-host-helper.needs-drain")), { code: "ENOENT" });
-    assert.deepEqual((await readdir(remoteBin)).filter((entry) => entry.includes(".tmp-")), []);
-
-    const bootHost = { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote") };
-    await mkdir(path.join(bootHost.remoteRoot, "hosts", bootHost.domain, "registry", "capsules"), { recursive: true });
-    const boot = await startExecutable(target, ["--resume-host", Buffer.from(JSON.stringify(bootHost)).toString("base64url")], { cwd: dir, env }).result;
-    assert.equal(boot.code, 0, boot.stderr || boot.stdout);
-    assert.deepEqual(JSON.parse(boot.stdout), { ok: true, data: { capsules: [] }, error: null }, "upgraded dispatcher must forward boot arguments unchanged");
-
-    await writeFile(path.join(remoteBin, payloadName), Buffer.concat([await readFile(path.join(remoteBin, payloadName)), Buffer.from("\ncorrupt\n")]));
-    const corrupted = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
-    assert.equal(JSON.parse(corrupted.stdout).error.message, "Host helper payload integrity check failed.");
-    await writeFile(path.join(remoteBin, ".sporades-host-helper.active"), "../../attacker\n");
-    const hostilePointer = await startExecutable(target, [], { cwd: dir, env, input: request }).result;
-    assert.equal(JSON.parse(hostilePointer.stdout).error.message, "Host helper dispatcher state is invalid.");
-  });
-});
 
 
 test("first Host helper upgrade requires stable quiescence when a legacy action becomes identifiable after an empty proc scan", async () => {
@@ -2324,7 +2251,15 @@ test("Hosted Capsule startup rejects partial or malformed runtime bounds", async
   ]) await withTempDir(async (dir) => {
     const fixture = await writeLegacySealedInstallFixture(dir, { rootName: `runtime-readiness-${name}`, restart: false });
     const lifecycle = await alignSealedFixtureWithBuiltLifecycle(fixture);
+    // Classify one actual probe reply, without a final near-deadline mock-process
+    // launch overwriting its invalid result with an unrelated connection timeout.
+    const tick = path.join(dir, "probe-replied");
+    const clock = path.join(dir, "readiness-clock.mjs");
+    await writeFile(clock, `import { existsSync } from 'node:fs';
+Object.defineProperty(globalThis, 'performance', { value: { now: () => existsSync(${JSON.stringify(tick)}) ? 10000 : 0 } });
+`);
     const docker = await installFakeDocker(path.join(dir, "docker"), { env: {
+      FAKE_DOCKER_RUNTIME_PROBE_CLOCK_TICK_FILE: tick,
       FAKE_DOCKER_RUNTIME_PROBE_RESULTS: JSON.stringify([{ status: 200, body: {
         ok: true,
         data: { runtime, checks: { sqlite: { ok: true }, fileStorage: { ok: true }, fileInspection: { ok: true } } },
@@ -2339,7 +2274,7 @@ test("Hosted Capsule startup rejects partial or malformed runtime bounds", async
       lifecycle,
       // Classify the response after the process-based emulator has started.
       verification: { healthTimeoutMs: 5000 },
-    }, { cwd: dir, env: docker.env });
+    }, { cwd: dir, env: { ...docker.env, NODE_OPTIONS: `--import=${clock}` } });
 
     const output = JSON.parse(result.stdout);
     assert.equal(output.ok, false, `${name}: ${result.stdout}`);
@@ -2348,7 +2283,7 @@ test("Hosted Capsule startup rejects partial or malformed runtime bounds", async
     const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
     assert.equal(record.status, "failed");
     assert.equal(record.releases.find((release) => release.id === record.currentRelease.id).failure.message, "Hosted Capsule runtime readiness failed (invalid).");
-    assert((await docker.calls()).some((call) => call.args[0] === "exec"), `${name}: authenticated runtime probe was not attempted`);
+    assert.equal((await docker.calls()).filter((call) => call.args[0] === "exec").length, 1, `${name}: classify the authenticated probe response exactly once`);
   });
 });
 
@@ -2580,60 +2515,10 @@ test("sporades host helper serializes two stale health route repairs across help
 });
 
 
-test("sporades host helper cannot continue route mutation after its lock-holding action process is killed", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "600" },
-    });
-    const staleRequest = structuredClone(fixture.request);
-    const winnerRequest = structuredClone(fixture.request);
-    const stale = startHostHelper(staleRequest, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    const lockHolderPid = await waitForChildPid(stale.child.pid);
-    process.kill(lockHolderPid, "SIGKILL");
-
-    const winnerDocker = await installFakeDocker(path.join(dir, "winner"));
-    const winner = await runHostHelper(winnerRequest, { cwd: dir, env: winnerDocker.env });
-    const staleResult = await stale.result;
-    assert.equal(JSON.parse(winner.stdout).ok, true, winner.stdout);
-    assert.equal(JSON.parse(staleResult.stdout).ok, false, staleResult.stdout);
-    const route = await readFile(fixture.routeFile, "utf8");
-    assert.match(route, /respond "Hosted Capsule unavailable" 503/);
-  });
-});
 
 
-test("sporades host helper does not steal a live route owner and rejects malformed lock bounds", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
-    });
-    const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const contenderDocker = await installFakeDocker(path.join(dir, "contender"));
-    const startedAt = Date.now();
-    const contender = await runHostHelper(fixture.request, {
-      cwd: dir,
-      env: { ...contenderDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "100" },
-    });
-    assert.equal(JSON.parse(contender.stdout).error.message, "Hosted Capsule route is locked.");
-    assert.ok(Date.now() - startedAt < 1000, "a live-owner timeout must remain bounded");
 
-    for (const invalidTimeout of ["NaN", "Infinity", "0", "-1", "1.5", "60001"]) {
-      const invalid = await runHostHelper(fixture.request, {
-        cwd: dir,
-        env: { ...contenderDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: invalidTimeout },
-      });
-      assert.equal(JSON.parse(invalid.stdout).error.message, "Invalid Hosted Capsule route lock timeout.");
-    }
-    process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
-    await holder.result;
-  });
-});
 
 
 test("sporades host helper rejects a lifecycle route that does not match the canonical Capsule lock identity", async () => {

@@ -211,28 +211,7 @@ test("Host helper marker wait remains bounded when a child never publishes its m
 });
 
 
-test("Host helper cleanup releases the retained action lock before fixture removal", { timeout: 15_000 }, async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir);
-    const marker = path.join(dir, "cleanup-lock.marker");
-    const action = startHostHelper(fixture.request, { cwd: dir, detached: true, env: {
-      ...fixture.docker.env,
-      SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: marker,
-      SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000",
-    } });
-    try {
-      await waitForHostHelperMarker(action, marker, (text) => text === "route-lock-proof-retained\n");
-      await stopHostHelper(action);
-      const next = await runHostHelper(fixture.request, { cwd: dir, env: {
-        ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500",
-      } });
-      assert.equal(JSON.parse(next.stdout).ok, true, next.stdout);
-    } finally {
-      try { process.kill(-action.child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
-      await action.result;
-    }
-  });
-});
+
 
 
 test("Caddy Capsule route publication preserves service read access under restrictive umasks", async () => {
@@ -2194,28 +2173,7 @@ test("sporades host helper serializes stale health repair against a concurrent s
 });
 
 
-test("sporades host helper ignores stale lock-file contents because ownership is kernel-scoped", async () => {
-  await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir);
-    await writeFile(
-      fixture.lockDir,
-      `${JSON.stringify({
-        token: "b".repeat(32),
-        pid: process.pid,
-        processIdentity: "stale-process-from-an-earlier-boot",
-        createdAt: Date.now() - 60_000,
-      })}\n`,
-    );
 
-    const recovered = await runHostHelper(fixture.request, {
-      cwd: dir,
-      env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "500" },
-    });
-    assert.equal(recovered.code, 0, recovered.stderr);
-    assert.equal(JSON.parse(recovered.stdout).ok, true, recovered.stdout);
-    assert.equal((await stat(fixture.lockDir)).isFile(), true);
-  });
-});
 
 
 test("sporades host helper keeps read-only Capsule inspection available during a route mutation", async () => {
@@ -2316,29 +2274,7 @@ test("sporades host helper authenticates the complete route chain from the files
 });
 
 
-test("sporades host helper fences an ancestor swap after route lock acquisition", async () => {
-  await withTempDir(async (dir) => {
-    const proofMarker = path.join(dir, "route-lock-proof.marker");
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: {
-        SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "700",
-        SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: proofMarker,
-      },
-    });
-    const domainDirectory = path.dirname(fixture.routeFile);
-    const preservedDirectory = `${domainDirectory}.preserved`;
-    const outside = path.join(dir, "outside-route-target");
-    await mkdir(outside, { mode: 0o700 });
-    const action = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(proofMarker);
-    await rename(domainDirectory, preservedDirectory);
-    await symlink(outside, domainDirectory, "dir");
-    const result = await action.result;
-    assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
-    assert.deepEqual(await readdir(outside), []);
-    assert.match(await readFile(path.join(preservedDirectory, "team-notes.caddy"), "utf8"), /reverse_proxy 127\.0\.0\.1:49153/);
-  });
-});
+
 
 
 test("sporades host helper revalidates trust immediately before remove and restore route mutations", async () => {

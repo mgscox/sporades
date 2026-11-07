@@ -1,3 +1,4 @@
+import { multipart, ingressPolicy } from './support/ingress-fixture.js';
 import { isolatedIngressRuntime } from "./support/isolated-ingress-runtime.js";
 import { unixSocketPath } from "./support/unix-socket-path.js";
 import assert from "node:assert/strict";
@@ -25,9 +26,7 @@ import { routeRuntimeHealth } from "../dist/http-runtime.js";
 import { accessKeyVerifierDigest, createAccessKeySecret } from "../dist/access-keys-runtime.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 
-function multipart(boundary, headers = 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain', bytes = "hello") {
-  return Buffer.from(`--${boundary}\r\n${headers}\r\n\r\n${bytes}\r\n--${boundary}--`);
-}
+
 function multipartMany(boundary, parts) {
   return Buffer.from(parts.map(({ headers, body }) => `--${boundary}\r\n${headers}\r\n\r\n${body}\r\n`).join("") + `--${boundary}--`);
 }
@@ -1236,24 +1235,7 @@ test("staging publication CAS compensates its object when sweep or deletion wins
   }
 });
 
-test("a retry waits beyond the former polling window for the durable staging winner", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-slow-winner-"));
-  try {
-    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "slow-winner", files: { storagePath: path.join(dir, "files") } }, capsule({ name: "slow-winner" }));
-    const endpoint = { options: { method: "POST", path: "/slow", body: { multipart: ingressPolicy() } } }; const headers = { "content-type": "multipart/form-data; boundary=slow", "idempotency-key": "same" };
-    const original = database.fileStorage.writeFileVersion.bind(database.fileStorage); let writes = 0;
-    database.fileStorage.writeFileVersion = async (input) => { writes += 1; await new Promise((resolve) => setTimeout(resolve, 2300)); return await original(input); };
-    const request = () => ({ async *[Symbol.asyncIterator]() { yield multipart("slow", 'Content-Disposition: form-data; name="file"; filename="a.txt"\r\nContent-Type: text/plain\r\nContent-ID: stable', "bytes"); } });
-    const [winner, retry] = await Promise.all([stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" })]);
-    assert.equal(retry.multipart.files[0].leaseId, winner.multipart.files[0].leaseId); assert.equal(writes, 1);
-    const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload);
-    for (const replacement of [{ ...row, state: "staging", expiresAt: "2000-01-01T00:00:00.000Z" }, { ...row, state: "failed", retryable: false }]) {
-      await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(replacement), stored.key);
-      const started = Date.now(); await assert.rejects(stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), { code: "INGRESS_STAGING_INCOMPLETE" }); assert.ok(Date.now() - started < 500);
-    }
-    await database.close();
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
+
 
 test("multipart Content-Type accepts RFC quoted boundaries and rejects malformed declarations before reading", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-ingress-content-type-"));
@@ -1581,9 +1563,7 @@ test("trusted multipart ingress leases bytes before the handler and claim atomic
   } finally { if (server) await new Promise((resolve) => server.close(resolve)); await rm(dir, { recursive: true, force: true }); }
 });
 
-function ingressPolicy() {
-  return { maxFiles: 1, maxFileBytes: 100, maxTotalFileBytes: 100, maxFieldCount: 1, maxFieldBytes: 100, maxTotalFieldBytes: 100, allowedPathPrefixes: ["/attachments"], requestKeyHeader: "idempotency-key", partKeyHeader: "content-id", requireStablePartKeys: true };
-}
+
 
 async function seedIngressUser(database) {
   await database.adapter.insertAuthUser({ id: "claim-user", createdAt: new Date().toISOString(), displayName: "claim user", email: "claim@example.com", picture: null, isAuthenticated: 1, isGuest: 0, provider: "email" });
