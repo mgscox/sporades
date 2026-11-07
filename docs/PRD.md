@@ -92,7 +92,9 @@ The repository currently includes:
   explicit Team. The declaration names 1-32 stable product keys, exact distinct
   Stripe sandbox/live Price bindings, fixed or accepted-Team-member quantity
   with an optional positive integer billable-seat floor,
-  and one transaction-bound read-only authorization policy. Sporades first
+  and one transaction-bound read-only authorization policy. Its exact-Team
+  `countMembers` inspection returns `{ totalCount, adminCount }` from the same
+  lifecycle-locked snapshot for Capsule-owned staff limits. Sporades first
   requires the current linked caller to remain an administrator of the exact
   Team, then rechecks Capsule policy on every operation without issuing a
   reusable capability. Runtime-owned tables retain private Customer,
@@ -1728,6 +1730,9 @@ public analytics hostname independent of the Host/data identity; direct routing,
 status and provisioning use the same reserved hostname without rewriting browser
 Host/Origin authority. Disabled services retain this routing intent, and database
 restore preserves the destination's operator-selected hostname.
+Protected mail configuration gives GlitchTip authenticated implicit TLS SMTP,
+secret-free status and web/worker-only apply, retaining destination credentials
+through enable, disable and database restore. Absent configuration stays console-only.
 Resource refusal, retry convergence,
 disable/uninstall, scheduled restic database backups and monitored health are
 part of this contract. See [the operator runbook](./reference/host-observability.md).

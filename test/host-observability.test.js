@@ -379,7 +379,7 @@ test('shipped helper dispatch keeps dormant services inert and rejects an unreta
  const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir),SPORADES_TEST_FLOCK_PATH:path.join(root,'test/support/exec-flock.py')};
  const helper=path.join(root,'bin/sporades-host-helper.js');
  const invoke=extra=>JSON.parse(spawnSync(process.execPath,[helper],{input:JSON.stringify(request),env:{...env,...extra},encoding:'utf8'}).stdout);
- const dormant=invoke({});assert.equal(dormant.ok,true);assert.deepEqual(dormant.data,{installed:false,enabled:false});
+ const dormant=invoke({});assert.equal(dormant.ok,true);assert.deepEqual(dormant.data,{installed:false,enabled:false,mail:{configured:false,transport:"console"}});
  const spoofed=invoke({SPORADES_HOST_GLOBAL_ROUTE_LOCK_FILE:path.join(remoteRoot,'bin','.sporades-host-helper.host-route.lock')});
  assert.equal(spoofed.ok,false);assert.match(spoofed.error.message,/lock identity was not retained/);
 }));

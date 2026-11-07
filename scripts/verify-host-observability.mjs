@@ -22,6 +22,14 @@ const fixture = { after: callback => cleanup.push(callback) };
 const marker = `acceptance-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
 const {publicKey,privateKey} = generateKeyPairSync('rsa',{modulusLength:2048,publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
 const target = { domain:'capsules.example.test', subname:'test', errors:true, analytics:true, publicKey };
+let smtp = null;
+// Provider operations are retryable by identity; tolerate bounded local startup pressure.
+async function provision(target) {
+  for (let attempt=0;;attempt++) {
+    try { return await provisionObservability(host,target); }
+    catch (error) { if(attempt===2) throw error; await new Promise(resolve=>setTimeout(resolve,1000)); }
+  }
+}
 const sql = (service,user,query,deadline) => {
   const args = ['exec','-T',...(deadline === undefined ? [] : ['-e','PGOPTIONS=-c statement_timeout=5000']),service,'psql','-U',user,'-d',user,'-tAc',query];
   if (deadline === undefined) return observabilityDocker(host,args).toString().trim();
@@ -31,14 +39,18 @@ const sql = (service,user,query,deadline) => {
   } catch (error) { throw new Error(`Disposable provider database query failed (${error.code ?? error.status ?? 'unknown'}); provider diagnostics omitted.`); }
 };
 try {
+  if (process.env.SPORADES_OBSERVABILITY_SMTP_TEST === '1') smtp = await (await import('./support/observability-smtp.mjs')).smtpAcceptance(host, marker);
+  fixture.after(() => smtp?.stop());
   // Fail after provider initialization and prove retry converges without resetting credentials.
   await assert.rejects(enableObservability(host, async()=>{throw new Error('simulated Caddy failure');}), /simulated/);
   process.stdout.write("Provider bootstrap recovery verified.\n");
   const first = await enableObservability(host, async ports => { assert.ok(ports.errors); assert.ok(ports.analytics); });
   assert.ok(first.credentials);
+  await smtp?.start();
   const second = await enableObservability(host, async()=>{});
   assert.equal(second.credentials, undefined);
   process.stdout.write("Repeated enable verified.\n");
+  await smtp?.trust();
   // Caddy terminates HTTPS and forwards HTTP: a valid browser CSRF token must
   // pass the exact public Origin check even though the upstream hop is HTTP.
   const csrfCheck=`from django.test import RequestFactory\nfrom django.middleware.csrf import CsrfViewMiddleware,get_token\nfrom django.http import HttpResponse\nr=RequestFactory().post('/',HTTP_HOST='errors.${host.domain}',HTTP_ORIGIN='https://errors.${host.domain}')\ntoken=get_token(r)\nr.COOKIES['csrftoken']=r.META['CSRF_COOKIE']\nr.META['HTTP_X_CSRFTOKEN']=token\nview=lambda request:HttpResponse()\nassert CsrfViewMiddleware(view).process_view(r,view,(),{}) is None\n`;
@@ -61,17 +73,17 @@ try {
     try{runtime.capture(new Error(message),'query');await runtime.flush();}finally{runtime.close();}
   };
   const issueIds=()=>sql('errors-db','glitchtip',`SELECT id FROM issue_events_issue WHERE project_id=${legacy.id} ORDER BY id`);
-  await sendError('disposable legacy history',originalKeys[0].dsn.public);
+  await sendError(`disposable legacy history ${marker}`,originalKeys[0].dsn.public);
   const historyDeadline=Date.now()+90_000;
   while(!issueIds()&&Date.now()<historyDeadline)await new Promise(r=>setTimeout(r,1000));
   const history=issueIds();assert.ok(history,'Legacy DSN stores an issue before migration');
-  const connection = await provisionObservability(host,target);
+  const connection = await provision(target);
   const values = unsealServerEnv(connection.env,privateKey);
   const renamed=await glitchtip(route);
   assert.equal(renamed.id,legacy.id);assert.equal(renamed.slug,slug);assert.equal(renamed.name,'test.capsules.example.test');
   assert.ok(JSON.stringify(await glitchtip(route+'keys/'))===JSON.stringify(originalKeys),'Migration preserves complete key responses');
   assert.equal(issueIds(),history,'Migration preserves issue history');
-  const again = await provisionObservability(host,target);
+  const again = await provision(target);
   assert.deepEqual(unsealServerEnv(again.env,privateKey),values);
   // Interrupt after a real create and before rename; retry must use that project.
   const interruptedTarget={...target,subname:'interrupted',analytics:false};
@@ -104,18 +116,18 @@ try {
     await assert.rejects(provisionObservability(host,interruptedTarget),/Host observability operation failed/);
   }finally{globalThis.fetch=fetchProvider;}
   assert.equal((await glitchtip(interruptedRoute)).name,'interrupted.capsules.example.test');
-  const retried=unsealServerEnv((await provisionObservability(host,interruptedTarget)).env,privateKey);
+  const retried=unsealServerEnv((await provision(interruptedTarget)).env,privateKey);
   const recovered=await glitchtip(interruptedRoute);
   assert.equal(recovered.id,interrupted.id);assert.equal(recovered.slug,interrupted.slug);assert.equal(recovered.name,'interrupted.capsules.example.test');
   assert.ok(JSON.stringify(await glitchtip(interruptedRoute+'keys/'))===JSON.stringify(interruptedKeys),'Retry preserves keys from create');
-  assert.deepEqual(unsealServerEnv((await provisionObservability(host,interruptedTarget)).env,privateKey),retried);
+  assert.deepEqual(unsealServerEnv((await provision(interruptedTarget)).env,privateKey),retried);
   // Human-selected names are not managed defaults.
   const operatorName='Operator-selected disposable Capsule';
   await glitchtip(route,'PUT',{name:operatorName,slug});
-  await provisionObservability(host,target);
+  await provision(target);
   assert.equal((await glitchtip(route)).name,operatorName);
   assert.ok(JSON.stringify(await glitchtip(route+'keys/'))===JSON.stringify(originalKeys),'Operator name reconciliation preserves keys');
-  const other = unsealServerEnv((await provisionObservability(host,{...target,domain:'another.example.test'})).env,privateKey);
+  const other = unsealServerEnv((await provision({...target,domain:'another.example.test'})).env,privateKey);
   assert.notEqual(other.ANALYTICS_WEBSITE_ID,values.ANALYTICS_WEBSITE_ID);
   assert.notEqual(other.ERROR_DSN,values.ERROR_DSN);
   const projects=await glitchtip('organizations/sporades/projects/');
@@ -173,6 +185,9 @@ try {
   assert.ok(views>0,'Umami stores the query-free pageview');
   assert.equal((await statusObservability(host)).healthy,true);
   process.stdout.write('Stored exact endpoint failure and browser error/rejection verified in the provisioned GlitchTip project, with Capsule/release/environment and redaction; direct capture verified separately. Umami pageview stored.\n');
+  await smtp?.apply();
+  await smtp?.trust();
+  await smtp?.notify();
   if (process.env.SPORADES_OBSERVABILITY_BACKUP_TEST === '1') {
     const {spawnSync}=await import('node:child_process');
     const {writeFile}=await import('node:fs/promises');
@@ -183,6 +198,7 @@ try {
     assert.equal(spawnSync('restic',['init'],{env:{...process.env,RESTIC_REPOSITORY:policy.repository,RESTIC_PASSWORD_FILE:passwordFile}}).status,0);
     await configureHostBackups(host,policy);
     const snapshot=await backupObservability(host);
+    await smtp?.rotate(); // Restore must retain the destination credential, not a snapshot-era value.
     assert.equal((await listObservabilityBackups(host)).snapshots.length,1);
     await disableObservability(host,async()=>{});
     const tools=path.join(directory,'restore-tools');
@@ -208,13 +224,16 @@ try {
   assert.equal((await fetch(dormant.origin+'/__sporades/observe.js',{signal:AbortSignal.timeout(5000)})).status,404);
   assert.equal((await fetch(dormant.origin+'/__sporades/collect',{method:'POST',signal:AbortSignal.timeout(5000)})).status,404);
   process.stdout.write('Provider stopped and no-integration Capsules preserve opaque failures, rollback, later commits and health.\n');
-  assert.equal((await provisionObservability(host,target)).connected,false);
+  assert.equal((await provision(target)).connected,false);
   await disableObservability(host,async()=>{});
   await enableObservability(host,async()=>{});
   assert.equal((await statusObservability(host)).healthy,true);
+  await smtp?.trust();
+  await smtp?.notify();
   assert.ok(Number(sql('errors-db','glitchtip','SELECT count(*) FROM issue_events_issue'))>0);
   assert.ok(Number(sql('analytics-db','umami',"SELECT count(*) FROM website_event WHERE url_path='/acceptance'"))>0);
-  assert.deepEqual(unsealServerEnv((await provisionObservability(host,target)).env,privateKey),values);
+  assert.deepEqual(unsealServerEnv((await provision(target)).env,privateKey),values);
+  await smtp?.stop();
   await disableObservability(host,async()=>{},true);
   assert.ok(await readFile(path.join(observabilityDirectory(host),'secrets.json')));
   process.stdout.write('PASS: real pinned providers, generated Capsule handler capture, browser error/rejection redaction, exact project events, independent direct capture, rollback/commit/outage/no-integration semantics, readable names with preserved IDs/slugs/keys/history, rename retries, operator names, no duplicate projects, isolated sealed identities, continued DSN ingestion, pageview, disable/re-enable/uninstall.\n');
