@@ -2875,7 +2875,6 @@ async function startDevSession(options) {
                 });
             }
         }, () => [...clientDependencies], initialDependencySignatures);
-        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
         let shutdownStarted = false;
         shutdown = async () => {
             if (shutdownStarted)
@@ -2928,6 +2927,7 @@ async function startDevSession(options) {
         process.on("SIGTERM", shutdown);
         process.on("SIGINT", shutdown);
         process.on("SIGHUP", shutdown);
+        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
     }
     catch (error) {
         let cleanupFailure;
