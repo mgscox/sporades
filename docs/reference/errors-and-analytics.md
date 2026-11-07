@@ -78,8 +78,10 @@ cause code; raw privileged cause messages and stacks stay private. Query/mutatio
 arguments, request headers and customer payloads are never added as context.
 
 Embedded `data:` module filenames become `sporades://capsule/server.mjs` in server
-events; browser embedded modules use `sporades://embedded/module`. No embedded
-source, base64 payload, raw stack or source snippet is exported. Coordinates refer
+events; browser embedded modules use `sporades://embedded/module`. Compound eval
+locations containing `data:` or `blob:` URLs use the same stable identifier before
+browser serialization; their retained coordinates describe the evaluated code.
+No embedded source, base64 payload, raw stack or source snippet is exported. Coordinates refer
 to the generated embedded module, scoped by the event release, rather than the
 original TypeScript. Parsing scans at most 1 MiB and 100 lines per exception before
 reducing to the shared frame budget; oversized or malformed frames may be absent.

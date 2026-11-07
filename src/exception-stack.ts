@@ -30,10 +30,11 @@ export function exceptionFrames(input: unknown, embeddedSource = "sporades://emb
       if (at < 0) continue;
       fn = location.slice(0, at) || fn; location = location.slice(at + 1);
     }
-    if (/^(?:data|blob):/i.test(location)) location = embeddedSource;
+    // V8 eval locations can nest module URLs inside `eval at ... (...)`.
+    if (/(?:data|blob):/i.test(location)) location = embeddedSource;
     // Remove private URL suffixes before bounding filenames, preserving coordinates above.
     location = location.split(/[?#]/, 1)[0];
-    if (!location || location.length > 4096 || fn.length > 1024 || /data:|base64,/i.test(fn)) continue;
+    if (!location || location.length > 4096 || fn.length > 1024 || /data:|blob:|base64,/i.test(fn)) continue;
     const lineno = Number(coordinates[1]), colno = Number(coordinates[2]);
     if (lineno < 1 || colno < 1) continue;
     frames.push({ filename: location, function: fn, lineno, colno });

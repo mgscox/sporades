@@ -35,6 +35,61 @@ test('caught exception from a large embedded module preserves original coordinat
   assert.doesNotMatch(envelope, /data:text|base64|synthetic-private-marker/);
 });
 
+test('nested eval in a data module never sends encoded source in browser collection requests', async t => {
+  const { Window } = await import('happy-dom');
+  const { collectionLoaderSource } = await import('../dist/templates/observability-loader.js');
+  const source = `export function fail() { eval('eval(\\'throw new TypeError("nested eval failure")\\')'); } // synthetic-inline-source`;
+  const encoded = Buffer.from(source).toString('base64');
+  const module = await import('data:text/javascript;base64,' + encoded);
+  let caught;
+  try { module.fail(); } catch (error) { caught = error; }
+  assert(caught instanceof TypeError);
+  assert.match(caught.stack, /eval at/);
+  assert(caught.stack.includes(encoded), 'exercise a genuine stack containing encoded module source');
+  const window = new Window({ url: 'http://localhost:5218' });
+  t.after(() => window.happyDOM.abort());
+  const requests = [];
+  window.fetch = async (url, options) => {
+    assert.equal(url, '/__sporades/collect');
+    requests.push(options.body);
+    return new Response(null);
+  };
+  window.eval(collectionLoaderSource(true, false));
+  window.dispatchEvent(new window.ErrorEvent('error', { error: caught }));
+  window.dispatchEvent(new window.ErrorEvent('error', { error: new RangeError('independent browser failure', { cause: caught }) }));
+  assert.equal(requests.length, 2, 'both genuine errors still report');
+  for (const body of requests) {
+    assert(!body.includes(encoded), 'collection POST must exclude encoded module source');
+    assert.doesNotMatch(body, /data:|blob:|base64|synthetic-inline-source/);
+  }
+  const [nested, independent] = requests.map(body => JSON.parse(body));
+  assert.equal(nested.name, 'TypeError');
+  assert.equal(nested.message, 'nested eval failure');
+  assert.match(nested.stack, /sporades:\/\/embedded\/module:1:\d+/);
+  assert.equal(independent.name, 'RangeError');
+  assert.equal(independent.causes[0].name, 'TypeError');
+});
+
+test('browser collection normalizes nested blob locations and rejects embedded function labels', async t => {
+  const { Window } = await import('happy-dom');
+  const { collectionLoaderSource } = await import('../dist/templates/observability-loader.js');
+  const window = new Window({ url: 'http://localhost:5218' });
+  t.after(() => window.happyDOM.abort());
+  const sends = [];
+  window.fetch = async (_url, options) => { sends.push(JSON.parse(options.body)); return new Response(null); };
+  window.eval(collectionLoaderSource(true, false));
+  const stacks = [
+    '    at eval (eval at run (blob:http://localhost/private-module:4:5), <anonymous>:2:3)',
+    '    at eval (eval at run (DaTa:text/javascript,private-module:4:5), <anonymous>:2:3)',
+    '    at blob:private-module (/safe.js:2:3)',
+  ];
+  for (const stack of stacks) window.dispatchEvent(new window.ErrorEvent('error', { error: Object.assign(new Error('synthetic eval'), { stack }) }));
+  assert.equal(sends.length, 3);
+  for (const event of sends.slice(0, 2)) assert.equal(event.stack, '    at eval (sporades://embedded/module:2:3)\n');
+  assert.equal(sends[2].stack, undefined);
+  assert.doesNotMatch(JSON.stringify(sends), /private-module|data:|blob:/i);
+});
+
 for (const [format, stack, frames] of [
   ['Safari', 'fail@https://example.test:8443/a:b.js?secret=synthetic-private-marker:12:9\n@file:///C:/capsule/a:b.js:7:3', [
     { filename: 'file:///C:/capsule/a:b.js', function: '<anonymous>', lineno: 7, colno: 3 },

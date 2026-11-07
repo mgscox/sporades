@@ -539,6 +539,9 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     "mcp-runtime.js",
     // Sessionless endpoint declaration validation owns no SQL, adapter or normalization behavior.
     "endpoint-session.js",
+    // Bounded exception frame parsing shared with the browser loader; no SQL walker,
+    // emitted statement, dialect, adapter primitive, or database normalization behavior.
+    "exception-stack.js",
   ]);
 
   const carried = runtimeGraphModules();
