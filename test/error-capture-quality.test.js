@@ -204,6 +204,61 @@ test('mutations throwing mixed-case Server env secrets through Privileged export
   }
 });
 
+test('Privileged mutations conceal derived Server env cause codes in every exported field', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const { openDevDatabase, runMutation, resolveAnonymousSession } = await import('../dist/server-runtime-source.js');
+  const { mutation } = await import('../dist/server.js');
+  const root = await mkdtemp(path.join(process.cwd(), '.scratch', 'quality-derived-secret-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = { DSN: 'http://synthetic@127.0.0.1:5218/1', SERVICE_SECRET: 'abcDef123-token', PUNCTUATED_SECRET: 'abcDef456+token', NORMALIZED_SECRET: 'ABCDEF789_TOKEN' };
+  const envelopes = receivedEnvelopes(t);
+  const db = await openDevDatabase(path.join(root, 'data.db'), '', env, { name: 'quality-derived-secret', observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN' } } }, {
+    mutations: {
+      derived: mutation((ctx, mode) => ctx.privileged.run({ operation: 'quality.derived', targetResourceKind: 'quality-resource' }, () => {
+        const code = mode === 'upper' ? ctx.env.SERVICE_SECRET.toUpperCase()
+          : mode === 'lower' ? ctx.env.SERVICE_SECRET.toLowerCase()
+          : mode === 'mixed' ? 'aBcDeF123-ToKeN'
+          : mode === 'after' ? ctx.env.NORMALIZED_SECRET.toLowerCase().replace('_', '+')
+          : ctx.env.PUNCTUATED_SECRET.toUpperCase().replace('+', '_');
+        throw Object.assign(new Error(ctx.env.SERVICE_SECRET), { code, attributes: { secret: ctx.env.SERVICE_SECRET } });
+      })),
+    },
+  });
+  t.after(() => db.close());
+  await db.init();
+  const { auth } = await resolveAnonymousSession(db);
+  for (const mode of ['upper', 'lower', 'mixed', 'normalized', 'after']) await t.test(mode, async () => {
+    const before = envelopes.length;
+    const result = await runMutation(db, auth, 'derived', [mode]);
+    await db.observability.flush();
+    assert.equal(result.error.code, 'PRIVILEGED_RUN_FAILED');
+    assert.equal(envelopes.length, before + 1);
+    const envelope = envelopes.at(-1), event = JSON.parse(envelope.trim().split('\n')[2]);
+    // Inspect the entire export, including tags, messages, frames and any attributes.
+    assert.doesNotMatch(JSON.stringify({ result, envelope }), /abcdef123-token|abcdef456[+_]token|abcdef789[+_]token/i);
+    assert.equal(event.tags.cause_code, 'UNKNOWN_ERROR');
+    assert.equal(event.exception.values[0].mechanism.data.cause_code, 'UNKNOWN_ERROR');
+    assert.equal(event.exception.values.length, 1);
+  });
+});
+
+test('both Privileged wrappers conceal Server env case variants in messages and stack fields', async t => {
+  const { createPrivilegedRunPublicError, createPrivilegedAuditEmissionPublicError } = await import('../dist/acl-runtime.js');
+  for (const make of [createPrivilegedRunPublicError, createPrivilegedAuditEmissionPublicError]) for (const nested of [false, true]) {
+    const secret = 'abcDef123-token';
+    const wrapped = make(Object.assign(new Error(secret), { code: 'aBcDeF123-ToKeN', attributes: { secret } }));
+    wrapped.message = `failed ${secret.toUpperCase()}`;
+    wrapped.stack = `Error: failed\n    at ${secret.toLowerCase()} (/safe/aBcDeF123-ToKeN.js:3:4)`;
+    const error = nested ? new Error('outer', { cause: wrapped }) : wrapped;
+    const { event, envelope } = await captured(t, error, undefined, { SERVICE_SECRET: secret });
+    assert.doesNotMatch(envelope, /abcdef123-token/i);
+    assert.equal(event.exception.values[0].mechanism.data.cause_code, 'UNKNOWN_ERROR');
+    assert.equal(event.tags.cause_code, nested ? wrapped.code : 'UNKNOWN_ERROR');
+    assert.equal(event.exception.values.length, nested ? 2 : 1);
+  }
+});
+
 for (const thrown of ['plain rejection', 42, null, { arbitrary: 'synthetic-private-marker' }]) {
   test(`non-Error thrown value ${typeof thrown} stays bounded without arbitrary properties`, async t => {
     const { event, envelope } = await captured(t, thrown);

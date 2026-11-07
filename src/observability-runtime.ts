@@ -98,13 +98,26 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
   const acquireIngress = budget(8, 120);
   const acquirePublicDelivery = budget(4, 60);
   const acquireServerDelivery = budget(4, 60);
-  const safeText = (value: unknown, limit: number) => redactDiagnosticText((typeof value === "string" ? value : "Error").slice(0, 65536).replace(/data:[^\s)]+/gi, "[embedded source]"), env).slice(0, limit);
+  // Treat case variants and audit-normalized Server env values as secret too.
+  const secretPatterns = [...new Set(Object.values(env)
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .flatMap(value => [value, value.toUpperCase(), value.toLowerCase(), safePrivilegedAuditErrorCode({ code: value })])
+    .filter((value): value is string => value !== null))]
+    .sort((a, b) => b.length - a.length)
+    .map(value => new RegExp(value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"));
+  const safeText = (value: unknown, limit: number) => {
+    let text = redactDiagnosticText((typeof value === "string" ? value : "Error").slice(0, 65536).replace(/data:[^\s)]+/gi, "[embedded source]"), env);
+    for (const pattern of secretPatterns) text = text.replace(pattern, "[REDACTED]");
+    return text.slice(0, limit);
+  };
   const privilegedCauseCode = (cause: any) => {
     const candidate = cause && typeof cause === "object" ? cause.code : undefined;
     if (typeof candidate !== "string" || candidate.length > 65536) return "UNKNOWN_ERROR";
     // Redaction must see the original bytes before audit-code normalization changes them.
     const redacted = safeText(candidate, 65536);
-    return redacted === candidate ? safePrivilegedAuditErrorCode({ code: redacted }, "errored") : "UNKNOWN_ERROR";
+    if (redacted !== candidate) return "UNKNOWN_ERROR";
+    const normalized = safePrivilegedAuditErrorCode({ code: redacted }, "errored")!;
+    return safeText(normalized, 64) === normalized ? normalized : "UNKNOWN_ERROR";
   };
   const send = async (url: URL, body: string, headers: Record<string, string>) => {
     const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(2000)]) });
