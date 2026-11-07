@@ -338,3 +338,151 @@ query failure and browser pageview, confirm them in both dashboards, confirm
 no credentials in CLI status or page source, snapshot/disable/restore/enable,
 and reboot. Verify TLS, retained data and fresh monitoring samples. Never run
 this rehearsal on a production Capsule.
+
+## Explicit observability acceptance
+
+`host push --verify` verifies restart, the release public tree and protected
+runtime health. Generated autodeploy keeps that behavior. It does not deliberately
+throw application errors, collect pageviews, query stored provider events or
+claim notification delivery. Service health and a provider HTTP 2xx are also
+insufficient evidence of app-runtime capture.
+
+A separate checkout workflow runs only after an operator explicitly selects the
+exact Capsule origin and release. This issue authorizes disposable tests only;
+Jem owns operator deployment and any later live acceptance. A disposable Linux
+rehearsal remains necessary for public DNS, TLS and reboot evidence.
+
+Build the checkout and create a private configuration directory and a reviewed
+plan. Example plan (all identities are synthetic):
+
+```json
+{
+  "version": 1,
+  "target": {
+    "origin": "https://capsule.example.test",
+    "capsule": "synthetic",
+    "release": "release-334",
+    "environment": "acceptance"
+  },
+  "analytics": false,
+  "notifications": false,
+  "surfaces": {
+    "server-error": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-protected-diagnostic", "approval": "OPS-334"}
+    },
+    "browser-error": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-diagnostic-page", "approval": "OPS-334"}
+    },
+    "browser-rejection": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-diagnostic-page", "approval": "OPS-334"}
+    }
+  }
+}
+```
+
+Paths in a plan refer to **existing operator-approved app diagnostics**. The
+workflow never installs them. Omit `diagnostic` when no safe path exists: that
+surface is `blocked`, and the process exits unsuccessfully. Do not add a public
+crash endpoint, enable a shipped fault switch, fail a customer request, upgrade a
+helper, reconnect/provision a registration, change existing IDs or inspect
+sibling credentials to make the gate pass. `state: "missing"` or `"disabled"`
+records unavailable configuration explicitly. Environment may be omitted when
+none is configured; configured release, Capsule and environment must match.
+
+The driver is an explicitly supplied local ES module exporting a default object
+with `probe(context)`, `readBack(context)` and `cleanup(signal)`. It is trusted,
+reviewed executable operator code, **not a sandbox or automatic credential
+lookup**. Imports must be inert; allocate resources in the probe and register
+cleanup before any operation that can fail. See [the driver and evidence types](https://github.com/mgscox/sporades/blob/main/src/types/observability-acceptance.d.ts)
+for the complete contract. The disposable pinned-provider harness in
+`scripts/verify-host-observability.mjs` is a working example using the existing
+local stack and generated synthetic Capsule. Different Capsules need their own
+reviewed safe diagnostics; there is deliberately no universal server crash probe.
+
+```sh
+npm run build
+mkdir -p .sporades/acceptance-config
+umask 077
+SPORADES_CONFIG_DIR="$PWD/.sporades/acceptance-config" \
+  node scripts/accept-observability.mjs \
+  --plan ./reviewed-plan.json --driver ./reviewed-driver.mjs \
+  --authorize-target https://capsule.example.test --release release-334 \
+  > .sporades/observability-evidence.json
+```
+
+Authorization must exactly match the plan **before the driver is imported**.
+Keep the configuration directory inside the working checkout; no saved Host or
+Telemetry profile is selected. The command writes one JSON report to stdout and
+returns 0 only for `pass`, 1 for `fail` or `blocked`, and 2 for invalid startup.
+Keep plans, drivers containing private configuration, and reports in protected
+operator storage, outside version control.
+
+The driver must verify the selected running release before probing, send each
+probe only once through its approved runtime path, and honor the abort signal.
+For `server-error`, exercise a controlled real handler failure and check its
+opaque response, rollback and continued health. For browser surfaces, exercise
+real `error` and `unhandledrejection` hooks in the running Capsule, through its
+existing loader/tunnel. Return `capture: "app-runtime"` only after this happens,
+along with the attested target and synthetic redaction canaries actually injected
+by that probe. Direct `capture()` or envelope submission is lower-level evidence
+and cannot satisfy this receipt. Do not report a probe as exercised merely
+because an HTTP request succeeded.
+
+`readBack` uses separately authorized read access to the **existing** provider
+project. It returns null while waiting, or actual stored event evidence with an
+opaque read-back ID, exact marker, provider timestamp, Capsule, release,
+configured environment and surface, plus the complete stored payload for
+redaction checks. Derive these fields from provider evidence, never copy the
+expected context into an unverified result. Normalize provider `endpoint` and
+`client` surface tags only after checking their platform and the exact probe
+marker; the two browser probes have distinct markers. A stored timestamp must
+fall between run start and read-back; synchronize clocks before acceptance.
+Historical events, missing markers, wrong projects/tags, empty lists, HTTP 2xx
+and absent redaction exercises cannot pass. Provider response bodies, errors,
+credentials, canary values and raw event payloads are omitted from the report.
+Only validated opaque handles and the selected public identity are retained.
+
+Polling defaults to 30 seconds per selected surface (library maximum 90 seconds),
+with a five-second cleanup budget. A timeout or SIGINT/SIGTERM interruption fails; provider unavailability blocks.
+Interruption aborts active work and runs bounded cleanup before reporting.
+The driver must bound its own network operations and release only resources it
+owns, including after partial failure. Abort is cooperative: executable drivers
+must stop their work when signaled. Cleanup failure prevents overall acceptance.
+
+Analytics stays `skipped` unless the plan explicitly sets `analytics: true` and
+supplies an enabled `analytics-pageview` surface with the **existing** website ID
+as `project`, an approved path and approval reference. Navigate once through
+normal app collection to a synthetic marker-bearing path with synthetic query
+and fragment canaries; read back that exact stored pageview and verify that
+the stored URL contains neither query nor fragment. Never install a second collector,
+send a direct provider pageview, alter working IDs or poll by navigating again.
+The driver must attest the actual target release and associate the stored path
+with that release when the analytics provider does not store release tags.
+
+Notifications stay `skipped` unless `notifications: true`. Configure separate
+`notification-smtp` and `notification-inbox` surfaces for the existing error
+project. These are read-only checks after the verified server event; they do not
+send extra notifications. Each receipt must carry the exact server event marker
+and `relatedEventHandle`, and its own provider read-back handle and timestamp.
+SMTP server acceptance and a message actually received in the designated test
+inbox are separate boundaries. Do not substitute SMTP success for inbox receipt,
+or event storage for either. Missing notification configuration is blocked;
+requested delivery without read-back times out and fails. Do not promise regression
+alerts unless the selected provider/version actually supports them.
+
+For handoff, attach the report with the approved target/release, approval references,
+run window, unique markers and provider handles. Identify skipped and blocked
+surfaces explicitly; a skipped optional surface is not evidence of acceptance.
+Have the operator review driver provenance and read access separately from probe
+authorization. Retain existing integration identities and history.
+
+To roll back this workflow, stop further acceptance runs and let the driver's
+cleanup release its own test sessions/resources. No deployment or integration
+configuration changes are made by the gate. Remove only synthetic diagnostic
+access or fixtures specifically created for the rehearsal under their own
+approval. Preserve customer state, registrations, analytics, support, billing,
+provider history and credentials; never use a blanket Docker prune or unrelated
+service restart. Review any cleanup failure before retrying.
