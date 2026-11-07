@@ -1,3 +1,4 @@
+import { waitForProcessJson } from './support/process-json.js';
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -251,42 +252,7 @@ function startCli(args, options = {}) {
   });
 }
 
-async function waitForJsonLine(child) {
-  return new Promise((resolve, reject) => {
-    let stdout = "";
-    let stderr = "";
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for JSON output.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
-
-    function cleanup() {
-      clearTimeout(timeout);
-      child.stdout.off("data", onStdout);
-      child.stderr.off("data", onStderr);
-      child.off("exit", onExit);
-    }
-    function onStdout(chunk) {
-      stdout += chunk;
-      const line = stdout.split("\n").find((candidate) => candidate.trim());
-      if (line) {
-        cleanup();
-        resolve(JSON.parse(line));
-      }
-    }
-    function onStderr(chunk) {
-      stderr += chunk;
-    }
-    function onExit(code) {
-      cleanup();
-      reject(new Error(`Process exited with ${code} before JSON output.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }
-
-    child.stdout.on("data", onStdout);
-    child.stderr.on("data", onStderr);
-    child.on("exit", onExit);
-  });
-}
+function waitForJsonLine(child) { return waitForProcessJson(child); }
 
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);

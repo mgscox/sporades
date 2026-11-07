@@ -43,10 +43,13 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
   await mkdir(path.join(root, 'public'), { recursive: true });
   await writeFile(path.join(root, 'public', 'index.html'), '<!doctype html><html><head></head><body>Collection fixture</body></html>');
   await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv, serverSource, serverModuleSource,
-    epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");' }));
+    epilogue: `process.on('message', async command => {
+      if (command === 'flush-observability') { await database.observability.flush(); process.send({ flushed: true }); }
+    });
+    process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");` }));
   child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: {
     SPORADES_CONFIG_DIR: path.join(root, 'config'), PORT: '0', SPORADES_SECURITY_SESSION: 'dev',
-  }, stdio: ['ignore', 'pipe', 'pipe'] });
+  }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let output = '';
   child.on('error', () => { failed = true; });
   child.stdout.on('data', chunk => { output = (output + chunk).slice(-65536); });
@@ -54,7 +57,12 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
   for (let attempt = 0; attempt < 2000; attempt++) {
     assert.ok(!failed && child.exitCode === null, 'Synthetic Capsule exited before readiness');
     const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
-    if (signal) return { origin: `http://127.0.0.1:${signal.listening}` };
+    if (signal) return { origin: `http://127.0.0.1:${signal.listening}`, flush: async () => {
+      const result = once(child, 'message', { signal: AbortSignal.timeout(10000) });
+      child.send('flush-observability');
+      const [message] = await result;
+      assert.deepEqual(message, { flushed: true });
+    } };
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.fail('Synthetic Capsule readiness timed out');

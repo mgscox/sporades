@@ -35,7 +35,7 @@ async function fixture(t) {
   return { root, temp, project, env, run, cli, cliArgs, source, backup, volumes, realDocker, wrapper, target };
 }
 
-test('restore refuses a foreign volume created after listing without modifying its bytes', { skip: !enabled, timeout: 120_000 }, async t => {
+test('restore refuses a foreign volume created after listing without modifying its bytes', { skip: !enabled && "Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon", timeout: 120_000 }, async t => {
   const f = await fixture(t);
   await writeFile(path.join(f.wrapper, 'docker'), `#!${process.execPath}
 import cp from 'node:child_process';const a=process.argv.slice(2);
@@ -54,7 +54,7 @@ cp.execFileSync(${JSON.stringify(f.realDocker)},['run','--rm','--network','none'
   assert.equal(meta.Labels['com.sporades.restore'], undefined);
 });
 
-test('restores from different directories exclude shared volumes and release guards after SIGKILL', { skip: !enabled, timeout: 120_000 }, async t => {
+test('restores from different directories exclude shared volumes and release guards after SIGKILL', { skip: !enabled && "Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon", timeout: 120_000 }, async t => {
   const f = await fixture(t);
   const marker = path.join(f.temp, 'extracting');
   await writeFile(path.join(f.wrapper, 'docker'), `#!${process.execPath}
@@ -95,7 +95,7 @@ else {const r=cp.spawnSync(${JSON.stringify(f.realDocker)},a,{stdio:'inherit'});
   for (const name of f.volumes) assert.equal(f.run('docker', ['run', '--rm', '--network', 'none', '-v', name + ':/storage:ro', 'busybox:1.37.0', 'cat', '/storage/sentinel']).stdout, 'snapshot\n');
 });
 
-test('Linux UID 10001 creates private operator-owned backups preserving archived numeric metadata', { skip: !enabled, timeout: 240_000 }, async t => {
+test('Linux UID 10001 creates private operator-owned backups preserving archived numeric metadata', { skip: !enabled && "Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon", timeout: 240_000 }, async t => {
   const root = process.cwd(), temp = await mkdtemp(path.join(root, '.sporades/maintenance-linux-'));
   const prefix = 'dennis213-linux-' + randomBytes(6).toString('hex');
   const image = prefix + ':test', workspace = prefix + '-workspace', container = prefix + '-operator';
@@ -144,7 +144,7 @@ console.log('Linux UID 10001 backup and numeric archive ownership passed');`;
   must(['exec', '--user', `10001:${socketGid}`, container, 'node', hostPath + '/linux-probe.mjs']);
 });
 
-test('real Compose malformed effective backend files prevent generated-file publication', { skip: !enabled, timeout: 180_000 }, async t => {
+test('real Compose malformed effective backend files prevent generated-file publication', { skip: !enabled && "Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon", timeout: 180_000 }, async t => {
   const f = await fixture(t);
   const manifestPath = path.join(f.source, 'stack-manifest.json');
   const manifest = JSON.parse(await readFile(manifestPath)); manifest.packageVersion = '0.9.29';
@@ -161,7 +161,7 @@ test('real Compose malformed effective backend files prevent generated-file publ
   }
 });
 
-test('restore rechecks ownership immediately before extraction', { skip: !enabled, timeout: 120_000 }, async t => {
+test('restore rechecks ownership immediately before extraction', { skip: !enabled && "Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon", timeout: 120_000 }, async t => {
   const f = await fixture(t), counter = path.join(f.temp, 'checks');
   await writeFile(path.join(f.wrapper, 'docker'), `#!${process.execPath}
 import cp from 'node:child_process';import fs from 'node:fs';const a=process.argv.slice(2);

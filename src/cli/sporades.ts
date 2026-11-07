@@ -3110,7 +3110,6 @@ async function startDevSession(options: LooseRecord) {
       );
     }
   }, () => [...clientDependencies], initialDependencySignatures);
-  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
 
   let shutdownStarted = false;
   shutdown = async () => {
@@ -3143,6 +3142,7 @@ async function startDevSession(options: LooseRecord) {
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   process.on("SIGHUP", shutdown);
+  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
   } catch (error) {
     let cleanupFailure: unknown;
     for (const watcher of watchers) {

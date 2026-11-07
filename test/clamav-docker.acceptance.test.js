@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 const enabled = process.env.SPORADES_REAL_CLAMAV_DOCKER === "1";
 
-test("real Capsule image acquires signatures and scans only over its local Unix socket", { skip: !enabled }, () => {
+test("real Capsule image acquires signatures and scans only over its local Unix socket", { skip: !enabled && "Set SPORADES_REAL_CLAMAV_DOCKER=1 with Docker and network access for ClamAV signatures" }, () => {
   const image = `sporades-clamav-acceptance:${process.pid}`;
   const volume = `sporades-clamav-acceptance-${process.pid}`;
   const identityData = mkdtempSync(path.join(tmpdir(), "sporades-clamav-uid-"));

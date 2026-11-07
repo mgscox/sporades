@@ -1,14 +1,18 @@
 import test from 'node:test';
+import { useFixtureUmask } from './support/fixture-umask.js';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { access, mkdtemp, mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { createServer } from 'node:net';
 import { parseEnvironment } from '../monitoring/trace/setup.mjs';
 import { legacyPipelineGeneration } from './monitoring-legacy-fixture.js';
 import { parseNpmPackJson } from '../scripts/npm-pack-json.mjs';
 
-test('real validators accept pipeline-only schema-4 rollback and reject missing referenced rules', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1', timeout: 300_000 }, async t => {
+test('real validators accept pipeline-only schema-4 rollback and reject missing referenced rules', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1' && 'Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon', timeout: 300_000 }, async t => {
+  useFixtureUmask(t);
+  await mkdir(path.join(process.cwd(), '.sporades'), { recursive: true });
   for (const missing of [null, 'availability', 'performance']) {
     await t.test(missing ? `missing ${missing} reference` : 'legacy rollback', async t => {
       const root = process.cwd();
@@ -58,8 +62,10 @@ test('real validators accept pipeline-only schema-4 rollback and reject missing 
   }
 });
 
-test('installed CLI cold backup restores queryable history and exact inventory into fresh volumes', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1', timeout: 300_000 }, async t => {
+test('installed CLI cold backup restores queryable history and exact inventory into fresh volumes', { skip: process.env.SPORADES_MAINTENANCE_DOCKER !== '1' && 'Set SPORADES_MAINTENANCE_DOCKER=1 with a disposable Docker daemon', timeout: 300_000 }, async t => {
+  useFixtureUmask(t);
   const root = process.cwd();
+  await mkdir(path.join(root, '.sporades'), { recursive: true });
   const temp = await mkdtemp(path.join(root, '.sporades/maintenance-docker-'));
   const original = path.join(temp, 'original'), restored = path.join(temp, 'restored'), backup = path.join(temp, 'backup');
   await mkdir(original); await mkdir(restored);
@@ -96,12 +102,16 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   const revokedSender = await exportSender('revoked-sender.env', 'revoked-sender');
   assert.equal(sender('revoke', 'revoked-sender', 'revoked-host').status, 0);
   const inventoryToken = randomBytes(24).toString('hex');
-  const environment = (await readFile(path.join(original, '.env'), 'utf8')).replace('TRACE_TLS_MODE=tls', 'TRACE_TLS_MODE=proxy').replace('TRACE_PORT=8443', 'TRACE_PORT=5680') + `INVENTORY_HOSTS='{"restore-host":"${inventoryToken}"}'\nOPERATOR_LITERAL=keep:$VALUE # exact\n`;
+  const portProbe = createServer();
+  await new Promise(resolve => portProbe.listen(0, '127.0.0.1', resolve));
+  const port = portProbe.address().port;
+  await new Promise(resolve => portProbe.close(resolve));
+  const environment = (await readFile(path.join(original, '.env'), 'utf8')).replace('TRACE_TLS_MODE=tls', 'TRACE_TLS_MODE=proxy').replace('TRACE_PORT=8443', `TRACE_PORT=${port}`) + `INVENTORY_HOSTS='{"restore-host":"${inventoryToken}"}'\nOPERATOR_LITERAL=keep:$VALUE # exact\n`;
   await writeFile(path.join(original, '.env'), environment);
   assert.equal(command(process.execPath, [path.join(original, 'setup.mjs')], original).status, 0);
   const values = parseEnvironment(await readFile(path.join(original, '.env'), 'utf8'));
   const basic = 'Basic ' + Buffer.from(values.get('TRACE_UI_USER') + ':' + values.get('TRACE_UI_PASSWORD')).toString('base64');
-  const origin = 'http://127.0.0.1:5680';
+  const origin = `http://127.0.0.1:${port}`;
   const readiness = async () => {
     for (let i = 0; i < 80; i++) {
       try { if ((await fetch(origin + '/health', { signal: AbortSignal.timeout(4000) })).status === 200) return; } catch {}
@@ -111,10 +121,21 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   };
   assert.equal(compose(original, ['up', '-d', '--build'], prefix + '-original').status, 0);
   await readiness();
-  for (let i = 0; i < 60; i++) {
-    if ((await fetch(origin + '/grafana/api/dashboards/uid/sporades-api', { headers: { authorization: basic } })).status === 200) break;
+  let dashboardStatus;
+  const dashboardDeadline = performance.now() + 120000;
+  while (performance.now() < dashboardDeadline) {
+    try {
+      dashboardStatus = (await fetch(origin + '/grafana/api/dashboards/uid/sporades-api', { headers: { authorization: basic }, signal: AbortSignal.timeout(2000) })).status;
+      if (dashboardStatus === 200) break;
+    } catch (error) { dashboardStatus = error.name; }
     await new Promise(r => setTimeout(r, 500));
   }
+  if (dashboardStatus !== 200) {
+    t.diagnostic(compose(original, ['ps', '--all'], prefix + '-original').stdout);
+    const logs = compose(original, ['logs', '--tail', '40', 'grafana'], prefix + '-original');
+    t.diagnostic(logs.stdout + logs.stderr);
+  }
+  assert.equal(dashboardStatus, 200, 'Grafana dashboard must be ready before the smoke probe');
   const trace = command(process.execPath, [path.join(original, 'smoke.mjs'), 'send'], original);
   assert.equal(trace.status, 0, trace.stderr);
   const traceId = trace.stdout.match(/Trace query passed: ([a-f0-9]{32})/)[1];
@@ -151,14 +172,35 @@ test('installed CLI cold backup restores queryable history and exact inventory i
   const wrapper = path.join(temp, 'wrapper'); await mkdir(wrapper);
   const realDocker = command('which', ['docker']).stdout.trim().split(/\r?\n/)[0];
   const interrupted = path.join(temp, 'interrupted');
+  const dockerCalls = path.join(temp, 'docker-calls.jsonl');
   const racedBackup = path.join(temp, 'raced-backup');
-  await writeFile(path.join(wrapper, 'docker'), `#!${process.execPath}\nimport fs from 'node:fs';import cp from 'node:child_process';const a=process.argv.slice(2);if(process.env.SPORADES_MUTATE_BACKUP_SOURCE&&a.includes('-cpf')&&a.includes('/backup/metrics.tar'))fs.appendFileSync(${JSON.stringify(path.join(original, '.env'))},'# concurrent operator edit\\n');if(a.includes('-xpf')&&a.includes('/backup/metrics.tar')&&!fs.existsSync(${JSON.stringify(interrupted)})){fs.writeFileSync(${JSON.stringify(interrupted)},'');process.exit(1)}const r=cp.spawnSync(${JSON.stringify(realDocker)},a,{stdio:'inherit'});process.exit(r.status??1);\n`, { mode: 0o755 });
+  await writeFile(path.join(wrapper, 'package.json'), '{"type":"module"}');
+  await writeFile(path.join(wrapper, 'docker'), `#!${process.execPath}
+import fs from 'node:fs';
+import cp from 'node:child_process';
+const a = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(dockerCalls)}, JSON.stringify(a) + '\\n', { mode: 0o600 });
+if (process.env.SPORADES_MUTATE_BACKUP_SOURCE && a.includes('-cpf') && a.includes('/backup/metrics.tar')) {
+  fs.appendFileSync(${JSON.stringify(path.join(original, '.env'))}, '# concurrent operator edit\\n');
+}
+if (a.includes('-xpf') && a.includes('/backup/metrics.tar') && !fs.existsSync(${JSON.stringify(interrupted)})) {
+  fs.writeFileSync(${JSON.stringify(interrupted)}, '');
+  process.exit(1);
+}
+const r = cp.spawnSync(${JSON.stringify(realDocker)}, a, { stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`, { mode: 0o755 });
   const raced = cli(['backup', '--dir', original, '--backup', racedBackup], { PATH: wrapper + path.delimiter + process.env.PATH, SPORADES_MUTATE_BACKUP_SOURCE: '1' });
   assert.equal(raced.status, 1, 'concurrent configuration edits prevent snapshot publication');
   await assert.rejects(access(racedBackup), /ENOENT/);
   const partial = cli(restoreArgs, { ...restoreEnv, PATH: wrapper + path.delimiter + process.env.PATH });
   assert.equal(partial.status, 1, 'interrupted volume extraction is reported as failure');
-  assert.equal(await readFile(interrupted, 'utf8'), '', partial.stdout);
+  const interruptionMarker = await readFile(interrupted, 'utf8').catch(async error => {
+    t.diagnostic(partial.stdout + partial.stderr);
+    t.diagnostic((await readFile(dockerCalls, 'utf8')).slice(-8192));
+    throw error;
+  });
+  assert.equal(interruptionMarker, '', partial.stdout);
   assert.ok((await readFile(path.join(restored, '.env'), 'utf8')) === environment, 'restore preserves environment bytes');
   const recovered = cli(restoreArgs, restoreEnv);
   assert.equal(recovered.status, 0, recovered.stdout);

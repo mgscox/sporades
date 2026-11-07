@@ -152,7 +152,15 @@ test("browser SDK automatic reconnect preserves consent but publishes under a ne
       await new Promise((resolve) => setTimeout(resolve, 600));
       assert.equal(sockets.length, 3, "page retirement does not reconnect");
       assert.equal(connectionTokenChecks(), 2, "page retirement does not check a connection token");
-    } finally { globalThis.WebSocket = NativeWebSocket; delete globalThis.window; delete globalThis.localStorage; }
+    } finally {
+      // Retire reconnect timers before removing the synthetic browser globals,
+      // including when an assertion fails before the normal pagehide step.
+      windowListeners.get("pagehide")?.();
+      for (const socket of sockets) socket.close();
+      globalThis.WebSocket = NativeWebSocket;
+      delete globalThis.window;
+      delete globalThis.localStorage;
+    }
   });
 });
 
@@ -256,6 +264,7 @@ function send(ws, message) {
 }
 
 async function eventually(predicate) {
-  for (let attempts = 0; attempts < 100 && !predicate(); attempts += 1) await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(predicate(), "condition did not become true");
+  const deadline = performance.now() + 5000;
+  while (!predicate() && performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(predicate(), "condition did not become true within five seconds");
 }

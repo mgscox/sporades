@@ -39,15 +39,16 @@ async function boot(dir, env) {
     if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = once(child, 'exit');
     child.kill('SIGTERM');
-    const timer = setTimeout(() => child.kill('SIGKILL'), 4000);
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
     try { await exited; } finally { clearTimeout(timer); }
   };
   try {
-    for (let attempt = 0; attempt < 200; attempt++) {
+    const deadline = performance.now() + 60000;
+    while (performance.now() < deadline) {
       assert.equal(child.exitCode, null, errors);
       const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
       if (signal) origin = `http://127.0.0.1:${signal.listening}`;
-      if (origin && await fetch(origin + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': 'a'.repeat(64) } }).then(response => response.ok, () => false)) return { origin, stop };
+      if (origin && await fetch(origin + '/__sporades/health/runtime', { headers: { 'x-sporades-host-probe': 'a'.repeat(64) }, signal: AbortSignal.timeout(1000) }).then(response => response.ok, () => false)) return { origin, stop };
       await pause();
     }
     assert.fail('Capsule did not become ready');
