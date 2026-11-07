@@ -527,7 +527,7 @@ The Capsule HTTP server handles:
 - `/__sporades/files/public/<id>`: serves public file URL reads.
 - custom Capsule endpoints declared with `endpoint()`.
 - `/__sporades/connection-token`: checks the optional current page connection
-  token in `x-sporades-connection-token` for bounded client transport recovery.
+  token in `x-sporades-connection-token` for client transport recovery.
   A still-valid token is retained without extending its TTL; an invalid or
   omitted token is replaced with a fresh token. Responses use `no-store`.
 - `/__sporades/ws`: upgrades to the WebSocket transport.
@@ -570,16 +570,17 @@ is not a Session credential and grants no app authority. After a socket closes,
 the client checks its token through the same-origin
 `/__sporades/connection-token` route using `x-sporades-connection-token`. A
 still-valid token is retained with its original expiry (its TTL is unchanged);
-an expired or evicted token is replaced before retrying with exponential backoff
-and jitter. An unavailable token check may retry the existing token within the
-same bounded budget.
+an expired or evicted token is replaced before retrying. An unavailable token
+check falls back to the existing token.
 
-Four WebSocket connection attempts exhaust automatic recovery, even if brief
-connections open and receive messages. Only a connection that stays open for
-five continuous minutes and receives a server response rearms that recovery
-budget. Exhaustion notifies live-query consumers and renders a runtime-owned
-manual retry state rather than leaving the Capsule shell loading or reconnecting
-indefinitely. Manual retry obtains a fresh token and starts a new budget.
+An active page retries automatically with exponential backoff and jitter up to
+a 30-second delay. A WebSocket upgrade that stalls for 10 seconds is closed so
+recovery can continue. After four attempts without a sustained connection, the
+client notifies live-query subscribers and shows a warning with a manual retry
+that skips the scheduled delay. Automatic retries continue and an open socket
+clears the warning and restores live subscriptions. Only a connection that
+stays open for five continuous minutes and receives a server response resets
+the backoff.
 
 The scaffold hides raw transport details behind `sporades/client`:
 

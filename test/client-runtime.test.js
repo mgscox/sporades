@@ -2080,9 +2080,10 @@ function connectionPanelText(root) {
   return findConnectionPanelElements(root, () => true).map((element) => element.textContent).join(" ");
 }
 
-test("repeated connection rejection stops after four attempts and renders a manual retry", async () => {
+test("a prolonged connection outage renders a warning and keeps retrying until recovery", async () => {
   const timers = createDeterministicTimers();
-  let refreshedTokens = 0;
+  let tokenRequests = 0;
+  let serverReady = false;
   const elements = new Map();
   const appOwnedConnectionError = { id: "sporades-connection-error" };
   const createElement = (tagName) => ({
@@ -2105,11 +2106,18 @@ test("repeated connection rejection stops after four attempts and renders a manu
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,
     connectionToken: "expired-page-token",
-    fetch: async () => ({ ok: true, async json() { return { token: `refreshed-token-${++refreshedTokens}` }; } }),
+    fetch: async () => {
+      tokenRequests += 1;
+      return serverReady
+        ? { ok: true, async json() { return { token: "post-restart-page-token" }; } }
+        : { ok: false, status: 502 };
+    },
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     random: () => 0.5,
   });
+  let reloads = 0;
+  window.location.reload = () => { reloads += 1; };
   try {
     const runtime = await importClientRuntime();
     const authStates = [];
@@ -2128,54 +2136,64 @@ test("repeated connection rejection stops after four attempts and renders a manu
       }
     }
 
-    assert.equal(browser.sockets.length, 4, "automatic recovery is bounded to four WebSocket attempts");
-    assert.equal(timers.pending().length, 0, "terminal failure leaves no reconnect timer behind");
-    assert.equal(refreshedTokens, 3, "only the three retry attempts mint replacement tokens");
+    assert.equal(browser.sockets.length, 4);
+    assert.equal(timers.pending().length, 1, "a prolonged outage leaves exactly one retry scheduled");
+    assert.equal(tokenRequests, 4, "each rejected socket checks the connection token");
     assert.equal(authStates.at(-1).loading, false);
     assert.equal(authStates.at(-1).error.code, "CONNECTION_UNAVAILABLE");
-    assert.equal((await queuedAuth).error.code, "CONNECTION_UNAVAILABLE", "a request queued during recovery resolves when the episode goes terminal");
+    assert.equal((await queuedAuth).error.code, "CONNECTION_UNAVAILABLE", "a request queued during recovery resolves when the outage is reported");
     const errorPanel = elements.get("sporades-connection-error");
     assert.notEqual(errorPanel, appOwnedConnectionError, "an app-owned matching id cannot suppress the runtime retry panel");
-    assert.match(connectionPanelText(errorPanel), /could not connect to the server/i);
+    assert.match(connectionPanelText(errorPanel), /keep trying to reconnect automatically/i);
     assert.match(connectionPanelText(errorPanel), /may not have been saved/i, "the panel warns that recent changes may be lost");
     assert.doesNotMatch(connectionPanelText(errorPanel), /workspace|sporades/i, "end-user copy never names the platform");
     const buttons = findConnectionPanelElements(errorPanel, (element) => element.tagName === "BUTTON");
     assert.deepEqual(buttons.map((button) => button.textContent), ["Try again", "Reload page"]);
-    const [retryButton] = buttons;
     await runtime.auth.get();
-    assert.equal(browser.sockets.length, 4, "ordinary app activity cannot bypass the terminal manual-retry gate");
+    assert.equal(browser.sockets.length, 4, "ordinary app activity cannot bypass the retry delay");
 
     let querySubscription;
     let journeySubscription;
     const lateQueryStates = [];
     assert.doesNotThrow(() => {
-      querySubscription = runtime.queries.subscribe("terminal-safe", (state) => lateQueryStates.push(state));
+      querySubscription = runtime.queries.subscribe("during-outage", (state) => lateQueryStates.push(state));
       journeySubscription = runtime.journey.subscribe(() => {});
-    }, "new subscriptions tolerate the terminal connection state");
+    }, "new subscriptions tolerate a prolonged outage");
     assert.equal(lateQueryStates.length, 1);
     assert.equal(lateQueryStates[0].loading, false);
     assert.equal(lateQueryStates[0].error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(typeof querySubscription.unsubscribe, "function");
     assert.equal(typeof journeySubscription.unsubscribe, "function");
-    assert.equal(browser.sockets.length, 4, "subscriptions cannot bypass the terminal manual-retry gate");
-    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "terminal-safe"), false);
+    assert.equal(browser.sockets.length, 4, "subscriptions cannot bypass the retry delay");
+    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "during-outage"), false);
 
-    retryButton.click();
-    await settleMicrotasks();
-    assert.equal(elements.get("sporades-connection-error"), errorPanel, "the panel stays up while the manual retry runs");
-    assert.equal(retryButton.disabled, true);
-    assert.equal(retryButton.textContent, "Reconnecting\u2026");
-    assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
+    const delays = [];
+    for (let attempt = 5; attempt <= 14; attempt += 1) {
+      const [retry] = timers.pending();
+      assert.equal(timers.pending().length, 1);
+      delays.push(retry.delay);
+      timers.runNext();
+      assert.equal(browser.sockets.length, attempt);
+      serverReady = attempt === 14;
+      browser.sockets.at(-1).close();
+      await settleMicrotasks();
+      assert.equal(elements.get("sporades-connection-error"), errorPanel, "failed attempts keep the original panel");
+    }
+    assert.ok(delays.every((delay) => delay > 0 && delay <= 30_000), "retries have a capped delay");
+    assert.ok(delays.at(-1) > delays[0], "retries back off during a sustained outage");
+    assert.equal(delays.at(-1), delays.at(-2), "the delay reaches a steady ceiling");
     timers.runNext();
-    const recovered = browser.sockets[4];
+    const recovered = browser.sockets.at(-1);
+    assert.equal(new URL(recovered.url).searchParams.get("connectionToken"), "post-restart-page-token");
     recovered.readyState = globalThis.WebSocket.OPEN;
     recovered.emit("open", {});
     await settleMicrotasks();
-    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "terminal-safe"), true);
+    assert.equal(browser.sent.some((message) => message.type === "query.subscribe" && message.query === "during-outage"), true);
     querySubscription.unsubscribe();
     journeySubscription.unsubscribe();
     assert.equal(authStates.at(-1).error, null);
     assert.equal(elements.has("sporades-connection-error"), false);
+    assert.equal(reloads, 0);
   } finally {
     delete globalThis.document;
     browser.cleanup();
@@ -2205,7 +2223,7 @@ test("a stalled connection-token refresh times out instead of wedging recovery",
     await Promise.resolve();
     assert.deepEqual(timers.pending().map(({ delay }) => delay), [275]);
     timers.runNext();
-    assert.equal(browser.sockets.length, 2, "a timed-out refresh still advances the bounded retry episode");
+    assert.equal(browser.sockets.length, 2, "a timed-out refresh still advances recovery");
   } finally {
     browser.cleanup();
   }
@@ -2237,6 +2255,27 @@ test("a rejected connection-token refresh retries the old token after backoff", 
   }
 });
 
+test("a stalled WebSocket upgrade times out and recovery continues", async () => {
+  const h = installRecoveryHarness();
+  try {
+    const runtime = await importClientRuntime();
+    const firstRequest = runtime.auth.get();
+    assert.equal(h.timers.runNext().delay, 10_000, "a stalled upgrade has a deadline");
+    assert.equal((await firstRequest).error.code, "TRANSPORT_CLOSED");
+    await settleMicrotasks();
+
+    h.timers.runNext();
+    assert.equal(h.sockets.length, 2);
+    h.timers.runNext();
+    await settleMicrotasks();
+    h.timers.runNext();
+    assert.equal(h.sockets.length, 3);
+    await h.openLatest();
+    assert.equal((await runtime.auth.get()).error, null);
+    assert.equal(h.timers.pending().length, 0, "a successful upgrade clears its deadline");
+  } finally { h.cleanup(); }
+});
+
 test("page retirement during connection-token refresh cancels recovery", async () => {
   const timers = createDeterministicTimers();
   let finishRefresh;
@@ -2263,7 +2302,7 @@ test("page retirement during connection-token refresh cancels recovery", async (
   }
 });
 
-test("open-then-close failures stay bounded until a useful server response", async () => {
+test("open-then-close failures keep backing off and report an outage", async () => {
   const timers = createDeterministicTimers();
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,
@@ -2290,10 +2329,11 @@ test("open-then-close failures stay bounded until a useful server response", asy
     }
 
     assert.equal(browser.sockets.length, 4);
-    assert.equal(timers.pending().length, 0);
-    const terminal = await runtime.auth.get();
-    assert.equal(terminal.error.code, "CONNECTION_UNAVAILABLE");
-    assert.equal(browser.sockets.length, 4, "a terminal episode can only be restarted by the visible manual action");
+    assert.deepEqual(timers.pending().map(({ delay }) => delay), [2_200]);
+    assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
+    assert.equal(browser.sockets.length, 4, "app activity waits for the next scheduled attempt");
+    timers.runNext();
+    assert.equal(browser.sockets.length, 5);
   } finally {
     browser.cleanup();
   }
@@ -3379,12 +3419,12 @@ test("transport blips including failed upgrades check validity without minting a
   } finally { h.cleanup(); }
 });
 
-test("message-bearing reconnects terminate and notify existing and late live queries", async () => {
+test("message-bearing reconnects back off and restore existing and late live queries", async () => {
   const h = installRecoveryHarness();
   try {
     const runtime = await importClientRuntime();
     const states = [];
-    runtime.queries.subscribe("bounded-live", (state) => states.push(state));
+    runtime.queries.subscribe("flapping-live", (state) => states.push(state));
     for (let attempt = 0; attempt < 4; attempt += 1) {
       await h.openLatest();
       assert.equal(states.at(-1).error, null);
@@ -3392,7 +3432,7 @@ test("message-bearing reconnects terminate and notify existing and late live que
       await h.dropLatest();
       if (attempt < 3) h.timers.runNext();
     }
-    assert.equal(h.timers.pending().length, 0, "useful messages do not forgive unstable reconnects");
+    assert.deepEqual(h.timers.pending().map(({ delay }) => delay), [2_200], "brief useful connections do not reset backoff");
     assert.equal(states.at(-1).error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(states.at(-1).loading, false);
     assert.match(connectionPanelText(h.panels[0]), /could not connect to the server/i);
@@ -3402,9 +3442,7 @@ test("message-bearing reconnects terminate and notify existing and late live que
     assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
     h.advance(24 * 60 * 60 * 1000);
     assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
-    assert.equal(h.sockets.length, 4, "time and app activity cannot bypass manual retry");
-    findConnectionPanelElements(h.panels[0], (element) => element.textContent === "Try again")[0].listeners.click();
-    await settleMicrotasks();
+    assert.equal(h.sockets.length, 4, "app activity cannot bypass backoff");
     h.timers.runNext();
     await h.openLatest();
     assert.equal(states.at(-1).error, null);
@@ -3413,34 +3451,36 @@ test("message-bearing reconnects terminate and notify existing and late live que
   } finally { h.cleanup(); }
 });
 
-test("connection error panel explains offline state and a failed manual retry", async () => {
+test("offline connection panel offers a manual retry without interrupting automatic recovery", async () => {
   const h = installRecoveryHarness();
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: { onLine: false } });
   try {
     const runtime = await importClientRuntime();
     runtime.auth.subscribe(() => {});
-    const exhaust = async () => {
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        await h.dropLatest();
-        if (attempt < 3) h.timers.runNext();
-      }
-    };
-    await exhaust();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await h.dropLatest();
+      if (attempt < 3) h.timers.runNext();
+    }
     assert.equal(h.panels.length, 1);
-    assert.match(connectionPanelText(h.panels[0]), /offline/i, "offline browsers get offline-specific guidance");
-    assert.doesNotMatch(connectionPanelText(h.panels[0]), /still unable/i);
+    const [panel] = h.panels;
+    assert.match(connectionPanelText(panel), /offline/i, "offline browsers get offline-specific guidance");
+    const [retry] = findConnectionPanelElements(panel, (element) => element.textContent === "Try again");
 
-    findConnectionPanelElements(h.panels[0], (element) => element.textContent === "Try again")[0].listeners.click();
-    await settleMicrotasks();
-    assert.equal(h.panels.length, 1, "the panel remains while the manual retry runs");
-    h.timers.runNext();
-    await exhaust();
-    assert.equal(h.panels.length, 1, "a failed manual retry replaces rather than stacks the panel");
-    assert.match(connectionPanelText(h.panels[0]), /still unable to connect/i);
-    const [retry] = findConnectionPanelElements(h.panels[0], (element) => element.tagName === "button");
-    assert.equal(retry.textContent, "Try again", "a replacement panel re-arms the retry control");
-    assert.notEqual(retry.disabled, true);
+    assert.equal(retry.disabled, false);
+    retry.listeners.click();
+    assert.equal(h.sockets.length, 5, "the manual button skips the remaining delay");
+    assert.equal(retry.disabled, true);
+    assert.deepEqual(h.timers.pending().map(({ delay }) => delay), [10_000], "only the handshake deadline remains");
+    retry.listeners.click();
+    assert.equal(h.sockets.length, 5, "the manual button cannot start overlapping attempts");
+    await h.dropLatest();
+    assert.equal(h.panels[0], panel);
+    assert.equal(retry.disabled, false);
+    assert.equal(h.timers.pending().length, 1, "a failed manual retry schedules automatic recovery");
+
+    h.emitWindow("pagehide", {});
+    assert.equal(h.timers.pending().length, 0, "retiring the page stops ongoing recovery");
   } finally {
     if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
     else delete globalThis.navigator;
@@ -3484,19 +3524,19 @@ test("a continuously healthy connection rearms recovery but brief successes do n
     await h.openLatest();
     h.advance(5 * 60 * 1000);
     await h.dropLatest();
-    assert.equal(h.panels.length, 0, "sustained health restores the automatic recovery budget");
+    assert.equal(h.panels.length, 0, "sustained health clears the accumulated failures");
     h.timers.runNext();
     for (let attempt = 0; attempt < 4; attempt += 1) {
       await h.openLatest();
       await h.dropLatest();
       if (attempt < 3) h.timers.runNext();
     }
-    assert.equal(h.timers.pending().length, 0);
+    assert.deepEqual(h.timers.pending().map(({ delay }) => delay), [2_200]);
     assert.equal(h.panels.length, 1);
   } finally { h.cleanup(); }
 });
 
-test("expired established sessions that cannot reauthenticate stop after four recovery attempts", async () => {
+test("repeated upgrade rejection keeps retrying with the same valid replacement token", async () => {
   const h = installRecoveryHarness();
   try {
     const runtime = await importClientRuntime();
@@ -3512,7 +3552,7 @@ test("expired established sessions that cannot reauthenticate stop after four re
       await h.dropLatest(); // No accepted upgrade, even with a valid replacement gate.
     }
     assert.equal(h.sockets.length, 5, "one established session plus four recovery attempts");
-    assert.equal(h.timers.pending().length, 0);
+    assert.equal(h.timers.pending().length, 1);
     assert.equal(states.at(-1).error.code, "CONNECTION_UNAVAILABLE");
     assert.equal(h.panels.length, 1);
     for (let activity = 0; activity < 10; activity += 1) {
@@ -3520,12 +3560,15 @@ test("expired established sessions that cannot reauthenticate stop after four re
       assert.equal((await runtime.auth.get()).error.code, "CONNECTION_UNAVAILABLE");
     }
     assert.equal(h.sockets.length, 5);
+    h.timers.runNext();
+    assert.equal(h.sockets.length, 6);
+    await h.dropLatest();
     assert.equal(h.minted, 1, "non-token rejection cannot churn the token inventory");
-    assert.equal(h.timers.pending().length, 0);
+    assert.equal(h.timers.pending().length, 1);
   } finally { h.cleanup(); }
 });
 
-test("cached page restoration reconfirms auth, resubscribes, and preserves bounded recovery across visits", async () => {
+test("cached page restoration reconfirms auth, resubscribes, and preserves recovery across visits", async () => {
   const timers = createDeterministicTimers();
   const queries = [], enables = [];
   const linked = { ...anonymousAuth, isAuthenticated: true, isGuest: false };

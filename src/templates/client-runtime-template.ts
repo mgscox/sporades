@@ -809,12 +809,14 @@ function createConnection() {
   let cachedConnectionPending = false;
   let connectionEpoch = 0;
   let retryTimer = null;
-  const maxAutomaticConnectionAttempts = 4;
+  let handshakeTimer = null;
+  const connectionWarningAttempts = 4;
   let automaticConnectionAttempts = 0;
   const stableConnectionMs = 5 * 60 * 1000;
   let retryInFlight = false;
-  let terminalConnectionError = null;
+  let connectionUnavailable = null;
   let connectionErrorPanel = null;
+  let connectionRetryButton = null;
   let connectionErrorTeardown = null;
   ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
@@ -829,6 +831,7 @@ function createConnection() {
     retryInFlight = false;
     if (retryTimer !== null) clearTimeout(retryTimer);
     retryTimer = null;
+    clearHandshakeTimer();
     socket?.close();
     retryQueue.length = 0;
     for (const [id, entry] of pending) {
@@ -860,8 +863,13 @@ function createConnection() {
     return sessionToken;
   }
 
+  function clearHandshakeTimer() {
+    if (handshakeTimer !== null) clearTimeout(handshakeTimer);
+    handshakeTimer = null;
+  }
+
   function open() {
-    if (pageRetired || terminalConnectionError) return null;
+    if (pageRetired) return null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
@@ -881,11 +889,16 @@ function createConnection() {
     let openedAt = null;
     let receivedMessage = false;
     socket = openedSocket;
+    handshakeTimer = setTimeout(() => {
+      if (socket === openedSocket && openedSocket.readyState === WebSocket.CONNECTING) openedSocket.close();
+    }, 10_000);
     let finishJourneyRestoration;
     journeyRestoration = { socket: openedSocket, promise: new Promise((resolve) => { finishJourneyRestoration = resolve; }) };
     openedSocket.addEventListener("open", () => {
+      if (socket === openedSocket) clearHandshakeTimer();
       openedAt = Date.now();
       retryInFlight = false;
+      connectionUnavailable = null;
       dismissConnectionErrorPanel();
       ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       const consent = journeyConsentOptions;
@@ -966,6 +979,7 @@ function createConnection() {
       }
     });
     openedSocket.addEventListener("close", async () => {
+      if (socket === openedSocket) clearHandshakeTimer();
       finishJourneyRestoration();
       for (const [id, entry] of pending) {
         if (entry.socket !== openedSocket) continue;
@@ -982,83 +996,84 @@ function createConnection() {
         pending.delete(id);
       }
       if (socket !== openedSocket || pageRetired) return;
-      publishPayments(dormantPayments);
       // A cached return may have waited for this socket to finish closing.
       if (cachedConnectionPending) { open(); return; }
       stopJourneyCapture();
-      // A response alone is not recovery: flapping sockets may answer then die.
-      // Only a continuously healthy five-minute connection rearms the budget.
+      // Keep the backoff across brief connections, even if they deliver data.
       if (openedAt !== null && receivedMessage && Date.now() - openedAt >= stableConnectionMs) {
         automaticConnectionAttempts = 0;
       }
-      if (automaticConnectionAttempts >= maxAutomaticConnectionAttempts) {
-        showTerminalConnectionError();
-        return;
-      }
       // Upgrade HTTP failures have no distinguishable browser close code. Ask
       // the same-origin runtime to retain a valid gate or replace an expired one.
-      scheduleConnectionRetry(true, connectionToken);
+      scheduleConnectionRetry(connectionToken);
+      if (automaticConnectionAttempts >= connectionWarningAttempts && !connectionUnavailable) {
+        showConnectionUnavailable();
+      } else {
+        publishPayments(dormantPayments);
+      }
     });
     return openedSocket;
   }
 
-  async function scheduleConnectionRetry(refreshToken, currentToken = null) {
+  async function scheduleConnectionRetry(currentToken) {
     if (pageRetired || retryInFlight) return;
     retryInFlight = true;
     const epoch = connectionEpoch;
-    if (refreshToken) {
-      const controller = typeof AbortController === "undefined" ? null : new AbortController();
-      let timeoutId;
-      try {
-        const refreshOptions = {
-          cache: "no-store",
-          credentials: "same-origin",
-          headers: { "x-sporades-connection-token-request": "1" },
-        };
-        if (typeof currentToken === "string" && currentToken.length > 0) {
-          refreshOptions.headers["x-sporades-connection-token"] = currentToken;
-        }
-        if (controller) refreshOptions.signal = controller.signal;
-        const timeout = new Promise((_, reject) => {
-          timeoutId = setTimeout(() => {
-            controller?.abort();
-            reject(new Error("Connection-token refresh timed out."));
-          }, 2_000);
-        });
-        const result = await Promise.race([
-          fetch(new URL("/__sporades/connection-token", window.location.href), refreshOptions)
-            .then(async (response) => response.ok ? await response.json() : null),
-          timeout,
-        ]);
-        if (epoch === connectionEpoch && !pageRetired && typeof result?.token === "string" && result.token.length > 0) {
-          window.__SPORADES_CONNECTION_TOKEN = result.token;
-        }
-      } catch {} finally {
-        if (timeoutId !== undefined) clearTimeout(timeoutId);
+    const controller = typeof AbortController === "undefined" ? null : new AbortController();
+    let timeoutId;
+    try {
+      const refreshOptions = {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "x-sporades-connection-token-request": "1" },
+      };
+      if (typeof currentToken === "string" && currentToken.length > 0) {
+        refreshOptions.headers["x-sporades-connection-token"] = currentToken;
       }
+      if (controller) refreshOptions.signal = controller.signal;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          controller?.abort();
+          reject(new Error("Connection-token refresh timed out."));
+        }, 2_000);
+      });
+      const result = await Promise.race([
+        fetch(new URL("/__sporades/connection-token", window.location.href), refreshOptions)
+          .then(async (response) => response.ok ? await response.json() : null),
+        timeout,
+      ]);
+      if (epoch === connectionEpoch && !pageRetired && typeof result?.token === "string" && result.token.length > 0) {
+        window.__SPORADES_CONNECTION_TOKEN = result.token;
+      }
+    } catch {} finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
-    if (epoch !== connectionEpoch) return;
-    if (pageRetired) {
-      retryInFlight = false;
-      return;
-    }
-    const baseDelay = Math.min(2_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
+    if (epoch !== connectionEpoch || pageRetired) return;
+    // Leave room for jitter within the 30-second maximum delay.
+    const baseDelay = Math.min(25_000, 250 * (2 ** Math.max(0, automaticConnectionAttempts - 1)));
     const delay = baseDelay + Math.floor(Math.random() * Math.max(1, baseDelay * 0.2));
     retryTimer = setTimeout(() => {
-      if (epoch !== connectionEpoch) return;
-      retryTimer = null;
-      retryInFlight = false;
-      if (!pageRetired) open();
+      if (epoch === connectionEpoch) startConnectionRetry();
     }, delay);
+    if (connectionRetryButton) connectionRetryButton.disabled = false;
   }
 
-  function showTerminalConnectionError() {
+  function startConnectionRetry() {
+    if (retryTimer === null || pageRetired) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    retryInFlight = false;
+    if (connectionRetryButton) connectionRetryButton.disabled = true;
+    open();
+  }
+
+  function showConnectionUnavailable() {
     const error = {
       code: "CONNECTION_UNAVAILABLE",
       message: "Could not connect to the server.",
-      hint: "Check your internet connection, then try again or reload the page.",
+      hint: "Check your internet connection. The page will keep trying to reconnect.",
     };
-    terminalConnectionError = error;
+    connectionUnavailable = error;
     retryQueue.length = 0;
     for (const [id, entry] of pending) {
       entry.resolve({ id, type: "error", data: null, error });
@@ -1074,26 +1089,23 @@ function createConnection() {
     if (typeof document === "undefined") return;
     const errorRoot = document.body ?? document.documentElement;
     if (!errorRoot) return;
-    // A failed manual retry replaces the panel so its controls are re-armed.
-    const manualRetryFailed = connectionErrorPanel !== null;
-    dismissConnectionErrorPanel();
-    renderConnectionErrorPanel(errorRoot, manualRetryFailed);
+    renderConnectionErrorPanel(errorRoot);
   }
 
   function connectionErrorCopy() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
       return {
         title: "You're offline",
-        body: "This page needs an internet connection to stay up to date. Reconnect to the internet, then try again.",
+        body: "This page needs an internet connection to stay up to date. The page will reconnect when the network is available.",
       };
     }
     return {
       title: "Could not connect to the server",
-      body: "This page lost its live connection and could not get it back after several attempts. The server may be restarting or temporarily unavailable.",
+      body: "The server may be restarting or temporarily unavailable. This page will keep trying to reconnect automatically.",
     };
   }
 
-  function renderConnectionErrorPanel(errorRoot, manualRetryFailed) {
+  function renderConnectionErrorPanel(errorRoot) {
     const dark = typeof window.matchMedia === "function" && window.matchMedia("(prefers-color-scheme: dark)")?.matches === true;
     const color = dark
       ? { page: "#0f1115", card: "#181b21", border: "#2c313a", text: "#e8eaed", muted: "#a3acb7", accent: "#6ea8ff", onAccent: "#0b0d10" }
@@ -1110,6 +1122,7 @@ function createConnection() {
       "position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:1rem;box-sizing:border-box;overflow:auto;text-align:left;"
         + "background:" + color.page + ";color:" + color.text + ";font:16px/1.5 system-ui,-apple-system,'Segoe UI',sans-serif",
       "sporades-connection-error");
+    panel.tabIndex = -1;
     panel.setAttribute?.("role", "alertdialog");
     panel.setAttribute?.("aria-modal", "true");
     panel.setAttribute?.("aria-labelledby", "sporades-connection-error-title");
@@ -1125,13 +1138,10 @@ function createConnection() {
     const retry = element("button", buttonCss + "border:1px solid " + color.accent + ";background:" + color.accent + ";color:" + color.onAccent);
     retry.type = "button";
     retry.textContent = "Try again";
+    retry.disabled = retryTimer === null;
     const reload = element("button", buttonCss + "border:1px solid " + color.border + ";background:transparent;color:inherit");
     reload.type = "button";
     reload.textContent = "Reload page";
-    const status = element("p", "margin:1rem 0 0;min-height:1.5em;font-size:.9375rem;color:" + color.muted);
-    status.setAttribute?.("aria-live", "polite");
-    if (manualRetryFailed) status.textContent = "Still unable to connect. Wait a moment, then try again.";
-
     const applyCopy = () => {
       const copy = connectionErrorCopy();
       title.textContent = copy.title;
@@ -1145,25 +1155,16 @@ function createConnection() {
       window.removeEventListener?.("offline", applyCopy);
     };
 
-    retry.addEventListener("click", () => {
-      // The panel stays up while the manual attempt runs; open() dismisses it.
-      if (terminalConnectionError === null) return;
-      retry.disabled = true;
-      retry.textContent = "Reconnecting…";
-      status.textContent = "Reconnecting to the server…";
-      automaticConnectionAttempts = 0;
-      retryInFlight = false;
-      terminalConnectionError = null;
-      scheduleConnectionRetry(true);
-    });
+    retry.addEventListener("click", startConnectionRetry);
     reload.addEventListener("click", () => window.location.reload());
 
     actions.append(retry, reload);
-    card.append(title, body, note, actions, status);
+    card.append(title, body, note, actions);
     panel.append(card);
     connectionErrorPanel = panel;
+    connectionRetryButton = retry;
     errorRoot.append(panel);
-    retry.focus?.();
+    panel.focus?.();
   }
 
   function dismissConnectionErrorPanel() {
@@ -1171,6 +1172,7 @@ function createConnection() {
     connectionErrorTeardown = null;
     connectionErrorPanel?.remove();
     connectionErrorPanel = null;
+    connectionRetryButton = null;
   }
 
   function send(message, onSocket = null) {
@@ -1178,7 +1180,7 @@ function createConnection() {
     const activeSocket = open();
     onSocket?.(activeSocket);
     if (!activeSocket) {
-      if ((retryInFlight || socket?.readyState === WebSocket.CLOSING) && !terminalConnectionError && !pageRetired) {
+      if ((retryInFlight || socket?.readyState === WebSocket.CLOSING) && !connectionUnavailable && !pageRetired) {
         retryQueue.push({ message, onSocket });
       }
       return;
@@ -1218,8 +1220,8 @@ function createConnection() {
 
   function request(type, fields = {}) {
     const id = nextId++;
-    if (pageRetired || terminalConnectionError) {
-      return Promise.resolve({ id, type: "error", data: null, error: pageRetired ? retiredConnectionError() : terminalConnectionError });
+    if (pageRetired || connectionUnavailable) {
+      return Promise.resolve({ id, type: "error", data: null, error: pageRetired ? retiredConnectionError() : connectionUnavailable });
     }
     return new Promise((resolve) => {
       const entry = { resolve, socket: null };
@@ -1584,8 +1586,8 @@ function createConnection() {
           name,
           args,
           listeners: new Set(),
-          latest: terminalConnectionError
-            ? { data: null, error: terminalConnectionError, loading: false }
+          latest: connectionUnavailable
+            ? { data: null, error: connectionUnavailable, loading: false }
             : null,
         };
         channelsForName.set(args.identity, subscription);
