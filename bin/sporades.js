@@ -155585,8 +155585,9 @@ function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, as
           "Retry against the current Team state.",
           "TEAM_BILLING_DENIED"
         ));
+        const adminCount = await countTeamAdmins(database.adapter, teamId);
         assertActive();
-        return Object.freeze({ totalCount });
+        return Object.freeze({ totalCount, adminCount });
       }
     })
   }, database.app);
@@ -165662,7 +165663,7 @@ function validateServerEnvKeyName(name2) {
 function parseHostArgs(args) {
   if (args[0] === "services") {
     const [_2, operation, name2, ...rest2] = args;
-    if (!["enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name2 || operation !== "connect" && name2 !== "observability") throw commandError2("Invalid Host services command.", "Use host services enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
+    if (!["mail-configure", "mail-apply", "enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name2 || operation !== "connect" && name2 !== "observability") throw commandError2("Invalid Host services command.", "Use host services mail-configure|mail-apply|enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
     const options = { subcommand: "services", operation, subname: operation === "connect" ? name2 : void 0, json: false, projectDir: process.cwd() };
     if (options.subname) validateCapsuleSubname(options.subname);
     for (let i = 0; i < rest2.length; i++) {
@@ -165670,10 +165671,11 @@ function parseHostArgs(args) {
         options.json = true;
         continue;
       }
-      const field = { "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm" }[rest2[i]];
+      const field = { "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm", "--file": "file" }[rest2[i]];
       if (!field || options[field] !== void 0) throw commandError2("Invalid Host services option.", "Use --host <Capsule-host>, --on <services-host> and --json.");
       options[field] = readFlagValue(rest2, ++i, rest2[i - 1]);
     }
+    if (operation === "mail-configure" !== (typeof options.file === "string")) throw commandError2("Invalid mail configuration input.", "Use mail-configure observability --file <absolute-on-Host-staged-file>; other operations do not accept --file.");
     for (const alias of [options.hostAlias, options.servicesAlias]) if (alias) validateHostAlias(alias);
     if (operation === "restore") {
       if (!/^[a-f0-9]{64}$/.test(options.id ?? "") || options.confirm !== "observability") throw commandError2("Service restore requires explicit confirmation.", "Use --id <full-snapshot-id> --confirm observability after disabling services.");
@@ -168321,7 +168323,7 @@ async function manageHost(options) {
         if (!inspection.ok) throw commandError2(inspection.error.message, inspection.error.hint);
         data2 = await connectProjectObservability(options, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved);
       } else {
-        const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, backup: { id: options.id, confirm: options.confirm } });
+        const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, mail: options.file ? { stagedFile: options.file } : void 0, backup: { id: options.id, confirm: options.confirm } });
         if (!result.ok) throw commandError2(result.error.message, result.error.hint);
         data2 = result.data;
       }
@@ -170415,6 +170417,7 @@ function invokeRemoteHostHelper(options) {
     capsule: options.subname ? { subname: options.subname } : null
   };
   if (options.admission) request.admission = options.admission;
+  if (options.mail) request.mail = options.mail;
   if (options.services) request.services = options.services;
   if (options.backup) request.backup = options.backup;
   if (options.canonical) request.canonical = options.canonical;

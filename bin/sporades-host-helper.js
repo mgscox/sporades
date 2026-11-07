@@ -103,7 +103,7 @@ function diagnosticTrace() {
   return { traceId, body: JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "sporades-host-relay-check" } }] }, scopeSpans: [{ spans: [{ traceId, spanId: randomBytes(8).toString("hex"), name: "sporades.host.relay.check", kind: 1, startTimeUnixNano: String(now), endTimeUnixNano: String(now + 1000000n) }] }] }] }) };
 }
 async function exchange(connection, pathname, authorization, body) {
-  let dns = isIP(new URL(connection.endpoint).hostname.replace(/^\[|\]$/g, "")) ? passed() : unavailable("not-reached");
+  let dns2 = isIP(new URL(connection.endpoint).hostname.replace(/^\[|\]$/g, "")) ? passed() : unavailable("not-reached");
   let tls = unavailable("not-reached");
   return new Promise((resolve) => {
     let done = false;
@@ -111,7 +111,7 @@ async function exchange(connection, pathname, authorization, body) {
       if (done) return;
       done = true;
       clearTimeout(deadline);
-      resolve({ dns, tls, ...value });
+      resolve({ dns: dns2, tls, ...value });
     };
     const req = request(new URL(pathname, connection.endpoint), { agent: false, method: body === void 0 ? "GET" : "POST", ...connection.caPem ? { ca: connection.caPem } : {}, headers: { authorization, ...body !== void 0 ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {} } }, (res) => {
       let text2 = "";
@@ -129,18 +129,18 @@ async function exchange(connection, pathname, authorization, body) {
     }, 5e3);
     req.on("socket", (socket) => {
       socket.on("lookup", (error) => {
-        dns = error ? failed("dns") : passed();
+        dns2 = error ? failed("dns") : passed();
       });
       socket.on("secureConnect", () => {
-        dns = passed();
+        dns2 = passed();
         tls = passed();
       });
     });
     req.on("error", (error) => {
       const code = String(error.code);
-      if (code === "ENOTFOUND" || code === "EAI_AGAIN") dns = failed("dns");
+      if (code === "ENOTFOUND" || code === "EAI_AGAIN") dns2 = failed("dns");
       if (code.startsWith("ERR_TLS") || code.includes("CERT") || code.includes("SSL")) tls = failed("tls");
-      finish({ failure: dns.state === "failed" ? "dns" : tls.state === "failed" ? "tls" : "network" });
+      finish({ failure: dns2.state === "failed" ? "dns" : tls.state === "failed" ? "tls" : "network" });
     });
     req.end(body);
   });
@@ -5377,9 +5377,9 @@ var require_pako = __commonJS({
     var assign = require_common().assign;
     var deflate = require_deflate2();
     var inflate = require_inflate2();
-    var constants3 = require_constants();
+    var constants4 = require_constants();
     var pako = {};
-    assign(pako, deflate, inflate, constants3);
+    assign(pako, deflate, inflate, constants4);
     module.exports = pako;
   }
 });
@@ -16908,14 +16908,14 @@ var require_svgPath = __commonJS({
       ["Z", 0],
       ["z", 0]
     ]);
-    var parse6 = function(path15) {
+    var parse6 = function(path16) {
       var cmd;
       var ret = [];
       var args = [];
       var curArg = "";
       var foundDecimal = false;
       var params = 0;
-      for (var _i = 0, path_1 = path15; _i < path_1.length; _i++) {
+      for (var _i = 0, path_1 = path16; _i < path_1.length; _i++) {
         var c = path_1[_i];
         if (parameters.has(c)) {
           params = parameters.get(c);
@@ -17229,8 +17229,8 @@ var require_svgPath = __commonJS({
       ];
       return result;
     };
-    exports.svgPathToOperators = function(path15) {
-      return apply(parse6(path15));
+    exports.svgPathToOperators = function(path16) {
+      return apply(parse6(path16));
     };
   }
 });
@@ -17413,7 +17413,7 @@ var require_operations = __commonJS({
         operators_1.popGraphicsState()
       ]).filter(Boolean);
     };
-    exports.drawSvgPath = function(path15, options) {
+    exports.drawSvgPath = function(path16, options) {
       var _a, _b, _c;
       return tslib_1.__spreadArrays([
         operators_1.pushGraphicsState(),
@@ -17427,7 +17427,7 @@ var require_operations = __commonJS({
         options.borderWidth && operators_1.setLineWidth(options.borderWidth),
         options.borderLineCap && operators_1.setLineCap(options.borderLineCap),
         operators_1.setDashPattern((_b = options.borderDashArray) !== null && _b !== void 0 ? _b : [], (_c = options.borderDashPhase) !== null && _c !== void 0 ? _c : 0)
-      ], svgPath_1.svgPathToOperators(path15), [
+      ], svgPath_1.svgPathToOperators(path16), [
         // prettier-ignore
         options.color && options.borderWidth ? operators_1.fillAndStroke() : options.color ? operators_1.fill() : options.borderColor ? operators_1.stroke() : operators_1.closePath(),
         operators_1.popGraphicsState()
@@ -21725,12 +21725,12 @@ var require_PDFPage = __commonJS({
             graphicsState: graphicsStateKey
           }));
         };
-        PDFPage2.prototype.drawSvgPath = function(path15, options) {
+        PDFPage2.prototype.drawSvgPath = function(path16, options) {
           var _a, _b, _c, _d, _e, _f, _g, _h, _j;
           if (options === void 0) {
             options = {};
           }
-          utils_1.assertIs(path15, "path", ["string"]);
+          utils_1.assertIs(path16, "path", ["string"]);
           utils_1.assertOrUndefined(options.x, "options.x", ["number"]);
           utils_1.assertOrUndefined(options.y, "options.y", ["number"]);
           utils_1.assertOrUndefined(options.scale, "options.scale", ["number"]);
@@ -21759,7 +21759,7 @@ var require_PDFPage = __commonJS({
             options.borderColor = colors_1.rgb(0, 0, 0);
           }
           var contentStream = this.getContentStream();
-          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path15, {
+          contentStream.push.apply(contentStream, operations_1.drawSvgPath(path16, {
             x: (_a = options.x) !== null && _a !== void 0 ? _a : this.x,
             y: (_b = options.y) !== null && _b !== void 0 ? _b : this.y,
             scale: options.scale,
@@ -23835,9 +23835,9 @@ var require_decoder = __commonJS({
         return a < 0 ? 0 : a > 255 ? 255 : a;
       }
       constructor.prototype = {
-        load: function load(path15) {
+        load: function load(path16) {
           var xhr = new XMLHttpRequest();
-          xhr.open("GET", path15, true);
+          xhr.open("GET", path16, true);
           xhr.responseType = "arraybuffer";
           xhr.onload = (function() {
             var data2 = new Uint8Array(xhr.response || xhr.mozResponseArrayBuffer);
@@ -24890,7 +24890,7 @@ var require_crc = __commonJS({
 var require_parser = __commonJS({
   "node_modules/pngjs/lib/parser.js"(exports, module) {
     "use strict";
-    var constants3 = require_constants2();
+    var constants4 = require_constants2();
     var CrcCalculator = require_crc();
     var Parser6 = module.exports = function(options, dependencies) {
       this._options = options;
@@ -24901,12 +24901,12 @@ var require_parser = __commonJS({
       this._palette = [];
       this._colorType = 0;
       this._chunks = {};
-      this._chunks[constants3.TYPE_IHDR] = this._handleIHDR.bind(this);
-      this._chunks[constants3.TYPE_IEND] = this._handleIEND.bind(this);
-      this._chunks[constants3.TYPE_IDAT] = this._handleIDAT.bind(this);
-      this._chunks[constants3.TYPE_PLTE] = this._handlePLTE.bind(this);
-      this._chunks[constants3.TYPE_tRNS] = this._handleTRNS.bind(this);
-      this._chunks[constants3.TYPE_gAMA] = this._handleGAMA.bind(this);
+      this._chunks[constants4.TYPE_IHDR] = this._handleIHDR.bind(this);
+      this._chunks[constants4.TYPE_IEND] = this._handleIEND.bind(this);
+      this._chunks[constants4.TYPE_IDAT] = this._handleIDAT.bind(this);
+      this._chunks[constants4.TYPE_PLTE] = this._handlePLTE.bind(this);
+      this._chunks[constants4.TYPE_tRNS] = this._handleTRNS.bind(this);
+      this._chunks[constants4.TYPE_gAMA] = this._handleGAMA.bind(this);
       this.read = dependencies.read;
       this.error = dependencies.error;
       this.metadata = dependencies.metadata;
@@ -24921,10 +24921,10 @@ var require_parser = __commonJS({
       };
     };
     Parser6.prototype.start = function() {
-      this.read(constants3.PNG_SIGNATURE.length, this._parseSignature.bind(this));
+      this.read(constants4.PNG_SIGNATURE.length, this._parseSignature.bind(this));
     };
     Parser6.prototype._parseSignature = function(data2) {
-      let signature = constants3.PNG_SIGNATURE;
+      let signature = constants4.PNG_SIGNATURE;
       for (let i = 0; i < signature.length; i++) {
         if (data2[i] !== signature[i]) {
           this.error(new Error("Invalid file signature"));
@@ -24941,7 +24941,7 @@ var require_parser = __commonJS({
         name2 += String.fromCharCode(data2[i]);
       }
       let ancillary = Boolean(data2[4] & 32);
-      if (!this._hasIHDR && type !== constants3.TYPE_IHDR) {
+      if (!this._hasIHDR && type !== constants4.TYPE_IHDR) {
         this.error(new Error("Expected IHDR on beggining"));
         return;
       }
@@ -24989,7 +24989,7 @@ var require_parser = __commonJS({
         this.error(new Error("Unsupported bit depth " + depth2));
         return;
       }
-      if (!(colorType in constants3.COLORTYPE_TO_BPP_MAP)) {
+      if (!(colorType in constants4.COLORTYPE_TO_BPP_MAP)) {
         this.error(new Error("Unsupported color type"));
         return;
       }
@@ -25006,16 +25006,16 @@ var require_parser = __commonJS({
         return;
       }
       this._colorType = colorType;
-      let bpp = constants3.COLORTYPE_TO_BPP_MAP[this._colorType];
+      let bpp = constants4.COLORTYPE_TO_BPP_MAP[this._colorType];
       this._hasIHDR = true;
       this.metadata({
         width,
         height,
         depth: depth2,
         interlace: Boolean(interlace),
-        palette: Boolean(colorType & constants3.COLORTYPE_PALETTE),
-        color: Boolean(colorType & constants3.COLORTYPE_COLOR),
-        alpha: Boolean(colorType & constants3.COLORTYPE_ALPHA),
+        palette: Boolean(colorType & constants4.COLORTYPE_PALETTE),
+        color: Boolean(colorType & constants4.COLORTYPE_COLOR),
+        alpha: Boolean(colorType & constants4.COLORTYPE_ALPHA),
         bpp,
         colorType
       });
@@ -25039,7 +25039,7 @@ var require_parser = __commonJS({
     };
     Parser6.prototype._parseTRNS = function(data2) {
       this._crc.write(data2);
-      if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR) {
+      if (this._colorType === constants4.COLORTYPE_PALETTE_COLOR) {
         if (this._palette.length === 0) {
           this.error(new Error("Transparency chunk must be after palette"));
           return;
@@ -25053,10 +25053,10 @@ var require_parser = __commonJS({
         }
         this.palette(this._palette);
       }
-      if (this._colorType === constants3.COLORTYPE_GRAYSCALE) {
+      if (this._colorType === constants4.COLORTYPE_GRAYSCALE) {
         this.transColor([data2.readUInt16BE(0)]);
       }
-      if (this._colorType === constants3.COLORTYPE_COLOR) {
+      if (this._colorType === constants4.COLORTYPE_COLOR) {
         this.transColor([
           data2.readUInt16BE(0),
           data2.readUInt16BE(2),
@@ -25070,7 +25070,7 @@ var require_parser = __commonJS({
     };
     Parser6.prototype._parseGAMA = function(data2) {
       this._crc.write(data2);
-      this.gamma(data2.readUInt32BE(0) / constants3.GAMMA_DIVISION);
+      this.gamma(data2.readUInt32BE(0) / constants4.GAMMA_DIVISION);
       this._handleChunkEnd();
     };
     Parser6.prototype._handleIDAT = function(length) {
@@ -25082,7 +25082,7 @@ var require_parser = __commonJS({
     };
     Parser6.prototype._parseIDAT = function(length, data2) {
       this._crc.write(data2);
-      if (this._colorType === constants3.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
+      if (this._colorType === constants4.COLORTYPE_PALETTE_COLOR && this._palette.length === 0) {
         throw new Error("Expected palette not found");
       }
       this.inflateData(data2);
@@ -25570,9 +25570,9 @@ var require_parser_async = __commonJS({
 var require_bitpacker = __commonJS({
   "node_modules/pngjs/lib/bitpacker.js"(exports, module) {
     "use strict";
-    var constants3 = require_constants2();
+    var constants4 = require_constants2();
     module.exports = function(dataIn, width, height, options) {
-      let outHasAlpha = [constants3.COLORTYPE_COLOR_ALPHA, constants3.COLORTYPE_ALPHA].indexOf(
+      let outHasAlpha = [constants4.COLORTYPE_COLOR_ALPHA, constants4.COLORTYPE_ALPHA].indexOf(
         options.colorType
       ) !== -1;
       if (options.colorType === options.inputColorType) {
@@ -25592,11 +25592,11 @@ var require_bitpacker = __commonJS({
       }
       let data2 = options.bitDepth !== 16 ? dataIn : new Uint16Array(dataIn.buffer);
       let maxValue = 255;
-      let inBpp = constants3.COLORTYPE_TO_BPP_MAP[options.inputColorType];
+      let inBpp = constants4.COLORTYPE_TO_BPP_MAP[options.inputColorType];
       if (inBpp === 4 && !options.inputHasAlpha) {
         inBpp = 3;
       }
-      let outBpp = constants3.COLORTYPE_TO_BPP_MAP[options.colorType];
+      let outBpp = constants4.COLORTYPE_TO_BPP_MAP[options.colorType];
       if (options.bitDepth === 16) {
         maxValue = 65535;
         outBpp *= 2;
@@ -25620,24 +25620,24 @@ var require_bitpacker = __commonJS({
         let blue;
         let alpha = maxValue;
         switch (options.inputColorType) {
-          case constants3.COLORTYPE_COLOR_ALPHA:
+          case constants4.COLORTYPE_COLOR_ALPHA:
             alpha = data2[inIndex + 3];
             red = data2[inIndex];
             green = data2[inIndex + 1];
             blue = data2[inIndex + 2];
             break;
-          case constants3.COLORTYPE_COLOR:
+          case constants4.COLORTYPE_COLOR:
             red = data2[inIndex];
             green = data2[inIndex + 1];
             blue = data2[inIndex + 2];
             break;
-          case constants3.COLORTYPE_ALPHA:
+          case constants4.COLORTYPE_ALPHA:
             alpha = data2[inIndex + 1];
             red = data2[inIndex];
             green = red;
             blue = red;
             break;
-          case constants3.COLORTYPE_GRAYSCALE:
+          case constants4.COLORTYPE_GRAYSCALE:
             red = data2[inIndex];
             green = red;
             blue = red;
@@ -25670,8 +25670,8 @@ var require_bitpacker = __commonJS({
         for (let x = 0; x < width; x++) {
           let rgba = getRGBA(data2, inIndex);
           switch (options.colorType) {
-            case constants3.COLORTYPE_COLOR_ALPHA:
-            case constants3.COLORTYPE_COLOR:
+            case constants4.COLORTYPE_COLOR_ALPHA:
+            case constants4.COLORTYPE_COLOR:
               if (options.bitDepth === 8) {
                 outData[outIndex] = rgba.red;
                 outData[outIndex + 1] = rgba.green;
@@ -25688,8 +25688,8 @@ var require_bitpacker = __commonJS({
                 }
               }
               break;
-            case constants3.COLORTYPE_ALPHA:
-            case constants3.COLORTYPE_GRAYSCALE: {
+            case constants4.COLORTYPE_ALPHA:
+            case constants4.COLORTYPE_GRAYSCALE: {
               let grayscale = (rgba.red + rgba.green + rgba.blue) / 3;
               if (options.bitDepth === 8) {
                 outData[outIndex] = grayscale;
@@ -25862,7 +25862,7 @@ var require_filter_pack = __commonJS({
 var require_packer = __commonJS({
   "node_modules/pngjs/lib/packer.js"(exports, module) {
     "use strict";
-    var constants3 = require_constants2();
+    var constants4 = require_constants2();
     var CrcStream = require_crc();
     var bitPacker = require_bitpacker();
     var filter = require_filter_pack();
@@ -25875,23 +25875,23 @@ var require_packer = __commonJS({
       options.inputHasAlpha = options.inputHasAlpha != null ? options.inputHasAlpha : true;
       options.deflateFactory = options.deflateFactory || zlib2.createDeflate;
       options.bitDepth = options.bitDepth || 8;
-      options.colorType = typeof options.colorType === "number" ? options.colorType : constants3.COLORTYPE_COLOR_ALPHA;
-      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants3.COLORTYPE_COLOR_ALPHA;
+      options.colorType = typeof options.colorType === "number" ? options.colorType : constants4.COLORTYPE_COLOR_ALPHA;
+      options.inputColorType = typeof options.inputColorType === "number" ? options.inputColorType : constants4.COLORTYPE_COLOR_ALPHA;
       if ([
-        constants3.COLORTYPE_GRAYSCALE,
-        constants3.COLORTYPE_COLOR,
-        constants3.COLORTYPE_COLOR_ALPHA,
-        constants3.COLORTYPE_ALPHA
+        constants4.COLORTYPE_GRAYSCALE,
+        constants4.COLORTYPE_COLOR,
+        constants4.COLORTYPE_COLOR_ALPHA,
+        constants4.COLORTYPE_ALPHA
       ].indexOf(options.colorType) === -1) {
         throw new Error(
           "option color type:" + options.colorType + " is not supported at present"
         );
       }
       if ([
-        constants3.COLORTYPE_GRAYSCALE,
-        constants3.COLORTYPE_COLOR,
-        constants3.COLORTYPE_COLOR_ALPHA,
-        constants3.COLORTYPE_ALPHA
+        constants4.COLORTYPE_GRAYSCALE,
+        constants4.COLORTYPE_COLOR,
+        constants4.COLORTYPE_COLOR_ALPHA,
+        constants4.COLORTYPE_ALPHA
       ].indexOf(options.inputColorType) === -1) {
         throw new Error(
           "option input color type:" + options.inputColorType + " is not supported at present"
@@ -25915,7 +25915,7 @@ var require_packer = __commonJS({
     };
     Packer.prototype.filterData = function(data2, width, height) {
       let packedData = bitPacker(data2, width, height, this._options);
-      let bpp = constants3.COLORTYPE_TO_BPP_MAP[this._options.colorType];
+      let bpp = constants4.COLORTYPE_TO_BPP_MAP[this._options.colorType];
       let filteredData = filter(packedData, width, height, this._options, bpp);
       return filteredData;
     };
@@ -25935,8 +25935,8 @@ var require_packer = __commonJS({
     };
     Packer.prototype.packGAMA = function(gamma) {
       let buf = Buffer.alloc(4);
-      buf.writeUInt32BE(Math.floor(gamma * constants3.GAMMA_DIVISION), 0);
-      return this._packChunk(constants3.TYPE_gAMA, buf);
+      buf.writeUInt32BE(Math.floor(gamma * constants4.GAMMA_DIVISION), 0);
+      return this._packChunk(constants4.TYPE_gAMA, buf);
     };
     Packer.prototype.packIHDR = function(width, height) {
       let buf = Buffer.alloc(13);
@@ -25947,13 +25947,13 @@ var require_packer = __commonJS({
       buf[10] = 0;
       buf[11] = 0;
       buf[12] = 0;
-      return this._packChunk(constants3.TYPE_IHDR, buf);
+      return this._packChunk(constants4.TYPE_IHDR, buf);
     };
     Packer.prototype.packIDAT = function(data2) {
-      return this._packChunk(constants3.TYPE_IDAT, data2);
+      return this._packChunk(constants4.TYPE_IDAT, data2);
     };
     Packer.prototype.packIEND = function() {
-      return this._packChunk(constants3.TYPE_IEND, null);
+      return this._packChunk(constants4.TYPE_IEND, null);
     };
   }
 });
@@ -25964,7 +25964,7 @@ var require_packer_async = __commonJS({
     "use strict";
     var util = __require("util");
     var Stream = __require("stream");
-    var constants3 = require_constants2();
+    var constants4 = require_constants2();
     var Packer = require_packer();
     var PackerAsync = module.exports = function(opt) {
       Stream.call(this);
@@ -25975,7 +25975,7 @@ var require_packer_async = __commonJS({
     };
     util.inherits(PackerAsync, Stream);
     PackerAsync.prototype.pack = function(data2, width, height, gamma) {
-      this.emit("data", Buffer.from(constants3.PNG_SIGNATURE));
+      this.emit("data", Buffer.from(constants4.PNG_SIGNATURE));
       this.emit("data", this._packer.packIHDR(width, height));
       if (gamma) {
         this.emit("data", this._packer.packGAMA(gamma));
@@ -26303,7 +26303,7 @@ var require_packer_sync = __commonJS({
     if (!zlib2.deflateSync) {
       hasSyncZlib = false;
     }
-    var constants3 = require_constants2();
+    var constants4 = require_constants2();
     var Packer = require_packer();
     module.exports = function(metaData, opt) {
       if (!hasSyncZlib) {
@@ -26314,7 +26314,7 @@ var require_packer_sync = __commonJS({
       let options = opt || {};
       let packer = new Packer(options);
       let chunks = [];
-      chunks.push(Buffer.from(constants3.PNG_SIGNATURE));
+      chunks.push(Buffer.from(constants4.PNG_SIGNATURE));
       chunks.push(packer.packIHDR(metaData.width, metaData.height));
       if (metaData.gamma) {
         chunks.push(packer.packGAMA(metaData.gamma));
@@ -26695,17 +26695,17 @@ ${s}`;
     let depth2 = 1, globalEnd = -1, catchall = false;
     for (let i = 1; i < t2.length; i++) {
       if (depth2 === 1 && t2[i].value === "servers") {
-        let open8 = i + 1;
-        while (open8 < t2.length && t2[open8].value !== "{") open8++;
-        if (open8 === t2.length) fail2("Cannot locate Caddy servers options.");
-        if (open8 === i + 1) catchall = true;
+        let open9 = i + 1;
+        while (open9 < t2.length && t2[open9].value !== "{") open9++;
+        if (open9 === t2.length) fail2("Cannot locate Caddy servers options.");
+        if (open9 === i + 1) catchall = true;
         let d = 1, hasMetrics = false;
-        for (let j = open8 + 1; j < t2.length && d; j++) {
+        for (let j = open9 + 1; j < t2.length && d; j++) {
           if (d === 1 && t2[j].value === "metrics") hasMetrics = true;
           if (t2[j].value === "{") d++;
           if (t2[j].value === "}") d--;
         }
-        if (!hasMetrics) additions.push({ at: t2[open8].end, text: metric });
+        if (!hasMetrics) additions.push({ at: t2[open9].end, text: metric });
       }
       if (t2[i].value === "{") depth2++;
       if (t2[i].value === "}") depth2--;
@@ -27746,21 +27746,21 @@ __export(sealed_server_env_exports, {
   withSealedServerEnvMutationLock: () => withSealedServerEnvMutationLock,
   writeSealedServerEnv: () => writeSealedServerEnv
 });
-import { createCipheriv, createDecipheriv, createHash as createHash9, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes as randomBytes7 } from "node:crypto";
-import { lstat as lstat10, mkdir as mkdir5, readFile as readFile9, rename as rename8, rm as rm8, writeFile as writeFile4 } from "node:fs/promises";
-import path11 from "node:path";
+import { createCipheriv, createDecipheriv, createHash as createHash9, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes as randomBytes8 } from "node:crypto";
+import { lstat as lstat11, mkdir as mkdir6, readFile as readFile9, rename as rename9, rm as rm9, writeFile as writeFile4 } from "node:fs/promises";
+import path12 from "node:path";
 function sealedServerEnvPaths(projectDir) {
-  const root = path11.join(projectDir, ".sporades", "sealed-server-env");
+  const root = path12.join(projectDir, ".sporades", "sealed-server-env");
   return {
     root,
-    envelope: path11.join(root, "server-env.sealed.json"),
-    privateKey: path11.join(root, "server-env.private.pem"),
-    publicKey: path11.join(root, "server-env.public.pem"),
-    hosts: path11.join(root, "hosts")
+    envelope: path12.join(root, "server-env.sealed.json"),
+    privateKey: path12.join(root, "server-env.private.pem"),
+    publicKey: path12.join(root, "server-env.public.pem"),
+    hosts: path12.join(root, "hosts")
   };
 }
 async function ensureSealedServerEnvKeyPair(paths2 = sealedServerEnvPaths(process.cwd())) {
-  await mkdir5(paths2.root, { recursive: true, mode: 448 });
+  await mkdir6(paths2.root, { recursive: true, mode: 448 });
   const existing = await readKeyPair(paths2);
   if (existing) {
     return existing;
@@ -27799,8 +27799,8 @@ async function readKeyPair(paths2) {
 function sealServerEnv(values, publicKey, metadata = {}) {
   const entries = {};
   for (const [key, value] of Object.entries(values)) {
-    const dataKey = randomBytes7(32);
-    const iv = randomBytes7(12);
+    const dataKey = randomBytes8(32);
+    const iv = randomBytes8(12);
     const cipher = createCipheriv(VALUE_ALGORITHM, dataKey, iv);
     const ciphertext = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
     entries[key] = {
@@ -27847,28 +27847,28 @@ async function readSealedServerEnv(paths2) {
   }
 }
 async function writeSealedServerEnv(paths2, envelope) {
-  await mkdir5(paths2.root, { recursive: true, mode: 448 });
+  await mkdir6(paths2.root, { recursive: true, mode: 448 });
   const targetPath = paths2.envelope;
-  const temporaryPath = path11.join(
-    path11.dirname(targetPath),
-    `.${path11.basename(targetPath)}.${process.pid}-${randomBytes7(8).toString("hex")}.tmp`
+  const temporaryPath = path12.join(
+    path12.dirname(targetPath),
+    `.${path12.basename(targetPath)}.${process.pid}-${randomBytes8(8).toString("hex")}.tmp`
   );
   try {
     await writeFile4(temporaryPath, `${JSON.stringify(envelope, null, 2)}
 `, { flag: "wx", mode: 384 });
-    await rename8(temporaryPath, targetPath);
+    await rename9(temporaryPath, targetPath);
   } finally {
-    await rm8(temporaryPath, { force: true });
+    await rm9(temporaryPath, { force: true });
   }
 }
 async function withSealedServerEnvMutationLock(paths2, mutate) {
-  await mkdir5(paths2.root, { recursive: true, mode: 448 });
-  const lockDir = path11.join(paths2.root, ".mutation-lock");
-  const ownerPath = path11.join(lockDir, "owner.json");
-  const token = randomBytes7(16).toString("hex");
+  await mkdir6(paths2.root, { recursive: true, mode: 448 });
+  const lockDir = path12.join(paths2.root, ".mutation-lock");
+  const ownerPath = path12.join(lockDir, "owner.json");
+  const token = randomBytes8(16).toString("hex");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
-      await mkdir5(lockDir);
+      await mkdir6(lockDir);
       await writeFile4(ownerPath, `${JSON.stringify({ pid: process.pid, token })}
 `, { mode: 384 });
       try {
@@ -27878,14 +27878,14 @@ async function withSealedServerEnvMutationLock(paths2, mutate) {
         if (owner?.token !== token) {
           throw new Error("Sealed Server env mutation lock ownership changed.");
         }
-        await rm8(lockDir, { recursive: true, force: true });
+        await rm9(lockDir, { recursive: true, force: true });
       }
     } catch (error) {
       if (errorCode(error) !== "EEXIST") throw error;
       const owner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       const live = Number.isInteger(owner?.pid) && owner.pid > 0 && processIsLive(owner.pid);
       if (!live) {
-        const ageMs = Date.now() - await lstat10(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const ageMs = Date.now() - await lstat11(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if ((owner !== null || ageMs > 1e3) && await claimAndQuarantineStaleLock(lockDir, ownerPath, owner, token)) {
           continue;
         }
@@ -27896,7 +27896,7 @@ async function withSealedServerEnvMutationLock(paths2, mutate) {
   throw new Error("Sealed Server env mutation is busy. Retry after the other env command completes.");
 }
 async function claimAndQuarantineStaleLock(lockDir, ownerPath, observedOwner, token) {
-  const claimPath = path11.join(lockDir, ".recovery-claim.json");
+  const claimPath = path12.join(lockDir, ".recovery-claim.json");
   try {
     await writeFile4(claimPath, `${JSON.stringify({ pid: process.pid, token })}
 `, { flag: "wx", mode: 384 });
@@ -27907,17 +27907,17 @@ async function claimAndQuarantineStaleLock(lockDir, ownerPath, observedOwner, to
   }
   const currentOwner = await readFile9(ownerPath, "utf8").then(JSON.parse).catch(() => null);
   if (!sameMutationLockOwner(currentOwner, observedOwner) || Number.isInteger(currentOwner?.pid) && currentOwner.pid > 0 && processIsLive(currentOwner.pid)) {
-    await rm8(claimPath, { force: true });
+    await rm9(claimPath, { force: true });
     return false;
   }
   const quarantinePath = `${lockDir}.stale-${process.pid}-${token}`;
   try {
-    await rename8(lockDir, quarantinePath);
+    await rename9(lockDir, quarantinePath);
   } catch (error) {
     if (errorCode(error) === "ENOENT") return true;
     throw error;
   }
-  await rm8(quarantinePath, { recursive: true, force: true });
+  await rm9(quarantinePath, { recursive: true, force: true });
   return true;
 }
 function sameMutationLockOwner(left, right) {
@@ -29143,10 +29143,10 @@ function hostedPublicOrigin(record) {
 init_base_image();
 import { spawn as spawn2, spawnSync as spawnSync8 } from "node:child_process";
 import { constants as fsConstants, createReadStream as createReadStream3, statSync } from "node:fs";
-import { access as access2, chmod as chmod4, lstat as lstat12, mkdir as mkdir7, open as open7, opendir, readdir as readdir6, readFile as readFile11, readlink, rename as rename10, rm as rm10, stat, statfs as statfs2, symlink, writeFile as writeFile6 } from "node:fs/promises";
-import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes9 } from "node:crypto";
+import { access as access2, chmod as chmod4, lstat as lstat13, mkdir as mkdir8, open as open8, opendir, readdir as readdir6, readFile as readFile11, readlink, rename as rename11, rm as rm11, stat, statfs as statfs2, symlink, writeFile as writeFile6 } from "node:fs/promises";
+import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
-import path14 from "node:path";
+import path15 from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 // src/runtime-restart-policy.ts
@@ -44512,17 +44512,17 @@ var Lexer = class _Lexer {
       if (next < end && this.src.charCodeAt(next) === CH_LBRACE) {
         close = this.findClosingBrace(next + 1, end);
       } else {
-        const open8 = skipLineContinuations(this.src, next, end);
-        if (open8 >= end || this.src.charCodeAt(open8) !== CH_LPAREN)
+        const open9 = skipLineContinuations(this.src, next, end);
+        if (open9 >= end || this.src.charCodeAt(open9) !== CH_LPAREN)
           return start;
-        close = this.findClosingParenthesis(open8 + 1, end);
+        close = this.findClosingParenthesis(open9 + 1, end);
       }
     } else {
-      const open8 = start + 1;
-      if (quoted || ch !== CH_LT && ch !== CH_GT || open8 >= end || this.src.charCodeAt(open8) !== CH_LPAREN) {
+      const open9 = start + 1;
+      if (quoted || ch !== CH_LT && ch !== CH_GT || open9 >= end || this.src.charCodeAt(open9) !== CH_LPAREN) {
         return start;
       }
-      close = this.findClosingParenthesis(open8 + 1, end);
+      close = this.findClosingParenthesis(open9 + 1, end);
     }
     return close === -1 ? end : close + 1;
   }
@@ -47220,13 +47220,114 @@ WantedBy=multi-user.target docker.service
   return { installed: true, unit, shutdownUnit, routeRecoveryTimer: `${recovery.unit}.timer`, startsExistingCapsules: false };
 }
 
+// src/cli/host-observability-mail.ts
+init_cli_support();
+import { constants as constants3 } from "node:fs";
+import { lstat as lstat10, mkdir as mkdir5, open as open6, rename as rename8, rm as rm8 } from "node:fs/promises";
+import { randomBytes as randomBytes7 } from "node:crypto";
+import path11 from "node:path";
+function fail3() {
+  throw helperError("Invalid protected GlitchTip mail configuration.", "Stage a helper-owned mode-0600 regular JSON file in protected directories. Use version 1 and transport console, or smtp-ssl with host, port, username, password and from. Values and provider diagnostics are omitted.");
+}
+var dns = (v) => typeof v === "string" && v.length <= 253 && v.includes(".") && !/^[0-9.]+$/.test(v) && v.split(".").every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
+function validateObservabilityMail(value) {
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return fail3();
+    const v = value;
+    const keys2 = v.transport === "console" ? ["version", "transport"] : ["version", "transport", "host", "port", "username", "password", "from"];
+    if (v.version !== 1 || Object.keys(v).sort().join() !== keys2.sort().join()) return fail3();
+    if (v.transport === "console") return { version: 1, transport: "console" };
+    if (v.transport !== "smtp-ssl" || !dns(v.host) || !Number.isInteger(v.port) || Number(v.port) < 1 || Number(v.port) > 65535) return fail3();
+    for (const name2 of ["username", "password", "from"]) {
+      const text2 = v[name2];
+      if (typeof text2 !== "string" || !text2.length || text2.length > 1024 || /[^\x20-\x7e]/.test(text2)) return fail3();
+    }
+    if (typeof v.from !== "string" || v.from.length > 254 || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[^@]+$/.test(v.from) || !dns(v.from.split("@")[1])) return fail3();
+    const local = v.from.split("@")[0];
+    if (local.startsWith(".") || local.endsWith(".") || local.includes("..") || local.length > 64) return fail3();
+    return { version: 1, transport: "smtp-ssl", host: v.host, port: Number(v.port), username: v.username, password: v.password, from: v.from };
+  } catch {
+    return fail3();
+  }
+}
+function observabilityMailFile(host) {
+  return path11.join(host.remoteRoot, "hosts", host.domain, "services", "observability", "mail.json");
+}
+async function readProtected2(file) {
+  await trustedBackupPath(file, true);
+  const handle = await open6(file, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+  try {
+    const s = await handle.stat();
+    if (!s.isFile() || s.nlink !== 1 || s.uid !== process.geteuid?.() || (s.mode & 4095) !== 384 || s.size > 8192) return fail3();
+    const bytes = await handle.readFile();
+    if (bytes.length > 8192) return fail3();
+    return validateObservabilityMail(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+  } finally {
+    await handle.close();
+  }
+}
+async function readObservabilityMail(host) {
+  try {
+    return await readProtected2(observabilityMailFile(host));
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    return fail3();
+  }
+}
+function observabilityMailStatus(mail) {
+  return { configured: mail?.transport === "smtp-ssl", transport: mail?.transport ?? "console" };
+}
+async function configureObservabilityMail(host, stagedFile) {
+  try {
+    if (typeof stagedFile !== "string" || !path11.isAbsolute(stagedFile) || path11.normalize(stagedFile) !== stagedFile) return fail3();
+    const mail = await readProtected2(stagedFile);
+    const file = observabilityMailFile(host), directory2 = path11.dirname(file);
+    try {
+      await trustedBackupPath(directory2, true);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    await mkdir5(directory2, { recursive: true, mode: 448 });
+    await trustedBackupPath(directory2, true);
+    try {
+      await lstat10(file);
+      await readProtected2(file);
+    } catch (e) {
+      if (e.code !== "ENOENT") throw e;
+    }
+    const temporary = `${file}.${randomBytes7(16).toString("hex")}.tmp`;
+    const handle = await open6(temporary, constants3.O_WRONLY | constants3.O_CREAT | constants3.O_EXCL | constants3.O_NOFOLLOW, 384);
+    try {
+      await handle.chmod(384);
+      await handle.writeFile(JSON.stringify(mail) + "\n");
+      await handle.sync();
+      await rename8(temporary, file);
+      const parent = await open6(directory2, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
+    } finally {
+      await handle.close();
+      await rm8(temporary, { force: true });
+    }
+    return { mail: observabilityMailStatus(mail), applyRequired: true };
+  } catch {
+    return fail3();
+  }
+}
+function observabilityMailEnvironment(mail, domain) {
+  return mail?.transport === "smtp-ssl" ? { EMAIL_URL: `smtp+ssl://${encodeURIComponent(mail.username)}:${encodeURIComponent(mail.password)}@${mail.host}:${mail.port}`, DEFAULT_FROM_EMAIL: mail.from.replace(/\$/g, () => "$$") } : { EMAIL_URL: "consolemail://", DEFAULT_FROM_EMAIL: `ops@${domain}` };
+}
+
 // src/cli/host-observability.ts
 init_cli_support();
 import { spawnSync as spawnSync7 } from "node:child_process";
 import { createReadStream as createReadStream2 } from "node:fs";
-import { createHash as createHash10, randomBytes as randomBytes8 } from "node:crypto";
-import { chmod as chmod3, lstat as lstat11, mkdir as mkdir6, open as open6, readFile as readFile10, readdir as readdir5, rename as rename9, rm as rm9, statfs, writeFile as writeFile5 } from "node:fs/promises";
-import path12 from "node:path";
+import { createHash as createHash10, randomBytes as randomBytes9 } from "node:crypto";
+import { chmod as chmod3, lstat as lstat12, mkdir as mkdir7, open as open7, readFile as readFile10, readdir as readdir5, rename as rename10, rm as rm10, statfs, writeFile as writeFile5 } from "node:fs/promises";
+import path13 from "node:path";
 var OBSERVABILITY_IMAGES = Object.freeze({ glitchtip: "glitchtip/glitchtip:v5.2.1", umami: "ghcr.io/umami-software/umami:postgresql-v2.20.2", postgres: "postgres:16.10-alpine", valkey: "valkey/valkey:8.1.3-alpine" });
 var OBSERVABILITY_MINIMUM = Object.freeze({ cpus: 2, memoryBytes: 2 * 1024 ** 3, freeDiskBytes: 20 * 1024 ** 3 });
 var OBSERVABILITY_ROUTE_FILE = "__sporades-observability.caddy";
@@ -47238,25 +47339,25 @@ async function renderObservabilityRoutes(host, ports) {
 `).join("\n");
 }
 function observabilityDirectory(host) {
-  return path12.join(host.remoteRoot, "hosts", host.domain, "services", "observability");
+  return path13.join(host.remoteRoot, "hosts", host.domain, "services", "observability");
 }
 function observabilityProject(host) {
   return `sporades-observe-${createHash10("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}`;
 }
-function fail3(message = "Host observability operation failed.") {
+function fail4(message = "Host observability operation failed.") {
   throw helperError(message, "Inspect Docker and protected Host services state, then retry the same command. Provider responses and credentials are omitted.");
 }
 async function readObservabilityState(host) {
-  const file = path12.join(observabilityDirectory(host), "secrets.json");
+  const file = path13.join(observabilityDirectory(host), "secrets.json");
   try {
     await trustedBackupPath(file, true);
     let value;
     try {
       value = JSON.parse(await readFile10(file, "utf8"));
     } catch {
-      return fail3("Invalid protected observability state.");
+      return fail4("Invalid protected observability state.");
     }
-    if (value.version !== 1 || typeof value.enabled !== "boolean" || typeof value.ready !== "boolean" || typeof value.disclosed !== "boolean" || !value.secrets || Object.keys(value.secrets).sort().join() !== ["database", "umamiDatabase", "django", "app", "errorsPassword", "analyticsPassword", "token"].sort().join() || Object.values(value.secrets).some((v) => typeof v !== "string" || !/^[a-f0-9]{64}$/.test(v))) fail3("Invalid protected observability state.");
+    if (value.version !== 1 || typeof value.enabled !== "boolean" || typeof value.ready !== "boolean" || typeof value.disclosed !== "boolean" || !value.secrets || Object.keys(value.secrets).sort().join() !== ["database", "umamiDatabase", "django", "app", "errorsPassword", "analyticsPassword", "token"].sort().join() || Object.values(value.secrets).some((v) => typeof v !== "string" || !/^[a-f0-9]{64}$/.test(v))) fail4("Invalid protected observability state.");
     return value;
   } catch (e) {
     if (e.code === "ENOENT") return null;
@@ -47264,17 +47365,17 @@ async function readObservabilityState(host) {
   }
 }
 function assertObservabilityResources(cpus, memoryBytes, freeDiskBytes) {
-  if (![cpus, memoryBytes, freeDiskBytes].every(Number.isFinite) || cpus < OBSERVABILITY_MINIMUM.cpus || memoryBytes < OBSERVABILITY_MINIMUM.memoryBytes || freeDiskBytes < OBSERVABILITY_MINIMUM.freeDiskBytes) fail3("Observability requires at least 2 CPUs, 2 GiB Docker memory and 20 GiB free disk, plus capacity for Capsules.");
+  if (![cpus, memoryBytes, freeDiskBytes].every(Number.isFinite) || cpus < OBSERVABILITY_MINIMUM.cpus || memoryBytes < OBSERVABILITY_MINIMUM.memoryBytes || freeDiskBytes < OBSERVABILITY_MINIMUM.freeDiskBytes) fail4("Observability requires at least 2 CPUs, 2 GiB Docker memory and 20 GiB free disk, plus capacity for Capsules.");
 }
 function command(args, input, maxBuffer = 4 * 1024 * 1024) {
   const r = spawnSync7("docker", args, { input, timeout: 6e5, maxBuffer });
-  if (r.error || r.status !== 0) fail3();
+  if (r.error || r.status !== 0) fail4();
   return r.stdout;
 }
-function observabilityCompose(host, state) {
+function observabilityCompose(host, state, mail = null) {
   const common = { restart: "unless-stopped", security_opt: ["no-new-privileges:true"], logging: { driver: "json-file", options: { "max-size": "10m", "max-file": "3" } } };
   const pg = (name2, password) => ({ ...common, image: OBSERVABILITY_IMAGES.postgres, environment: { POSTGRES_USER: name2, POSTGRES_DB: name2, POSTGRES_PASSWORD: password }, volumes: [`${name2}-db:/var/lib/postgresql/data`], healthcheck: { test: ["CMD-SHELL", `pg_isready -U ${name2}`], interval: "5s", timeout: "5s", retries: 30 } });
-  const environment = { DATABASE_URL: `postgresql://glitchtip:${state.secrets.database}@errors-db:5432/glitchtip`, REDIS_URL: "redis://valkey:6379/0", SECRET_KEY: state.secrets.django, GLITCHTIP_DOMAIN: `https://errors.${host.domain}`, CSRF_TRUSTED_ORIGINS: `https://errors.${host.domain}`, ALLOWED_HOSTS: `errors.${host.domain},127.0.0.1`, DEFAULT_FROM_EMAIL: `ops@${host.domain}`, EMAIL_URL: "consolemail://", ENABLE_USER_REGISTRATION: "false", ENABLE_SOCIAL_APPS_USER_REGISTRATION: "false", ENABLE_ORGANIZATION_CREATION: "false", PORT: "8080", UWSGI_WORKERS: "2", CELERY_WORKER_CONCURRENCY: "2", CELERY_WORKER_POOL: "threads" };
+  const environment = { DATABASE_URL: `postgresql://glitchtip:${state.secrets.database}@errors-db:5432/glitchtip`, REDIS_URL: "redis://valkey:6379/0", SECRET_KEY: state.secrets.django, GLITCHTIP_DOMAIN: `https://errors.${host.domain}`, CSRF_TRUSTED_ORIGINS: `https://errors.${host.domain}`, ALLOWED_HOSTS: `errors.${host.domain},127.0.0.1`, ...observabilityMailEnvironment(mail, host.domain), ENABLE_USER_REGISTRATION: "false", ENABLE_SOCIAL_APPS_USER_REGISTRATION: "false", ENABLE_ORGANIZATION_CREATION: "false", PORT: "8080", UWSGI_WORKERS: "2", CELERY_WORKER_CONCURRENCY: "2", CELERY_WORKER_POOL: "threads" };
   return { name: observabilityProject(host), services: {
     "errors-db": pg("glitchtip", state.secrets.database),
     "analytics-db": pg("umami", state.secrets.umamiDatabase),
@@ -47285,13 +47386,13 @@ function observabilityCompose(host, state) {
   }, volumes: { "glitchtip-db": {}, "umami-db": {}, uploads: {} } };
 }
 function composeArguments(host) {
-  return ["compose", "--project-name", observabilityProject(host), "--file", path12.join(observabilityDirectory(host), "compose.json")];
+  return ["compose", "--project-name", observabilityProject(host), "--file", path13.join(observabilityDirectory(host), "compose.json")];
 }
 async function databaseDumpFile(host, args, file, restore = false) {
-  const handle = await open6(file, restore ? "r" : "wx", 384);
+  const handle = await open7(file, restore ? "r" : "wx", 384);
   try {
     const r = spawnSync7("docker", [...composeArguments(host), ...args], { stdio: restore ? [handle.fd, "pipe", "pipe"] : ["ignore", handle.fd, "pipe"], timeout: 36e5, maxBuffer: 4 * 1024 * 1024 });
-    if (r.error || r.status !== 0) fail3("Observability database dump operation failed.");
+    if (r.error || r.status !== 0) fail4("Observability database dump operation failed.");
   } finally {
     await handle.close();
   }
@@ -47307,19 +47408,19 @@ function observabilityDocker(host, args, input, maxBuffer) {
 function observabilityPort(host, service) {
   const output = observabilityDocker(host, ["port", service, service === "web" ? "8080" : "3000"]).toString().trim();
   const match = /^127\.0\.0\.1:(\d+)$/.exec(output);
-  if (!match || +match[1] < 1024 || +match[1] > 65535) fail3("Observability service has no private published port.");
+  if (!match || +match[1] < 1024 || +match[1] > 65535) fail4("Observability service has no private published port.");
   return +match[1];
 }
 async function api(host, service, route, token, body, optional = false) {
   try {
     const response = await fetch(`http://127.0.0.1:${observabilityPort(host, service)}${route}`, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...token ? { Authorization: `Bearer ${token}` } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(1e4) });
     if (optional && response.status === 404) return null;
-    if (!response.ok) fail3();
+    if (!response.ok) fail4();
     const text2 = await response.text();
-    if (text2.length > 1024 * 1024) fail3();
+    if (text2.length > 1024 * 1024) fail4();
     return text2 ? JSON.parse(text2) : {};
   } catch {
-    return fail3();
+    return fail4();
   }
 }
 async function waitReady(host, service) {
@@ -47332,31 +47433,32 @@ async function waitReady(host, service) {
     }
     await new Promise((resolve) => setTimeout(resolve, 1e3));
   }
-  fail3("Observability service startup timed out.");
+  fail4("Observability service startup timed out.");
 }
 async function loginUmami(host, state) {
   return api(host, "umami", "/api/auth/login", void 0, { username: "admin", password: state.secrets.analyticsPassword });
 }
 async function enableObservability(host, applyRoutes) {
+  const mail = await readObservabilityMail(host);
   await trustedBackupPath(host.remoteRoot, true);
   const info = JSON.parse(command(["info", "--format", "{{json .}}"]).toString());
   const disk = await statfs(host.remoteRoot);
   assertObservabilityResources(info.NCPU, info.MemTotal, disk.bavail * disk.bsize);
   const directory2 = observabilityDirectory(host);
-  if (await lstat11(path12.join(directory2, "restore.json")).then(() => true, (e) => {
+  if (await lstat12(path13.join(directory2, "restore.json")).then(() => true, (e) => {
     if (e.code === "ENOENT") return false;
     throw e;
-  })) fail3("Finish the interrupted service restore before enabling observability.");
-  await mkdir6(directory2, { recursive: true, mode: 448 });
+  })) fail4("Finish the interrupted service restore before enabling observability.");
+  await mkdir7(directory2, { recursive: true, mode: 448 });
   await trustedBackupPath(directory2, true);
   let state = await readObservabilityState(host);
   if (!state) {
-    const secret = () => randomBytes8(32).toString("hex");
+    const secret = () => randomBytes9(32).toString("hex");
     state = { version: 1, enabled: true, ready: false, disclosed: false, secrets: { database: secret(), umamiDatabase: secret(), django: secret(), app: secret(), errorsPassword: secret(), analyticsPassword: secret(), token: secret() } };
   }
   state.enabled = true;
-  await atomicBackupJson(path12.join(directory2, "secrets.json"), state);
-  await atomicBackupJson(path12.join(directory2, "compose.json"), observabilityCompose(host, state));
+  await atomicBackupJson(path13.join(directory2, "secrets.json"), state);
+  await atomicBackupJson(path13.join(directory2, "compose.json"), observabilityCompose(host, state, mail));
   observabilityDocker(host, ["up", "-d", "--wait", "errors-db", "analytics-db", "valkey"]);
   observabilityDocker(host, ["run", "--rm", "--no-deps", "web", "./manage.py", "migrate", "--noinput"]);
   observabilityDocker(host, ["up", "-d"]);
@@ -47376,7 +47478,7 @@ t.add_permissions(['org:read','org:write','team:read','team:write','project:read
   try {
     await loginUmami(host, state);
   } catch {
-    if (state.ready) fail3("Umami admin credentials changed; restore the protected Host credential before enabling.");
+    if (state.ready) fail4("Umami admin credentials changed; restore the protected Host credential before enabling.");
     const login = await api(host, "umami", "/api/auth/login", void 0, { username: "admin", password: "umami" });
     await api(host, "umami", `/api/users/${encodeURIComponent(login.user.id)}`, login.token, { username: "admin", password: state.secrets.analyticsPassword });
     await loginUmami(host, state);
@@ -47389,7 +47491,7 @@ t.add_permissions(['org:read','org:write','team:read','team:write','project:read
   await publishObservabilityMetric(host, 1, true);
   if (await readHostBackupPolicy(host)) await publishHostBackupMetric(host, "_observability");
   state.disclosed = true;
-  await atomicBackupJson(path12.join(directory2, "secrets.json"), state);
+  await atomicBackupJson(path13.join(directory2, "secrets.json"), state);
   return { enabled: true, ready: true, urls: await observabilityUrls(host), ...credentials ? { credentials } : {} };
 }
 async function observabilityUrls(host) {
@@ -47399,15 +47501,16 @@ async function disableObservability(host, applyRoutes, uninstall = false) {
   const state = await readObservabilityState(host);
   if (!state) return { enabled: false, installed: false };
   state.enabled = false;
-  await atomicBackupJson(path12.join(observabilityDirectory(host), "secrets.json"), state);
+  await atomicBackupJson(path13.join(observabilityDirectory(host), "secrets.json"), state);
   await applyRoutes();
   observabilityDocker(host, uninstall ? ["down", "--remove-orphans"] : ["stop"]);
   await publishObservabilityMetric(host, 0);
   return { enabled: false, dataRetained: true, credentialsRetained: true, uninstalled: uninstall };
 }
 async function statusObservability(host) {
+  const mail = observabilityMailStatus(await readObservabilityMail(host));
   const state = await readObservabilityState(host);
-  if (!state) return { installed: false, enabled: false };
+  if (!state) return { installed: false, enabled: false, mail };
   let healthy = false;
   if (state.enabled) try {
     await api(host, "web", "/api/0/");
@@ -47417,15 +47520,15 @@ async function statusObservability(host) {
   }
   await publishObservabilityMetric(host, healthy ? 1 : 0, state.enabled);
   if (state.enabled && await readHostBackupPolicy(host)) await publishHostBackupMetric(host, "_observability");
-  return { installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
+  return { mail, installed: true, enabled: state.enabled, ready: state.ready, healthy, urls: await observabilityUrls(host), images: OBSERVABILITY_IMAGES };
 }
 async function provisionObservability(host, target) {
   const state = await readObservabilityState(host);
   if (!state?.enabled || !state.ready) return { connected: false, reason: "observability-disabled" };
   const analyticsDomain = await readObservabilityAnalyticsDomain(host);
-  if (!target || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(target.subname) || !target.domain?.split(".").every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || target.domain.length > 253 || typeof target.publicKey !== "string" || target.publicKey.length > 8192) fail3("Invalid observability Capsule target.");
+  if (!target || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(target.subname) || !target.domain?.split(".").every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || target.domain.length > 253 || typeof target.publicKey !== "string" || target.publicKey.length > 8192) fail4("Invalid observability Capsule target.");
   const { sealServerEnv: sealServerEnv2 } = await Promise.resolve().then(() => (init_sealed_server_env(), sealed_server_env_exports));
-  if (typeof target.errors !== "boolean" || typeof target.analytics !== "boolean" || !target.errors && !target.analytics) fail3("Choose at least one Capsule integration.");
+  if (typeof target.errors !== "boolean" || typeof target.analytics !== "boolean" || !target.errors && !target.analytics) fail4("Choose at least one Capsule integration.");
   sealServerEnv2({}, target.publicKey);
   const identity = `${target.subname}.${target.domain}`;
   const hash2 = createHash10("sha256").update(identity).digest("hex");
@@ -47437,7 +47540,7 @@ async function provisionObservability(host, target) {
     if (!Array.isArray(keys2)) keys2 = keys2.items ?? keys2.results;
     if (!keys2?.length) keys2 = [await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token, { name: "Sporades" })];
     const dsn = new URL(keys2[0].dsn.public);
-    if (!/\/\d+$/.test(dsn.pathname) || !/^[a-f0-9]{32}$/.test(dsn.username)) fail3();
+    if (!/\/\d+$/.test(dsn.pathname) || !/^[a-f0-9]{32}$/.test(dsn.username)) fail4();
     values.ERROR_DSN = `https://${dsn.username}@errors.${host.domain}${dsn.pathname}`;
   }
   if (target.analytics) {
@@ -47450,106 +47553,106 @@ async function provisionObservability(host, target) {
   return { connected: true, identity, env: sealServerEnv2(values, target.publicKey, { source: "host-services", identity }) };
 }
 async function publishObservabilityMetric(host, up, enabled = false) {
-  const directory2 = path12.join(host.remoteRoot, "backup-metrics");
-  await mkdir6(directory2, { recursive: true, mode: 493 });
+  const directory2 = path13.join(host.remoteRoot, "backup-metrics");
+  await mkdir7(directory2, { recursive: true, mode: 493 });
   await trustedBackupPath(directory2);
   await chmod3(directory2, 493);
-  const file = path12.join(directory2, `observability-${createHash10("sha256").update(host.domain).digest("hex")}.prom`);
-  const temp = `${file}.${randomBytes8(8).toString("hex")}.tmp`;
+  const file = path13.join(directory2, `observability-${createHash10("sha256").update(host.domain).digest("hex")}.prom`);
+  const temp = `${file}.${randomBytes9(8).toString("hex")}.tmp`;
   await writeFile5(temp, `sporades_observability_up{capsule_domain=${JSON.stringify(host.domain)}} ${up}
 sporades_observability_enabled{capsule_domain=${JSON.stringify(host.domain)}} ${enabled ? 1 : 0}
 sporades_observability_checked_seconds{capsule_domain=${JSON.stringify(host.domain)}} ${Math.floor(Date.now() / 1e3)}
 `, { flag: "wx", mode: 420 });
   try {
     await chmod3(temp, 420);
-    await rename9(temp, file);
+    await rename10(temp, file);
   } finally {
-    await rm9(temp, { force: true });
+    await rm10(temp, { force: true });
   }
 }
 var SERVICE_BACKUP_TAG = "_observability";
 async function backupObservability(host) {
   const policy = await readHostBackupPolicy(host);
-  if (!policy) fail3("Configure Host backups before backing up observability.");
+  if (!policy) fail4("Configure Host backups before backing up observability.");
   const state = await readObservabilityState(host);
-  if (!state?.ready) fail3("Enable observability before its first backup.");
-  if (await lstat11(path12.join(observabilityDirectory(host), "restore.json")).then(() => true, (e) => {
+  if (!state?.ready) fail4("Enable observability before its first backup.");
+  if (await lstat12(path13.join(observabilityDirectory(host), "restore.json")).then(() => true, (e) => {
     if (e.code === "ENOENT") return false;
     throw e;
-  })) fail3("Finish service restore before creating another backup.");
+  })) fail4("Finish service restore before creating another backup.");
   const directory2 = observabilityDirectory(host);
-  const staging = path12.join(directory2, "backup-stage");
+  const staging = path13.join(directory2, "backup-stage");
   await trustedBackupPath(directory2, true);
-  await rm9(staging, { recursive: true, force: true });
-  await mkdir6(staging, { mode: 448 });
+  await rm10(staging, { recursive: true, force: true });
+  await mkdir7(staging, { mode: 448 });
   try {
     const checksums = {};
     for (const [service, user] of [["errors-db", "glitchtip"], ["analytics-db", "umami"]]) {
       const file = `${user}.dump`;
-      await databaseDumpFile(host, ["exec", "-T", service, "pg_dump", "-U", user, "-d", user, "-Fc"], path12.join(staging, file));
-      checksums[file] = await fileDigest(path12.join(staging, file));
+      await databaseDumpFile(host, ["exec", "-T", service, "pg_dump", "-U", user, "-d", user, "-Fc"], path13.join(staging, file));
+      checksums[file] = await fileDigest(path13.join(staging, file));
     }
     const createdAt = (/* @__PURE__ */ new Date()).toISOString();
-    await atomicBackupJson(path12.join(staging, "manifest.json"), { version: 1, domain: host.domain, createdAt, secrets: state.secrets, checksums });
+    await atomicBackupJson(path13.join(staging, "manifest.json"), { version: 1, domain: host.domain, createdAt, secrets: state.secrets, checksums });
     const output = await restic(policy, ["backup", "--host", host.domain, "--tag", `sporades:${host.domain}:${SERVICE_BACKUP_TAG}`, "--", "glitchtip.dump", "umami.dump", "manifest.json"], staging);
     const summary = output.trim().split("\n").map((line) => JSON.parse(line)).find((v) => v.message_type === "summary");
-    if (!/^[a-f0-9]{64}$/.test(summary?.snapshot_id)) fail3("Incomplete observability backup.");
-    await atomicBackupJson(path12.join(hostBackupDirectory(host), `${SERVICE_BACKUP_TAG}.json`), { id: summary.snapshot_id, createdAt, repository: createHash10("sha256").update(policy.repository).digest("hex") });
+    if (!/^[a-f0-9]{64}$/.test(summary?.snapshot_id)) fail4("Incomplete observability backup.");
+    await atomicBackupJson(path13.join(hostBackupDirectory(host), `${SERVICE_BACKUP_TAG}.json`), { id: summary.snapshot_id, createdAt, repository: createHash10("sha256").update(policy.repository).digest("hex") });
     await publishHostBackupMetric(host, SERVICE_BACKUP_TAG);
     return { id: summary.snapshot_id, createdAt };
   } finally {
-    await rm9(staging, { recursive: true, force: true });
+    await rm10(staging, { recursive: true, force: true });
   }
 }
 async function listObservabilityBackups(host) {
   const policy = await readHostBackupPolicy(host);
-  if (!policy) fail3("Host backups are not configured.");
+  if (!policy) fail4("Host backups are not configured.");
   return { snapshots: await listHostBackups(policy, host, SERVICE_BACKUP_TAG) };
 }
 async function pruneObservabilityBackups(host) {
   const policy = await readHostBackupPolicy(host);
-  if (!policy) fail3("Host backups are not configured.");
+  if (!policy) fail4("Host backups are not configured.");
   return pruneHostBackups(policy, host, SERVICE_BACKUP_TAG);
 }
 async function restoreObservability(host, id2, confirm) {
   const state = await readObservabilityState(host);
   const policy = await readHostBackupPolicy(host);
-  if (!state || state.enabled || !policy || !id2 || confirm !== "observability" || !/^[a-f0-9]{64}$/.test(id2)) fail3("Disable observability and confirm a full snapshot ID before restoring.");
-  if (!(await listHostBackups(policy, host, SERVICE_BACKUP_TAG)).some((s) => s.id === id2)) fail3("Snapshot is not an observability backup for this Hosted domain.");
+  if (!state || state.enabled || !policy || !id2 || confirm !== "observability" || !/^[a-f0-9]{64}$/.test(id2)) fail4("Disable observability and confirm a full snapshot ID before restoring.");
+  if (!(await listHostBackups(policy, host, SERVICE_BACKUP_TAG)).some((s) => s.id === id2)) fail4("Snapshot is not an observability backup for this Hosted domain.");
   const directory2 = observabilityDirectory(host);
-  const staging = path12.join(directory2, "restore-stage");
-  const journal = path12.join(directory2, "restore.json");
+  const staging = path13.join(directory2, "restore-stage");
+  const journal = path13.join(directory2, "restore.json");
   await trustedBackupPath(directory2, true);
   const pending = await readFile10(journal, "utf8").then((v) => {
     try {
       return JSON.parse(v);
     } catch {
-      return fail3("Invalid protected restore journal.");
+      return fail4("Invalid protected restore journal.");
     }
   }).catch((e) => {
     if (e.code === "ENOENT") return null;
     throw e;
   });
-  if (pending && pending.id !== id2) fail3("Retry the interrupted service restore with its original snapshot ID.");
-  await rm9(staging, { recursive: true, force: true });
-  await mkdir6(staging, { mode: 448 });
+  if (pending && pending.id !== id2) fail4("Retry the interrupted service restore with its original snapshot ID.");
+  await rm10(staging, { recursive: true, force: true });
+  await mkdir7(staging, { mode: 448 });
   try {
     await restic(policy, ["restore", id2, "--target", staging]);
-    if (JSON.stringify((await readdir5(staging)).sort()) !== JSON.stringify(["glitchtip.dump", "manifest.json", "umami.dump"])) fail3("Unexpected observability backup contents.");
+    if (JSON.stringify((await readdir5(staging)).sort()) !== JSON.stringify(["glitchtip.dump", "manifest.json", "umami.dump"])) fail4("Unexpected observability backup contents.");
     for (const name2 of ["manifest.json", "glitchtip.dump", "umami.dump"]) {
-      await trustedBackupPath(path12.join(staging, name2));
-      const details = await lstat11(path12.join(staging, name2));
-      if (!details.isFile() || details.nlink !== 1) fail3("Invalid observability backup file.");
+      await trustedBackupPath(path13.join(staging, name2));
+      const details = await lstat12(path13.join(staging, name2));
+      if (!details.isFile() || details.nlink !== 1) fail4("Invalid observability backup file.");
     }
     let manifest;
     try {
-      manifest = JSON.parse(await readFile10(path12.join(staging, "manifest.json"), "utf8"));
+      manifest = JSON.parse(await readFile10(path13.join(staging, "manifest.json"), "utf8"));
     } catch {
-      return fail3("Invalid observability backup manifest.");
+      return fail4("Invalid observability backup manifest.");
     }
-    if (manifest.version !== 1 || manifest.domain !== host.domain || JSON.stringify(manifest.secrets) !== JSON.stringify(state.secrets)) fail3("Observability backup identity or retained credentials do not match.");
+    if (manifest.version !== 1 || manifest.domain !== host.domain || JSON.stringify(manifest.secrets) !== JSON.stringify(state.secrets)) fail4("Observability backup identity or retained credentials do not match.");
     for (const user of ["glitchtip", "umami"]) {
-      if (await fileDigest(path12.join(staging, `${user}.dump`)) !== manifest.checksums[`${user}.dump`]) fail3("Observability backup checksum mismatch.");
+      if (await fileDigest(path13.join(staging, `${user}.dump`)) !== manifest.checksums[`${user}.dump`]) fail4("Observability backup checksum mismatch.");
     }
     await atomicBackupJson(journal, { version: 1, id: id2 });
     observabilityDocker(host, ["stop", "web", "worker", "umami"]);
@@ -47557,17 +47660,17 @@ async function restoreObservability(host, id2, confirm) {
     for (const [service, user] of [["errors-db", "glitchtip"], ["analytics-db", "umami"]]) {
       observabilityDocker(host, ["exec", "-T", service, "psql", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-c", `DROP DATABASE IF EXISTS "${user}" WITH (FORCE)`]);
       observabilityDocker(host, ["exec", "-T", service, "createdb", "-U", user, "-O", user, user]);
-      await databaseDumpFile(host, ["exec", "-T", service, "pg_restore", "-U", user, "-d", user, "--no-owner", "--exit-on-error"], path12.join(staging, `${user}.dump`), true);
+      await databaseDumpFile(host, ["exec", "-T", service, "pg_restore", "-U", user, "-d", user, "--no-owner", "--exit-on-error"], path13.join(staging, `${user}.dump`), true);
     }
-    await rm9(journal);
+    await rm10(journal);
     return { restored: true, id: id2, enabled: false, enableRequired: true };
   } finally {
-    await rm9(staging, { recursive: true, force: true });
+    await rm10(staging, { recursive: true, force: true });
   }
 }
 function observabilityMonitorUnits(host) {
   const name2 = observabilityProject(host);
-  const helper = JSON.stringify(path12.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, () => "$$");
+  const helper = JSON.stringify(path13.join(host.remoteRoot, "bin", "sporades-host-helper")).replace(/%/g, "%%").replace(/\$/g, () => "$$");
   const encoded = Buffer.from(JSON.stringify(host)).toString("base64url");
   return { name: name2, service: `# Sporades observability health
 [Unit]
@@ -47592,36 +47695,72 @@ async function installObservabilityMonitor(host, enabled, directory2 = "/etc/sys
   const units = observabilityMonitorUnits(host);
   await trustedBackupPath(directory2, true);
   for (const extension of ["service", "timer"]) {
-    const file = path12.join(directory2, `${units.name}.${extension}`);
+    const file = path13.join(directory2, `${units.name}.${extension}`);
     const previous = await readFile10(file, "utf8").catch((e) => {
       if (e.code === "ENOENT") return null;
       throw e;
     });
     if (previous) {
       await trustedBackupPath(file);
-      if (!previous.startsWith("# Sporades observability health\n")) fail3("Observability timer is operator-owned.");
+      if (!previous.startsWith("# Sporades observability health\n")) fail4("Observability timer is operator-owned.");
     }
   }
   if (enabled) {
-    await trustedBackupPath(path12.join(host.remoteRoot, "bin", "sporades-host-helper"));
+    await trustedBackupPath(path13.join(host.remoteRoot, "bin", "sporades-host-helper"));
     for (const [extension, contents] of [["service", units.service], ["timer", units.timer]]) {
-      const file = path12.join(directory2, `${units.name}.${extension}`);
+      const file = path13.join(directory2, `${units.name}.${extension}`);
       const previous = await readFile10(file, "utf8").catch((e) => {
         if (e.code === "ENOENT") return null;
         throw e;
       });
-      if (previous && !previous.startsWith("# Sporades observability health\n")) fail3("Observability timer is operator-owned.");
+      if (previous && !previous.startsWith("# Sporades observability health\n")) fail4("Observability timer is operator-owned.");
       if (previous) await trustedBackupPath(file);
-      const temp = `${file}.${randomBytes8(8).toString("hex")}.tmp`;
+      const temp = `${file}.${randomBytes9(8).toString("hex")}.tmp`;
       await writeFile5(temp, contents, { flag: "wx", mode: 420 });
       try {
-        await rename9(temp, file);
+        await rename10(temp, file);
       } finally {
-        await rm9(temp, { force: true });
+        await rm10(temp, { force: true });
       }
     }
   }
-  for (const args of [["daemon-reload"], [enabled ? "enable" : "disable", "--now", `${units.name}.timer`]]) if (spawnSync7("systemctl", args, { timeout: 3e4 }).status !== 0) fail3("Could not reconcile observability monitoring; retry the services command.");
+  for (const args of [["daemon-reload"], [enabled ? "enable" : "disable", "--now", `${units.name}.timer`]]) if (spawnSync7("systemctl", args, { timeout: 3e4 }).status !== 0) fail4("Could not reconcile observability monitoring; retry the services command.");
+}
+async function applyObservabilityMail(host) {
+  const mail = await readObservabilityMail(host);
+  const state = await readObservabilityState(host);
+  if (!state?.enabled || !state.ready) fail4("Enable observability before applying mail configuration.");
+  const directory2 = observabilityDirectory(host);
+  if (await lstat12(path13.join(directory2, "restore.json")).then(() => true, (e) => {
+    if (e.code === "ENOENT") return false;
+    throw e;
+  })) fail4("Finish the interrupted service restore before applying mail configuration.");
+  const file = path13.join(directory2, "compose.json");
+  await trustedBackupPath(file, true);
+  const details = await lstat12(file);
+  if (!details.isFile() || details.nlink !== 1) fail4("Invalid protected observability Compose file.");
+  let compose;
+  try {
+    compose = JSON.parse(await readFile10(file, "utf8"));
+  } catch {
+    return fail4("Invalid protected observability Compose file.");
+  }
+  if (compose.name !== observabilityProject(host) || !compose.services?.web?.environment || !compose.services?.worker?.environment) fail4("Invalid protected observability Compose file.");
+  const ports = compose.services.web.ports;
+  if (!Array.isArray(ports) || ports.length !== 1 || typeof ports[0] !== "string" || !/^127\.0\.0\.1:(?:[0-9]+)?:8080$/.test(ports[0])) fail4("Invalid protected observability web listener.");
+  const retained = /^127\.0\.0\.1:([0-9]+):8080$/.exec(ports[0]);
+  const port = retained ? Number(retained[1]) : observabilityPort(host, "web");
+  if (port < 1024 || port > 65535) fail4("Invalid protected observability web listener.");
+  compose.services.web.ports = [`127.0.0.1:${port}:8080`];
+  for (const role of ["web", "worker"]) {
+    const env = compose.services[role].environment;
+    if (typeof env !== "object" || Array.isArray(env)) fail4("Invalid protected observability Compose environment.");
+    Object.assign(env, observabilityMailEnvironment(mail, host.domain));
+  }
+  await atomicBackupJson(file, compose);
+  observabilityDocker(host, ["up", "-d", "--no-deps", "--force-recreate", "web", "worker"]);
+  await waitReady(host, "web");
+  return { mail: observabilityMailStatus(mail), recreated: ["web", "worker"] };
 }
 
 // src/cli/hosted-telemetry-coverage.ts
@@ -47646,7 +47785,7 @@ function hostedTelemetryCoverage(desired, running, runtime, expectedServiceName,
 }
 
 // src/cli/host-helper-validation.ts
-import path13 from "node:path";
+import path14 from "node:path";
 init_cli_support();
 function missingCapsuleHint(request2, purpose) {
   if (purpose === "push") {
@@ -47795,7 +47934,7 @@ function validateListRequest(request2) {
 }
 function validateListRegistryRecord(request2, record, recordPath) {
   const capsuleRecord = record;
-  const expectedSubname = path13.basename(recordPath, ".json");
+  const expectedSubname = path14.basename(recordPath, ".json");
   const expectedRemoteCapsuleId = `${request2.host.domain}/${typeof capsuleRecord?.subname === "string" ? capsuleRecord.subname : expectedSubname}`;
   const valid = capsuleRecord && typeof capsuleRecord.subname === "string" && capsuleRecord.subname.length > 0 && capsuleRecord.subname === expectedSubname && capsuleRecord.domain === request2.host.domain && (capsuleRecord.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
   if (!valid) {
@@ -47925,8 +48064,8 @@ function validateInstallRequest(request2) {
   if (!directories?.releases || !directories.release) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
-  const expectedReleaseDirectory = path13.join(directories.releases, release.id);
-  if (path13.resolve(directories.release) !== path13.resolve(expectedReleaseDirectory)) {
+  const expectedReleaseDirectory = path14.join(directories.releases, release.id);
+  if (path14.resolve(directories.release) !== path14.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
 }
@@ -48080,12 +48219,12 @@ async function runHostHelperInstaller() {
   const internal = process.argv[2] === "--install-host-helper-internal";
   const target = process.argv[3];
   const expectedChecksum = process.argv[4];
-  if (process.argv.length !== 5 || typeof target !== "string" || !path14.isAbsolute(target) || path14.basename(target) !== "sporades-host-helper" || !/^[a-f0-9]{64}$/.test(expectedChecksum ?? "")) {
+  if (process.argv.length !== 5 || typeof target !== "string" || !path15.isAbsolute(target) || path15.basename(target) !== "sporades-host-helper" || !/^[a-f0-9]{64}$/.test(expectedChecksum ?? "")) {
     throw helperError("Invalid Host helper upgrade request.", "Retry with `sporades host upgrade --host <alias>`.");
   }
   const stage = process.argv[1];
-  const directory2 = path14.dirname(target);
-  const expectedStage = path14.join(directory2, `.sporades-host-helper-stage-${expectedChecksum}.mjs`);
+  const directory2 = path15.dirname(target);
+  const expectedStage = path15.join(directory2, `.sporades-host-helper-stage-${expectedChecksum}.mjs`);
   if (stage !== expectedStage) {
     throw helperError("Invalid staged Host helper path.", "Retry with `sporades host upgrade --host <alias>`.");
   }
@@ -48099,7 +48238,7 @@ async function runHostHelperInstaller() {
       "--conflict-exit-code",
       "75",
       "--no-fork",
-      path14.join(directory2, ".sporades-host-helper.upgrade.lock"),
+      path15.join(directory2, ".sporades-host-helper.upgrade.lock"),
       process.execPath,
       stage,
       "--install-host-helper-internal",
@@ -48140,13 +48279,13 @@ function hostHelperUpgradeTimeoutMs(name2, fallback) {
   return value;
 }
 async function installHostHelperPayload(stage, target, expectedChecksum) {
-  const directory2 = path14.dirname(target);
-  const pointer = path14.join(directory2, ".sporades-host-helper.active");
-  const blocked = path14.join(directory2, ".sporades-host-helper.upgrade-blocked");
-  const needsDrain = path14.join(directory2, ".sporades-host-helper.needs-drain");
+  const directory2 = path15.dirname(target);
+  const pointer = path15.join(directory2, ".sporades-host-helper.active");
+  const blocked = path15.join(directory2, ".sporades-host-helper.upgrade-blocked");
+  const needsDrain = path15.join(directory2, ".sporades-host-helper.needs-drain");
   const newPayloadName = `.sporades-host-helper-payload-${expectedChecksum}.mjs`;
-  const newPayload = path14.join(directory2, newPayloadName);
-  await mkdir7(directory2, { recursive: true });
+  const newPayload = path15.join(directory2, newPayloadName);
+  await mkdir8(directory2, { recursive: true });
   if (createHash11("sha256").update(await readFile11(stage)).digest("hex") !== expectedChecksum) {
     throw helperError("Staged Host helper checksum did not match.", "Upload the immutable Host helper again, then retry the upgrade.");
   }
@@ -48168,7 +48307,7 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   } else {
     const previousChecksum = createHash11("sha256").update(currentTarget).digest("hex");
     previousPayloadName = `.sporades-host-helper-payload-${previousChecksum}.mjs`;
-    await publishHostHelperFile(target, path14.join(directory2, previousPayloadName), 493);
+    await publishHostHelperFile(target, path15.join(directory2, previousPayloadName), 493);
     await writeHostHelperPointer(pointer, previousPayloadName);
     await writeFile6(needsDrain, "legacy-helper-drain-required\n", { mode: 384 });
   }
@@ -48178,9 +48317,9 @@ async function installHostHelperPayload(stage, target, expectedChecksum) {
   try {
     if (firstCooperativeUpgrade || await pathExists(needsDrain)) await drainUncooperativeHostHelpers(target);
     await writeHostHelperPointer(pointer, newPayloadName);
-    await rm10(needsDrain, { force: true });
-    await rm10(blocked, { force: true });
-    await rm10(stage, { force: true });
+    await rm11(needsDrain, { force: true });
+    await rm11(blocked, { force: true });
+    await rm11(stage, { force: true });
   } catch (error) {
     await writeFile6(blocked, "upgrade-recovery-required\n", { mode: 384 });
     throw error;
@@ -48191,24 +48330,24 @@ async function publishHostHelperFile(source, target, mode) {
   await publishHostHelperBytes(contents, target, mode);
 }
 async function publishHostHelperBytes(contents, target, mode) {
-  const temporary = `${target}.tmp-${process.pid}-${randomBytes9(8).toString("hex")}`;
+  const temporary = `${target}.tmp-${process.pid}-${randomBytes10(8).toString("hex")}`;
   try {
     await writeFile6(temporary, contents, { flag: "wx", mode });
     await chmod4(temporary, mode);
-    await rename10(temporary, target);
+    await rename11(temporary, target);
   } finally {
-    await rm10(temporary, { force: true });
+    await rm11(temporary, { force: true });
   }
 }
 async function writeHostHelperPointer(pointer, payloadName) {
-  await validateHostHelperPayload(path14.dirname(pointer), payloadName);
+  await validateHostHelperPayload(path15.dirname(pointer), payloadName);
   await publishHostHelperBytes(Buffer.from(`${payloadName}
 `, "utf8"), pointer, 384);
 }
 async function validateHostHelperPayload(directory2, payloadName) {
   const match = /^\.sporades-host-helper-payload-([a-f0-9]{64})\.mjs$/.exec(payloadName);
   if (!match) throw helperError("Host helper payload pointer was invalid.", "Retry the Host helper upgrade.");
-  const payload = path14.join(directory2, payloadName);
+  const payload = path15.join(directory2, payloadName);
   const actual = createHash11("sha256").update(await readFile11(payload)).digest("hex");
   if (actual !== match[1]) throw helperError("Host helper payload checksum did not match.", "Retry the Host helper upgrade.");
 }
@@ -48279,11 +48418,11 @@ async function findUncooperativeHostHelperProcesses(target, deadline) {
         );
       }
       try {
-        const processDir = path14.join(procRoot, entry.name);
-        const argv = (await readFile11(path14.join(processDir, "cmdline"))).toString("utf8").split("\0").filter(Boolean);
+        const processDir = path15.join(procRoot, entry.name);
+        const argv = (await readFile11(path15.join(processDir, "cmdline"))).toString("utf8").split("\0").filter(Boolean);
         assertHostHelperDrainDeadline(deadline);
         if (argv[1] !== target) continue;
-        const environment = (await readFile11(path14.join(processDir, "environ"))).toString("utf8").split("\0");
+        const environment = (await readFile11(path15.join(processDir, "environ"))).toString("utf8").split("\0");
         assertHostHelperDrainDeadline(deadline);
         if (environment.includes("SPORADES_HOST_DISPATCH_LOCK_HELD=1")) continue;
         active.push(Number(entry.name));
@@ -48388,6 +48527,8 @@ function managedRouteMutationLockIdentity(request2) {
     case "capsule.backup.prune":
       validateLifecycleRequest(request2);
       break;
+    case "host.services.mail-configure":
+    case "host.services.mail-apply":
     case "host.services.enable":
     case "host.services.disable":
     case "host.services.uninstall":
@@ -48399,7 +48540,7 @@ function managedRouteMutationLockIdentity(request2) {
     case "host.services.restore":
     case "host.backup.configure": {
       const remoteRoot2 = validateCanonicalHostRouteRoot(request2);
-      return { globalLockFile: path14.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"), routeLockFile: null, domainDirectory: canonicalManagedRouteDomainDirectory(request2, remoteRoot2) };
+      return { globalLockFile: path15.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"), routeLockFile: null, domainDirectory: canonicalManagedRouteDomainDirectory(request2, remoteRoot2) };
     }
     case "capsule.register":
       validateRegisterRequest(request2);
@@ -48444,7 +48585,7 @@ function managedRouteMutationLockIdentity(request2) {
         const domainDirectory = canonicalManagedRouteDomainDirectory(request2, remoteRoot2);
         const bootstrapTrust = bootstrapTrustManifest(request2);
         return {
-          globalLockFile: path14.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
+          globalLockFile: path15.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
           routeLockFile: null,
           domainDirectory,
           bootstrapTrust
@@ -48460,7 +48601,7 @@ function managedRouteMutationLockIdentity(request2) {
     case "host.telemetry.reconcile": {
       const remoteRoot2 = validateCanonicalHostRouteRoot(request2);
       return {
-        globalLockFile: path14.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
+        globalLockFile: path15.join(remoteRoot2, "bin", ".sporades-host-helper.host-route.lock"),
         routeLockFile: null,
         domainDirectory: canonicalManagedRouteDomainDirectory(request2, remoteRoot2)
       };
@@ -48470,7 +48611,7 @@ function managedRouteMutationLockIdentity(request2) {
   }
   const remoteRoot = validateCanonicalHostRouteRoot(request2);
   return {
-    globalLockFile: path14.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"),
+    globalLockFile: path15.join(remoteRoot, "bin", ".sporades-host-helper.host-route.lock"),
     routeLockFile: `${canonicalManagedRouteFile(request2, remoteRoot)}.lock`,
     domainDirectory: canonicalManagedRouteDomainDirectory(request2, remoteRoot),
     ...actionCanProvisionCapsuleHttpLog(request2.action) ? { routeLogTrust: capsuleHttpLogTrustManifest(request2, remoteRoot) } : {}
@@ -48481,7 +48622,7 @@ function actionCanProvisionCapsuleHttpLog(action) {
 }
 function validateCanonicalHostRouteRoot(request2) {
   const remoteRoot = request2.host.remoteRoot;
-  if (typeof remoteRoot !== "string" || remoteRoot.length < 2 || remoteRoot.length > 4096 || !path14.isAbsolute(remoteRoot) || /[\0\r\n]/.test(remoteRoot) || path14.normalize(remoteRoot) !== remoteRoot || remoteRoot === path14.parse(remoteRoot).root) {
+  if (typeof remoteRoot !== "string" || remoteRoot.length < 2 || remoteRoot.length > 4096 || !path15.isAbsolute(remoteRoot) || /[\0\r\n]/.test(remoteRoot) || path15.normalize(remoteRoot) !== remoteRoot || remoteRoot === path15.parse(remoteRoot).root) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a bounded absolute canonical Host remote root and retry.");
   }
   const domain = request2.host.domain;
@@ -48500,22 +48641,22 @@ function canonicalManagedRouteFile(request2, validatedRemoteRoot = validateCanon
     throw helperError("Invalid Hosted Capsule route identity.", "Use a canonical DNS-safe Capsule subname and retry.");
   }
   const domainDirectory = canonicalManagedRouteDomainDirectory(request2, validatedRemoteRoot);
-  const routeFile = path14.resolve(domainDirectory, `${subname}.caddy`);
-  if (path14.dirname(routeFile) !== domainDirectory) {
+  const routeFile = path15.resolve(domainDirectory, `${subname}.caddy`);
+  if (path15.dirname(routeFile) !== domainDirectory) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a route identity within the configured Hosted domain directory and retry.");
   }
   return routeFile;
 }
 function canonicalManagedRouteDomainDirectory(request2, validatedRemoteRoot = validateCanonicalHostRouteRoot(request2)) {
-  const hostsDirectory = path14.resolve(validatedRemoteRoot, "caddy", "hosts");
-  const domainDirectory = path14.resolve(hostsDirectory, request2.host.domain);
-  if (path14.dirname(domainDirectory) !== hostsDirectory) {
+  const hostsDirectory = path15.resolve(validatedRemoteRoot, "caddy", "hosts");
+  const domainDirectory = path15.resolve(hostsDirectory, request2.host.domain);
+  if (path15.dirname(domainDirectory) !== hostsDirectory) {
     throw helperError("Invalid Hosted Capsule route identity.", "Use a route identity within the configured Hosted domain directory and retry.");
   }
   return domainDirectory;
 }
 async function captureManagedRouteTrust(lockIdentity, createMissing) {
-  const remoteRoot = path14.dirname(path14.dirname(lockIdentity.globalLockFile));
+  const remoteRoot = path15.dirname(path15.dirname(lockIdentity.globalLockFile));
   const canonicalRemoteRoot = await canonicalTrustedTarget(remoteRoot);
   const directoryIdentities = /* @__PURE__ */ new Map();
   const captureDirectory = async (directory2, caddyOwned = false) => {
@@ -48525,18 +48666,18 @@ async function captureManagedRouteTrust(lockIdentity, createMissing) {
     }
   };
   await captureDirectory(remoteRoot);
-  await captureDirectory(path14.join(canonicalRemoteRoot, "bin"));
+  await captureDirectory(path15.join(canonicalRemoteRoot, "bin"));
   let routeFile = null;
   if (lockIdentity.routeLockFile) {
     routeFile = lockIdentity.routeLockFile.slice(0, -5);
-    const domainDirectory = path14.dirname(routeFile);
-    await captureDirectory(path14.join(canonicalRemoteRoot, "caddy"));
-    await captureDirectory(path14.join(canonicalRemoteRoot, "caddy", "hosts"));
+    const domainDirectory = path15.dirname(routeFile);
+    await captureDirectory(path15.join(canonicalRemoteRoot, "caddy"));
+    await captureDirectory(path15.join(canonicalRemoteRoot, "caddy", "hosts"));
     await captureDirectory(await canonicalTrustedTarget(domainDirectory));
     await assertTrustedRegularFileIfExists(routeFile);
   } else {
-    await captureDirectory(path14.join(canonicalRemoteRoot, "caddy"));
-    await captureDirectory(path14.join(canonicalRemoteRoot, "caddy", "hosts"));
+    await captureDirectory(path15.join(canonicalRemoteRoot, "caddy"));
+    await captureDirectory(path15.join(canonicalRemoteRoot, "caddy", "hosts"));
     await captureDirectory(await canonicalTrustedTarget(lockIdentity.domainDirectory));
     for (const directory2 of lockIdentity.bootstrapTrust?.directories ?? []) await captureDirectory(directory2.path, directory2.caddyOwned === true);
   }
@@ -48560,34 +48701,34 @@ async function captureManagedRouteTrust(lockIdentity, createMissing) {
   return { directories: [...directoryIdentities.values()], managedRoot: canonicalRemoteRoot, finalFiles, globalLockFile: lockIdentity.globalLockFile, routeLockFile: lockIdentity.routeLockFile, routeFile };
 }
 async function canonicalTrustedTarget(target) {
-  if (!path14.isAbsolute(target) || path14.normalize(target) !== target) throw routeTrustError();
+  if (!path15.isAbsolute(target) || path15.normalize(target) !== target) throw routeTrustError();
   return target;
 }
 async function trustedDirectoryChain(target, createMissing, managedRoot, targetOwner) {
   const canonicalTarget = await canonicalTrustedTarget(target);
-  const parsed = path14.parse(canonicalTarget);
-  const components = canonicalTarget.slice(parsed.root.length).split(path14.sep).filter(Boolean);
+  const parsed = path15.parse(canonicalTarget);
+  const components = canonicalTarget.slice(parsed.root.length).split(path15.sep).filter(Boolean);
   const identities = [];
   let current2 = parsed.root;
   for (const component of [null, ...components]) {
-    if (component !== null) current2 = path14.join(current2, component);
+    if (component !== null) current2 = path15.join(current2, component);
     let details;
     try {
-      details = await lstat12(current2);
+      details = await lstat13(current2);
     } catch (error) {
       if (!createMissing || errorDetails(error).code !== "ENOENT") throw routeTrustError();
       try {
-        await mkdir7(current2, { mode: 493 });
+        await mkdir8(current2, { mode: 493 });
       } catch (mkdirError) {
         if (errorDetails(mkdirError).code !== "EEXIST") throw routeTrustError();
       }
       try {
-        details = await lstat12(current2);
+        details = await lstat13(current2);
       } catch {
         throw routeTrustError();
       }
     }
-    const managed = current2 === managedRoot || current2.startsWith(`${managedRoot}${path14.sep}`);
+    const managed = current2 === managedRoot || current2.startsWith(`${managedRoot}${path15.sep}`);
     const expectedOwner = current2 === canonicalTarget ? targetOwner : void 0;
     if (!details.isDirectory() || details.isSymbolicLink() || !(expectedOwner ? trustedExactOwnerMetadata(details, expectedOwner) : managed ? trustedHostPathMetadata(details) : trustedAnchorPathMetadata(details))) throw routeTrustError();
     identities.push({ path: current2, dev: details.dev, ino: details.ino, ...expectedOwner ? { expectedOwner } : {} });
@@ -48600,7 +48741,7 @@ function trustedExactOwnerMetadata(details, owner) {
 async function expectedCaddyOwnerForExistingPath(target) {
   let details;
   try {
-    details = await lstat12(target);
+    details = await lstat13(target);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return void 0;
     throw routeTrustError();
@@ -48630,7 +48771,7 @@ function trustedAnchorPathMetadata(details) {
 async function assertTrustedRegularFileIfExists(file, expectedOwner) {
   let details;
   try {
-    details = await lstat12(file);
+    details = await lstat13(file);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return null;
     throw routeTrustError();
@@ -48644,11 +48785,11 @@ async function assertActiveManagedRouteTrust(routeFile) {
   for (const expected of trust.directories) {
     let current2;
     try {
-      current2 = await lstat12(expected.path);
+      current2 = await lstat13(expected.path);
     } catch {
       throw routeTrustError();
     }
-    const managed = expected.path === trust.managedRoot || expected.path.startsWith(`${trust.managedRoot}${path14.sep}`);
+    const managed = expected.path === trust.managedRoot || expected.path.startsWith(`${trust.managedRoot}${path15.sep}`);
     if (!current2.isDirectory() || current2.isSymbolicLink() || !(expected.expectedOwner ? trustedExactOwnerMetadata(current2, expected.expectedOwner) : managed ? trustedHostPathMetadata(current2) : trustedAnchorPathMetadata(current2)) || current2.dev !== expected.dev || current2.ino !== expected.ino) throw routeTrustError();
   }
   await assertTrustedRegularFileIfExists(trust.globalLockFile);
@@ -48760,9 +48901,11 @@ async function dispatchMain(request2) {
     const host = request2.host;
     if (host.domain.includes(":")) throw helperError("Observability requires a DNS Hosted domain.", "Use a Hosted domain without a port.");
     let data2;
-    if (operation === "enable") {
+    if (operation === "mail-configure") data2 = await configureObservabilityMail(host, request2.mail?.stagedFile);
+    else if (operation === "mail-apply") data2 = await applyObservabilityMail(host);
+    else if (operation === "enable") {
       await assertHostnamesAvailable(host.remoteRoot, [`errors.${host.domain}`, await readObservabilityAnalyticsDomain(host)], `observability:${host.domain}`);
-      const master = path14.join(host.remoteRoot, "caddy", "Caddyfile");
+      const master = path15.join(host.remoteRoot, "caddy", "Caddyfile");
       if (!await pathExists(master)) throw helperError("Bootstrap the Hosted domain first.", "Run host bootstrap before enabling observability.");
       data2 = await enableObservability(host, async (ports) => {
         await applyObservabilityRoutes(request2, ports);
@@ -49090,7 +49233,7 @@ async function setCapsuleCanonicalDomain(request2) {
   });
 }
 async function applyObservabilityRoutes(request2, ports) {
-  const file = path14.join(canonicalManagedRouteDomainDirectory(request2), OBSERVABILITY_ROUTE_FILE);
+  const file = path15.join(canonicalManagedRouteDomainDirectory(request2), OBSERVABILITY_ROUTE_FILE);
   await assertActiveManagedRouteTrust(null);
   await assertTrustedRegularFileIfExists(file);
   const previous = await readFile11(file).catch((e) => {
@@ -49100,18 +49243,18 @@ async function applyObservabilityRoutes(request2, ports) {
   const contents = await renderObservabilityRoutes(request2.host, ports);
   try {
     await publishHostHelperBytes(Buffer.from(contents), file, 420);
-    validateCaddyBootstrap(path14.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
-    reloadCaddyBootstrap(path14.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
+    validateCaddyBootstrap(path15.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
+    reloadCaddyBootstrap(path15.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
   } catch (error) {
     if (previous) await publishHostHelperBytes(previous, file, 420);
-    else await rm10(file, { force: true });
-    reloadCaddyBootstrap(path14.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
+    else await rm11(file, { force: true });
+    reloadCaddyBootstrap(path15.join(request2.host.remoteRoot, "caddy", "Caddyfile"));
     throw error;
   }
 }
 async function registerCapsule(request2) {
   validateRegisterRequest(request2);
-  const claimPath = path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "registration-claims", `${request2.capsule.subname}.json`);
+  const claimPath = path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "registration-claims", `${request2.capsule.subname}.json`);
   const pendingClaim = await readFile11(claimPath, "utf8").then((contents) => JSON.parse(contents)).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
@@ -49139,7 +49282,7 @@ async function registerCapsule(request2) {
   let claimWritten = Boolean(pendingClaim);
   const reserveClaim = async (previous = null) => {
     if (claimWritten) return;
-    await mkdir7(path14.dirname(claimPath), { recursive: true });
+    await mkdir8(path15.dirname(claimPath), { recursive: true });
     await publishHostHelperBytes(Buffer.from(JSON.stringify({
       domain: registration.domain,
       subname: registration.subname,
@@ -49150,7 +49293,7 @@ async function registerCapsule(request2) {
     claimWritten = true;
   };
   try {
-    await mkdir7(path14.dirname(registryLockPath(request2)), { recursive: true });
+    await mkdir8(path15.dirname(registryLockPath(request2)), { recursive: true });
     await withRegistryLock(request2, async () => {
       if (await pathExists(registration.registryRecord)) {
         const existing = await readRegistryRecordForCapsule(request2, "register");
@@ -49162,8 +49305,8 @@ async function registerCapsule(request2) {
           await reserveClaim(existing);
           priorRuntime = captureCapsuleRuntimeSettlement(request2, existing);
           quiesceCapsuleRuntime(priorRuntime);
-          await mkdir7(path14.dirname(registration.registryRecord), { recursive: true });
-          await mkdir7(registration.directories.releases, { recursive: true });
+          await mkdir8(path15.dirname(registration.registryRecord), { recursive: true });
+          await mkdir8(registration.directories.releases, { recursive: true });
           routeAttempted = true;
           await writeUnavailableRoute(registration.lifecycle);
           sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
@@ -49180,9 +49323,9 @@ async function registerCapsule(request2) {
       await assertHostnamesAvailable(request2.host.remoteRoot, [registration.route.hostname, ...registration.aliasDomains], registration.remoteCapsuleId);
       priorRoute = await captureReleaseInstallRoute(request2, null);
       await reserveClaim();
-      await mkdir7(path14.dirname(registration.registryRecord), { recursive: true });
-      await mkdir7(registration.directories.releases, { recursive: true });
-      await mkdir7(registration.directories.logs, { recursive: true });
+      await mkdir8(path15.dirname(registration.registryRecord), { recursive: true });
+      await mkdir8(registration.directories.releases, { recursive: true });
+      await mkdir8(registration.directories.logs, { recursive: true });
       routeAttempted = true;
       await writeUnavailableRoute(registration.lifecycle);
       sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
@@ -49210,7 +49353,7 @@ async function registerCapsule(request2) {
   }
   if (claimWritten && recoveryErrors.length === 0 && (!admissionError || !pendingClaim)) {
     try {
-      await rm10(claimPath);
+      await rm11(claimPath);
     } catch (error) {
       recoveryErrors.push(`Reservation cleanup: ${errorDetails(error).message}`);
     }
@@ -49248,7 +49391,7 @@ async function registerCapsule(request2) {
 }
 async function rotateCapsuleSealedEnvKey(request2) {
   validateSealedEnvRotationRequest(request2);
-  await mkdir7(path14.dirname(registryLockPath(request2)), { recursive: true });
+  await mkdir8(path15.dirname(registryLockPath(request2)), { recursive: true });
   let data2;
   let priorRuntime = null;
   let rotationError = null;
@@ -49264,7 +49407,7 @@ async function rotateCapsuleSealedEnvKey(request2) {
       }
       priorRuntime = captureCapsuleRuntimeSettlement(request2, record);
       quiesceCapsuleRuntime(priorRuntime);
-      const dataDirectory = path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "capsules", request2.capsule.subname, "data");
+      const dataDirectory = path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "capsules", request2.capsule.subname, "data");
       const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
       const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
       const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -49306,8 +49449,8 @@ async function rotateCapsuleSealedEnvKey(request2) {
   writeEnvelope({ ok: true, data: data2, error: null });
 }
 async function assertRegistrationRecoveryComplete(request2) {
-  const claimPath = path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "registration-claims", `${request2.capsule.subname}.json`);
-  const pending = await lstat12(claimPath).catch((error) => {
+  const claimPath = path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "registration-claims", `${request2.capsule.subname}.json`);
+  const pending = await lstat13(claimPath).catch((error) => {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
   });
@@ -49322,7 +49465,7 @@ async function unregisterCapsule(request2) {
   validateUnregisterRequest(request2);
   await assertRegistrationRecoveryComplete(request2);
   const unregister = normaliseUnregister(request2);
-  await mkdir7(path14.dirname(registryLockPath(request2)), { recursive: true });
+  await mkdir8(path15.dirname(registryLockPath(request2)), { recursive: true });
   let data2;
   await withRegistryLock(request2, async () => {
     const record = await readRegistryRecordForCapsule(request2, "unregister");
@@ -49360,7 +49503,7 @@ async function deleteCapsule(request2) {
   validateDeleteRequest(request2);
   await assertRegistrationRecoveryComplete(request2);
   const deletion = normaliseDeletion(request2);
-  await mkdir7(path14.dirname(registryLockPath(request2)), { recursive: true });
+  await mkdir8(path15.dirname(registryLockPath(request2)), { recursive: true });
   let data2;
   await withRegistryLock(request2, async () => {
     const record = await readOptionalRegistryRecordForCapsule(request2);
@@ -49407,8 +49550,8 @@ async function installRelease(request2) {
     await installClaimedRelease(request2, previousRecord, { ...paths2, release: paths2.release }, claimedArchive);
   } finally {
     activePreservedAttempts.delete(attemptJournalPath(hostedPreservedFilesRoot(paths2)));
-    await rm10(claimedArchive.path, { force: true });
-    await rm10(request2.release.remoteArchive, { force: true });
+    await rm11(claimedArchive.path, { force: true });
+    await rm11(request2.release.remoteArchive, { force: true });
   }
 }
 async function installClaimedRelease(request2, previousRecord, paths2, claimedArchive) {
@@ -49426,20 +49569,20 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
     throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
   }
   validateSealedServerEnvPrivateKeyPath(release, paths2);
-  await mkdir7(paths2.releases, { recursive: true });
+  await mkdir8(paths2.releases, { recursive: true });
   const dataRoot = await openCanonicalRuntimeDataDirectory(paths2.data, true);
   await dataRoot.close();
-  await mkdir7(paths2.logs, { recursive: true });
+  await mkdir8(paths2.logs, { recursive: true });
   const tempReleaseDirectory = `${paths2.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm10(tempReleaseDirectory, { recursive: true, force: true });
-  await rm10(tempCurrentLink, { force: true });
-  await mkdir7(tempReleaseDirectory, { recursive: true });
+  await rm11(tempReleaseDirectory, { recursive: true, force: true });
+  await rm11(tempCurrentLink, { force: true });
+  await mkdir8(tempReleaseDirectory, { recursive: true });
   const extract = spawnSync8("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8"
   });
   if (extract.error || extract.status !== 0) {
-    await rm10(tempReleaseDirectory, { recursive: true, force: true });
+    await rm11(tempReleaseDirectory, { recursive: true, force: true });
     throw helperError(
       "Failed to extract Hosted Capsule release archive.",
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server."
@@ -49460,7 +49603,7 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
       parseAdmissionPolicy(await readDeployFile(tempReleaseDirectory, admission.path, ADMISSION_LIMITS.bytes));
     }
     for (const file of resolveDeployFiles(release.deployFiles, true)) {
-      await prepareHostedRuntimeFileAccess(path14.join(tempReleaseDirectory, file.path), 256, {
+      await prepareHostedRuntimeFileAccess(path15.join(tempReleaseDirectory, file.path), 256, {
         message: "Unsafe additional release file.",
         hint: "Upload regular deployment files."
       });
@@ -49469,13 +49612,13 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
       throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
     }
   } catch (error) {
-    await rm10(tempReleaseDirectory, { recursive: true, force: true });
+    await rm11(tempReleaseDirectory, { recursive: true, force: true });
     throw error;
   }
   try {
-    await rename10(tempReleaseDirectory, paths2.release);
+    await rename11(tempReleaseDirectory, paths2.release);
   } catch (error) {
-    await rm10(tempReleaseDirectory, { recursive: true, force: true });
+    await rm11(tempReleaseDirectory, { recursive: true, force: true });
     const details = errorDetails(error);
     if (details.code === "EEXIST" || details.code === "ENOTEMPTY") {
       throw helperError(
@@ -49489,7 +49632,7 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
     try {
       await installSealedServerEnvPrivateKey(release, paths2);
     } catch (error) {
-      await rm10(paths2.release, { recursive: true, force: true });
+      await rm11(paths2.release, { recursive: true, force: true });
       throw error;
     }
   }
@@ -49500,13 +49643,13 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
     if (seedJournal) activePreservedAttempts.add(seedJournal);
   } catch (error) {
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm10(paths2.release, { recursive: true, force: true });
+    await rm11(paths2.release, { recursive: true, force: true });
     throw error;
   }
   try {
     await preparePreservedFiles(resolveDeployFiles(release.deployFiles, true), paths2.release, hostedPreservedFilesRoot(paths2), prepareRuntimeDataOwnershipHandle, createdSeeds, seedJournal);
     await symlink(paths2.release, tempCurrentLink);
-    await rename10(tempCurrentLink, paths2.currentLink);
+    await rename11(tempCurrentLink, paths2.currentLink);
     await recordReleaseUploaded(request2, release, installedInventory);
   } catch (error) {
     let pointerRestored = false;
@@ -49519,7 +49662,7 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
         if (pointerRestored) await removeInstalledReleasePrivateKey(release, paths2);
       },
       async () => {
-        if (pointerRestored) await rm10(paths2.release, { recursive: true, force: true });
+        if (pointerRestored) await rm11(paths2.release, { recursive: true, force: true });
       },
       async () => {
         if (pointerRestored) {
@@ -49638,28 +49781,28 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
   writeEnvelope({ ok: true, data: data2, error: null });
 }
 async function claimReleaseArchive(request2) {
-  const expectedIncoming = path14.join(request2.host.remoteRoot, "incoming", `${request2.release.id}.tar.gz`);
-  if (path14.resolve(request2.release.remoteArchive) !== path14.resolve(expectedIncoming)) {
+  const expectedIncoming = path15.join(request2.host.remoteRoot, "incoming", `${request2.release.id}.tar.gz`);
+  if (path15.resolve(request2.release.remoteArchive) !== path15.resolve(expectedIncoming)) {
     throw helperError("Invalid release install request.", "Upload the release to the canonical Host incoming path and retry `sporades host push`.");
   }
-  const claimsDirectory = path14.join(request2.host.remoteRoot, ".release-claims");
-  await mkdir7(claimsDirectory, { recursive: true, mode: 448 });
-  const claimsStats = await lstat12(claimsDirectory);
+  const claimsDirectory = path15.join(request2.host.remoteRoot, ".release-claims");
+  await mkdir8(claimsDirectory, { recursive: true, mode: 448 });
+  const claimsStats = await lstat13(claimsDirectory);
   if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || typeof process.getuid === "function" && claimsStats.uid !== process.getuid()) {
     throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
   }
   await chmod4(claimsDirectory, 448);
-  const claimedPath = path14.join(claimsDirectory, `${request2.release.id}-${process.pid}-${randomBytes9(16).toString("hex")}.tar.gz`);
-  await rename10(request2.release.remoteArchive, claimedPath);
+  const claimedPath = path15.join(claimsDirectory, `${request2.release.id}-${process.pid}-${randomBytes10(16).toString("hex")}.tar.gz`);
+  await rename11(request2.release.remoteArchive, claimedPath);
   try {
-    const stats = await lstat12(claimedPath);
+    const stats = await lstat13(claimedPath);
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
       throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
     }
     await chmod4(claimedPath, 384);
     return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
   } catch (error) {
-    await rm10(claimedPath, { force: true });
+    await rm11(claimedPath, { force: true });
     throw error;
   }
 }
@@ -49675,7 +49818,7 @@ async function releaseArchiveSha256(archivePath) {
 async function maybeSwapUnclaimedArchiveForTest(release) {
   const replacement = process.env.SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH;
   if (!replacement) return;
-  await rename10(replacement, release.remoteArchive);
+  await rename11(replacement, release.remoteArchive);
 }
 async function validateExtractedReleaseTree(root, expectedFiles) {
   const expected = new Map(expectedFiles.map((file) => [file.path, file]));
@@ -49687,13 +49830,13 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
     for (const entry of await readdir6(directory2, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
       const normalized = relative.normalize("NFC");
-      const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path14.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+      const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path15.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
       if (!safe || canonical.has(normalized)) {
         throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload a release with unique bounded relative paths.");
       }
       canonical.add(normalized);
-      const entryPath = path14.join(directory2, entry.name);
-      const stats = await lstat12(entryPath);
+      const entryPath = path15.join(directory2, entry.name);
+      const stats = await lstat13(entryPath);
       if (stats.isSymbolicLink()) {
         throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular release files without symbolic links.");
       }
@@ -49915,9 +50058,9 @@ async function maybeFallbackToPreviousRelease(request2, failedReleaseId, previou
 }
 async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
-  await rm10(tempCurrentLink, { force: true });
+  await rm11(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
-  await rename10(tempCurrentLink, currentLink);
+  await rename11(tempCurrentLink, currentLink);
 }
 async function restoreFailedReleaseAfterFallbackRestartFailure(request2, failedReleaseId, fallbackReleaseId, reason, restartError) {
   const failedPaths = canonicalRollbackPaths(request2, failedReleaseId);
@@ -50034,7 +50177,7 @@ async function resumeHostAtBoot() {
   validateListRequest(request2);
   const root = validateCanonicalHostRouteRoot(request2);
   canonicalManagedRouteDomainDirectory(request2, root);
-  const directory2 = path14.join(root, "hosts", host.domain, "registry", "capsules");
+  const directory2 = path15.join(root, "hosts", host.domain, "registry", "capsules");
   await trustedDirectoryChain(directory2, false, root);
   const results = [];
   for (const entry of (await readdir6(directory2, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
@@ -50064,7 +50207,7 @@ async function reconcileHostRoutes() {
   validateListRequest(request2);
   const root = validateCanonicalHostRouteRoot(request2);
   canonicalManagedRouteDomainDirectory(request2, root);
-  const directory2 = path14.join(root, "hosts", host.domain, "registry", "capsules");
+  const directory2 = path15.join(root, "hosts", host.domain, "registry", "capsules");
   await trustedDirectoryChain(directory2, false, root);
   const entries = (await readdir6(directory2, { withFileTypes: true })).filter((entry) => entry.isFile() && /^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name));
   let next = 0, failed2 = 0;
@@ -50109,13 +50252,13 @@ async function reconcileCapsuleRoute(request2) {
   const skip = (reason) => writeEnvelope({ ok: true, data: { reconciled: false, resumed: false, reason }, error: null });
   if (record.status !== "running" || !record.currentRelease?.id || record.canonicalRestartPending) return skip("not-eligible");
   const paths2 = canonicalReleasePaths(request2);
-  if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2))) || await pathExists(path14.join(paths2.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
+  if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2))) || await pathExists(path15.join(paths2.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
   const link2 = await readlink(paths2.currentLink).catch(() => null);
-  if (!link2 || path14.resolve(paths2.capsule, link2) !== path14.join(paths2.releases, record.currentRelease.id)) return skip("release-pointer-mismatch");
+  if (!link2 || path15.resolve(paths2.capsule, link2) !== path15.join(paths2.releases, record.currentRelease.id)) return skip("release-pointer-mismatch");
   const container = inspectBackupContainer(request2);
   if (!container?.State.Running || container.State.Restarting === true) return skip("not-running");
   if (container.Config?.Labels?.["com.sporades.release-id"] !== record.currentRelease.id) return skip("release-mismatch");
-  const journal = path14.join(paths2.capsule, ".backup-resume.json");
+  const journal = path15.join(paths2.capsule, ".backup-resume.json");
   const pending = await readBackupResumeJournal(journal);
   if (pending && (pending.id !== container.Id || pending.releaseId !== void 0 && pending.releaseId !== record.currentRelease.id)) return skip("backup-container-mismatch");
   const lifecycle = normaliseLifecycle(request2, record, { ignoreProvidedLifecycle: true });
@@ -50125,7 +50268,7 @@ async function reconcileCapsuleRoute(request2) {
   });
   if (!pending && route !== null && !/reverse_proxy\s+127\.0\.0\.1:[1-9][0-9]*\s+\{/.test(route)) return skip("route-unavailable");
   await settleRunningCapsuleRoute(request2, record, lifecycle, { containerId: container.Id, timeoutMs: 1e3, refreshOnly: !pending && route !== null });
-  if (pending) await rm10(journal);
+  if (pending) await rm11(journal);
   writeEnvelope({ ok: true, data: { reconciled: true, resumed: false }, error: null });
 }
 async function checkpointCapsuleAtShutdown(request2) {
@@ -50194,11 +50337,11 @@ async function resumeCapsuleAtBoot(request2) {
     await routeRuntimeExhaustionToUnavailable(request2, record, { container: { name: name2 } });
     return skip("crash-retries-exhausted");
   }
-  const resumeJournal = path14.join(canonicalReleasePaths(request2).capsule, ".backup-resume.json");
+  const resumeJournal = path15.join(canonicalReleasePaths(request2).capsule, ".backup-resume.json");
   const pending = await readBackupResumeJournal(resumeJournal);
   if (pending) {
     const paths2 = canonicalReleasePaths(request2);
-    if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2))) || await pathExists(path14.join(paths2.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
+    if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2))) || await pathExists(path15.join(paths2.capsule, ".backup-restore.json"))) return skip("pending-deployment-or-restore");
     await resumeBackupRuntime(request2, record, pending, resumeJournal);
     writeEnvelope({ ok: true, data: { resumed: true }, error: null });
     return;
@@ -50220,7 +50363,7 @@ async function startCapsule(request2, options = {}) {
   const recordedRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
   await preparePreservedReleaseFiles(request2, recordedRelease);
   if (options.containerQuiesced !== true) stopAndRemoveContainer(lifecycle.container.name);
-  await rm10(path14.join(paths2.capsule, ".backup-resume.json"), { force: true });
+  await rm11(path15.join(paths2.capsule, ".backup-resume.json"), { force: true });
   await recoverHostBackupRestore(paths2.data);
   if (options.dataPrepared !== true) await prepareWritableDataPath(paths2.data);
   await recordReleaseStartAttempt(request2, releaseId);
@@ -50332,7 +50475,7 @@ function releaseIncludesSealedServerEnvPrivateKey(release) {
   return Boolean(release.sealedServerEnvIncluded && privateKey && privateKeyPath);
 }
 function releasePrivateKeyPath(paths2, releaseId) {
-  return path14.join(paths2.data, "sealed-server-env", "releases", `${releaseId}.private.pem`);
+  return path15.join(paths2.data, "sealed-server-env", "releases", `${releaseId}.private.pem`);
 }
 async function installSealedServerEnvPrivateKey(release, paths2) {
   if (!releaseIncludesSealedServerEnvPrivateKey(release)) return;
@@ -50340,9 +50483,9 @@ async function installSealedServerEnvPrivateKey(release, paths2) {
   const privateKeyPath = releasePrivateKeyPath(paths2, release.id);
   const dataHandle = await openCanonicalRuntimeDataDirectory(paths2.data, true);
   try {
-    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path14.join(paths2.data, "sealed-server-env"));
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path15.join(paths2.data, "sealed-server-env"));
     try {
-      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path14.dirname(privateKeyPath));
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path15.dirname(privateKeyPath));
       try {
         await publishRuntimeFile(releasesHandle, privateKeyPath, privateKey, 384, "release-private-key-publish");
       } finally {
@@ -50363,12 +50506,12 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
   const privateKeyPath = releasePrivateKeyPath(paths2, releaseId);
   const dataHandle = await openCanonicalRuntimeDataDirectory(paths2.data, false);
   try {
-    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path14.join(paths2.data, "sealed-server-env"));
+    const rootHandle = await openOrCreateRuntimeDirectory(dataHandle, path15.join(paths2.data, "sealed-server-env"));
     try {
-      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path14.dirname(privateKeyPath));
+      const releasesHandle = await openOrCreateRuntimeDirectory(rootHandle, path15.dirname(privateKeyPath));
       try {
-        const descriptorPath = descriptorChildPath(releasesHandle.fd, path14.basename(privateKeyPath), privateKeyPath);
-        const retained = await open7(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
+        const descriptorPath = descriptorChildPath(releasesHandle.fd, path15.basename(privateKeyPath), privateKeyPath);
+        const retained = await open8(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch((error) => {
           if (errorDetails(error).code === "ENOENT") return null;
           throw runtimeDataTrustError(privateKeyPath);
         });
@@ -50377,7 +50520,7 @@ async function removeReleasePrivateKeyIfPresent(paths2, releaseId) {
           const identity = await retained.stat();
           if (!identity.isFile()) throw runtimeDataTrustError(privateKeyPath);
           await assertRuntimeDataPathIdentity(privateKeyPath, { dev: identity.dev, ino: identity.ino }, false);
-          await rm10(descriptorPath, { force: true });
+          await rm11(descriptorPath, { force: true });
         } finally {
           await retained.close();
         }
@@ -50401,14 +50544,14 @@ async function captureReleaseInstallRoute(request2, previousRecord) {
   return { lifecycle, routeFile, contents };
 }
 async function restoreCurrentReleasePointerTarget(currentLink, previousTarget) {
-  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes9(8).toString("hex")}`;
-  await rm10(temporary, { force: true });
+  const temporary = `${currentLink}.restore-${process.pid}-${randomBytes10(8).toString("hex")}`;
+  await rm11(temporary, { force: true });
   if (!previousTarget) {
-    await rm10(currentLink, { force: true });
+    await rm11(currentLink, { force: true });
     return;
   }
   await symlink(previousTarget, temporary);
-  await rename10(temporary, currentLink);
+  await rename11(temporary, currentLink);
 }
 async function restoreReleaseInstallRoute(snapshot, reloadWhenAbsent = false) {
   if (snapshot.contents !== null) {
@@ -50447,7 +50590,7 @@ async function restoreFailedReleaseInstall(request2, paths2, previousRecord, pre
     if (!runningRouteRestored && !missingRunningRuntimeSettled) await restoreReleaseInstallRoute(previousRoute);
     if (!missingRunningRuntimeSettled) await writeRegistryContentsAtomic(registryPath(request2), previousRegistryContents);
     await removeInstalledReleasePrivateKey(release, paths2);
-    await rm10(paths2.release, { recursive: true, force: true });
+    await rm11(paths2.release, { recursive: true, force: true });
   } catch {
     throw helperError(
       "Hosted Capsule runtime restoration failed.",
@@ -50471,11 +50614,11 @@ function validateSealedServerEnvPrivateKeyPath(release, paths2) {
     );
   }
   const compatiblePrivateKeyPaths = /* @__PURE__ */ new Set([
-    path14.resolve(releasePrivateKeyPath(paths2, release.id)),
-    path14.resolve(path14.join(paths2.data, "sealed-server-env", "server-env.private.pem")),
-    ...fingerprint ? [path14.resolve(path14.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`))] : []
+    path15.resolve(releasePrivateKeyPath(paths2, release.id)),
+    path15.resolve(path15.join(paths2.data, "sealed-server-env", "server-env.private.pem")),
+    ...fingerprint ? [path15.resolve(path15.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`))] : []
   ]);
-  if (typeof privateKeyPath !== "string" || !compatiblePrivateKeyPaths.has(path14.resolve(privateKeyPath))) {
+  if (typeof privateKeyPath !== "string" || !compatiblePrivateKeyPaths.has(path15.resolve(privateKeyPath))) {
     throw helperError(
       "Invalid Sealed Server env private key path.",
       "Update the Sporades CLI and retry `sporades host push`."
@@ -50547,7 +50690,7 @@ function inspectBackupContainer(request2) {
 }
 async function readBackupResumeJournal(file) {
   try {
-    await lstat12(file);
+    await lstat13(file);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return null;
     throw error;
@@ -50568,7 +50711,7 @@ async function resumeBackupRuntime(request2, record, pending, journal, keepJourn
   }
   if (!container.State.Running && !runDocker(["start", pending.id]).ok) throw helperError("Backup Capsule could not resume.", "Inspect Docker and retry backup create; its protected resume journal is retained.");
   await settleRunningCapsuleRoute(request2, record, normaliseLifecycle(request2, record), { containerId: pending.id });
-  if (!keepJournal) await rm10(journal);
+  if (!keepJournal) await rm11(journal);
 }
 async function manageCapsuleBackup(request2) {
   const source = request2.backup?.sourceSubname ?? request2.capsule.subname;
@@ -50585,12 +50728,12 @@ async function manageCapsuleBackup(request2) {
     if (!record.currentRelease?.id) throw helperError("Backup requires a deployed release.", "Push the intended release to this Capsule first.");
     if (await pathExists(attemptJournalPath(hostedPreservedFilesRoot(paths2)))) throw helperError("Interrupted deployment requires recovery before backup.", "Run host reconcile for this Capsule first.");
     const currentTarget = await readlink(paths2.currentLink);
-    if (path14.resolve(paths2.capsule, currentTarget) !== path14.join(paths2.releases, record.currentRelease.id)) throw helperError("Backup current release pointer requires recovery.", "Run host reconcile and select the intended release before retrying backup.");
-    const config = JSON.parse(await readFile11(path14.join(paths2.releases, record.currentRelease.id, "sporades.json"), "utf8"));
+    if (path15.resolve(paths2.capsule, currentTarget) !== path15.join(paths2.releases, record.currentRelease.id)) throw helperError("Backup current release pointer requires recovery.", "Run host reconcile and select the intended release before retrying backup.");
+    const config = JSON.parse(await readFile11(path15.join(paths2.releases, record.currentRelease.id, "sporades.json"), "utf8"));
     if (config.services?.database || config.services?.storage || config.files?.storagePath) throw helperError("Backup supports standard local SQLite and files storage only.", "Use provider-native backup for external services or custom storage paths.");
     const target = { host: request2.host, subname: request2.capsule.subname, releaseId: record.currentRelease.id, data: paths2.data };
     let container = inspectBackupContainer(request2);
-    const resumeJournal = path14.join(paths2.capsule, ".backup-resume.json");
+    const resumeJournal = path15.join(paths2.capsule, ".backup-resume.json");
     if (request2.action === "capsule.backup.restore") {
       if (request2.backup?.confirm !== request2.capsule.subname || !request2.backup?.id) throw helperError("Restore requires destination confirmation and a full snapshot ID.", "Pass --confirm <destination-subname> --id <snapshot-id>.");
       if (container?.State.Running || container?.State.Restarting || record.status === "running") throw helperError("Restore destination must be stopped.", "Run host stop for the destination Capsule before restoring.");
@@ -50632,7 +50775,7 @@ async function manageCapsuleBackup(request2) {
       if (evidence && !resumeError) {
         try {
           await settleRunningCapsuleRoute(request2, record, normaliseLifecycle(request2, record), { containerId: evidence.id, refreshOnly: true });
-          await rm10(resumeJournal);
+          await rm11(resumeJournal);
         } catch (error) {
           resumeError = error;
         }
@@ -50875,7 +51018,7 @@ async function stopCapsule(request2, options = {}) {
   await verifyRegisteredCapsule(request2, "lifecycle");
   const lifecycle = normaliseLifecycle(request2, await readRegistryRecordForCapsule(request2, "lifecycle"));
   stopAndRemoveContainer(lifecycle.container.name);
-  await rm10(path14.join(canonicalReleasePaths(request2).capsule, ".backup-resume.json"), { force: true });
+  await rm11(path15.join(canonicalReleasePaths(request2).capsule, ".backup-resume.json"), { force: true });
   await writeUnavailableRoute(lifecycle);
   await updateRegistryStatus(request2, "stopped");
   const data2 = {
@@ -51103,9 +51246,9 @@ async function rollbackRelease(request2) {
   await assertRollbackReleaseFiles(request2, paths2.release, selectedRelease);
   const previousCurrentRelease = record.currentRelease ?? null;
   const tempCurrentLink = `${paths2.currentLink}.tmp-${process.pid}`;
-  await rm10(tempCurrentLink, { force: true });
+  await rm11(tempCurrentLink, { force: true });
   await symlink(paths2.release, tempCurrentLink);
-  await rename10(tempCurrentLink, paths2.currentLink);
+  await rename11(tempCurrentLink, paths2.currentLink);
   await recordReleaseRollbackSelected(request2, releaseId);
   let lifecycle = null;
   let restartError = null;
@@ -51257,7 +51400,7 @@ function createUnregisterResult(request2, unregister, record, idempotent, route 
     registryRecord: unregister.registryRecord,
     directories: unregister.directories,
     preserved: {
-      releases: record.currentRelease?.id ? path14.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
+      releases: record.currentRelease?.id ? path15.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
       data: unregister.directories.data
     },
     deleteAfter: record.deleteAfter ?? null,
@@ -51306,28 +51449,28 @@ function createDeleteResult(request2, deletion, removals) {
   };
 }
 function canonicalReleasePaths(request2) {
-  const capsule = path14.join(
+  const capsule = path15.join(
     request2.host.remoteRoot,
     "hosts",
     request2.host.domain,
     "capsules",
     request2.capsule.subname
   );
-  const releases = path14.join(capsule, "releases");
+  const releases = path15.join(capsule, "releases");
   return {
     capsule,
     releases,
-    release: request2.release?.id ? path14.join(releases, request2.release.id) : null,
-    data: path14.join(capsule, "data"),
-    logs: path14.join(capsule, "logs"),
-    currentLink: path14.join(capsule, "current")
+    release: request2.release?.id ? path15.join(releases, request2.release.id) : null,
+    data: path15.join(capsule, "data"),
+    logs: path15.join(capsule, "logs"),
+    currentLink: path15.join(capsule, "current")
   };
 }
 function canonicalRollbackPaths(request2, releaseId) {
   const paths2 = canonicalReleasePaths({ ...request2, release: { id: releaseId, remoteArchive: "", files: [] } });
   return {
     ...paths2,
-    release: path14.join(paths2.releases, releaseId)
+    release: path15.join(paths2.releases, releaseId)
   };
 }
 function normaliseLifecycle(request2, registryRecord = null, options = {}) {
@@ -51354,12 +51497,12 @@ function normaliseLifecycle(request2, registryRecord = null, options = {}) {
   };
   const defaultMounts = {
     files: [
-      { host: path14.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path14.join(currentLink, "public"), container: "/app/public", mode: "ro" },
-      { host: path14.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-      { host: path14.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      { host: path15.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+      { host: path15.join(currentLink, "public"), container: "/app/public", mode: "ro" },
+      { host: path15.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+      { host: path15.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
-        host: path14.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        host: path15.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
         container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
         mode: "ro",
         optional: true
@@ -51377,7 +51520,7 @@ function normaliseLifecycle(request2, registryRecord = null, options = {}) {
   };
   const deployRelease = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === (options.releaseId ?? registryRecord?.currentRelease?.id));
   const admissionPolicyPath = resolveDeployFiles(deployRelease?.source?.deployFiles, true).find((file) => file.update === "admission")?.path ?? null;
-  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles, true), currentLink, path14.join(paths2.capsule, "preserved-files"));
+  const additionalMounts = deployFileMounts(resolveDeployFiles(deployRelease?.source?.deployFiles, true), currentLink, path15.join(paths2.capsule, "preserved-files"));
   const fileMounts = authoritativeSshAuthorizedKeysMount(
     authoritativeSealedServerEnvPrivateKeyMount(
       provided.mounts?.files ?? defaultMounts.files,
@@ -51479,12 +51622,12 @@ function canonicalLifecycleRouteTls(request2, registryRecord, provided) {
   if (!(/* @__PURE__ */ new Set(["automatic", "cloudflare-origin"])).has(mode) || suppliedModes.some((value) => value !== mode)) {
     throw invalidLifecycleAuthorityError();
   }
-  const directory2 = path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "tls");
+  const directory2 = path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "tls");
   return {
     mode,
     directory: directory2,
-    certificate: mode === "cloudflare-origin" ? path14.join(directory2, "origin.crt") : null,
-    key: mode === "cloudflare-origin" ? path14.join(directory2, "origin.key") : null
+    certificate: mode === "cloudflare-origin" ? path15.join(directory2, "origin.crt") : null,
+    key: mode === "cloudflare-origin" ? path15.join(directory2, "origin.key") : null
   };
 }
 function invalidLifecycleAuthorityError() {
@@ -51527,14 +51670,14 @@ function assertCanonicalLifecycleAuthority(provided, canonical) {
       const allowedByContainer = new Map(canonical.defaultMounts.files.map((mount) => [mount.container, mount]));
       const privateKeyContainerPath = "/app/.sporades/sealed-server-env/server-env.private.pem";
       const legacySealedServerEnvPrivateKeyMount = {
-        host: path14.join(canonical.paths.data, "sealed-server-env", "server-env.private.pem"),
+        host: path15.join(canonical.paths.data, "sealed-server-env", "server-env.private.pem"),
         container: privateKeyContainerPath,
         mode: "ro",
         optional: true
       };
       const legacyAllowed = [
-        { host: path14.join(canonical.currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-        { host: path14.join(canonical.currentLink, "index.html"), container: "/app/index.html", mode: "ro" }
+        { host: path15.join(canonical.currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
+        { host: path15.join(canonical.currentLink, "index.html"), container: "/app/index.html", mode: "ro" }
       ];
       for (const mount of legacyAllowed) allowedByContainer.set(mount.container, mount);
       const seen = /* @__PURE__ */ new Set();
@@ -51655,7 +51798,7 @@ async function ensureRuntimeProbeCredential(request2) {
   await mutateRegistryRecord(request2, (record) => {
     probe2 = readRuntimeProbeCredential(record) ?? {
       header: RUNTIME_PROBE_HEADER,
-      token: randomBytes9(32).toString("hex"),
+      token: randomBytes10(32).toString("hex"),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     return { ...record, runtimeProbe: probe2 };
@@ -51825,7 +51968,7 @@ function inspectContainerLifecycle(containerName) {
   };
 }
 async function readCapsuleRegistryRecords(request2) {
-  const registryDirectory = path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "capsules");
+  const registryDirectory = path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", "capsules");
   let entries;
   try {
     entries = await readdir6(registryDirectory, { withFileTypes: true });
@@ -51838,7 +51981,7 @@ async function readCapsuleRegistryRecords(request2) {
   const records = [];
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name).sort();
   for (const file of files) {
-    const recordPath = path14.join(registryDirectory, file);
+    const recordPath = path15.join(registryDirectory, file);
     let record;
     try {
       record = JSON.parse(await readFile11(recordPath, "utf8"));
@@ -51980,8 +52123,8 @@ function normaliseRegistration(request2, existing = null) {
   const scheme = request2.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path14.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path14.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path15.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path15.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const routeTls = normaliseRegistrationTls(request2);
   const accessLog = canonicalCapsuleHttpLogPath(request2, remoteRoot);
   const route = {
@@ -52001,12 +52144,12 @@ function normaliseRegistration(request2, existing = null) {
     remoteCapsuleId,
     aliasDomains,
     canonicalDomain,
-    registryRecord: path14.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path15.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path14.join(capsuleDirectory, "releases"),
-      data: path14.join(capsuleDirectory, "data"),
-      logs: path14.join(capsuleDirectory, "logs")
+      releases: path15.join(capsuleDirectory, "releases"),
+      data: path15.join(capsuleDirectory, "data"),
+      logs: path15.join(capsuleDirectory, "logs")
     },
     baseImage: normaliseProvidedBaseImage(request2.registration?.baseImage),
     route,
@@ -52024,19 +52167,19 @@ function normaliseUnregister(request2) {
   const scheme = request2.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path14.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path14.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path15.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path15.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const containerName = createHostedContainerName(domain, subname);
   return {
     subname,
     domain,
     hostedUrl,
     remoteCapsuleId,
-    registryRecord: path14.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path15.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path14.join(capsuleDirectory, "releases"),
-      data: path14.join(capsuleDirectory, "data")
+      releases: path15.join(capsuleDirectory, "releases"),
+      data: path15.join(capsuleDirectory, "data")
     },
     container: {
       name: containerName
@@ -52057,21 +52200,21 @@ function normaliseDeletion(request2) {
   const domain = request2.host.domain;
   const remoteRoot = request2.host.remoteRoot;
   const scheme = request2.host.scheme ?? "https";
-  const capsuleDirectory = path14.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const capsuleDirectory = path15.join(remoteRoot, "hosts", domain, "capsules", subname);
   return {
     subname,
     domain,
     hostedUrl: `${scheme}://${subname}.${domain}`,
     remoteCapsuleId: `${domain}/${subname}`,
-    registryRecord: path14.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path15.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path14.join(capsuleDirectory, "releases"),
-      data: path14.join(capsuleDirectory, "data")
+      releases: path15.join(capsuleDirectory, "releases"),
+      data: path15.join(capsuleDirectory, "data")
     },
     route: {
       hostname: `${subname}.${domain}`,
-      routeFile: path14.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
+      routeFile: path15.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
     },
     lifecycle: {
       remoteRoot
@@ -52082,17 +52225,17 @@ function normaliseRegistrationTls(request2) {
   const remoteRoot = request2.host.remoteRoot;
   const domain = request2.host.domain;
   const tlsMode = request2.registration?.bootstrap?.tls?.mode ?? request2.bootstrap?.tls?.mode ?? "automatic";
-  const tlsDirectory = path14.join(remoteRoot, "hosts", domain, "tls");
+  const tlsDirectory = path15.join(remoteRoot, "hosts", domain, "tls");
   return {
     mode: tlsMode,
     directory: tlsDirectory,
-    certificate: tlsMode === "cloudflare-origin" ? path14.join(tlsDirectory, "origin.crt") : null,
-    key: tlsMode === "cloudflare-origin" ? path14.join(tlsDirectory, "origin.key") : null
+    certificate: tlsMode === "cloudflare-origin" ? path15.join(tlsDirectory, "origin.crt") : null,
+    key: tlsMode === "cloudflare-origin" ? path15.join(tlsDirectory, "origin.key") : null
   };
 }
 async function ensureHostedDomainBootstrapped(request2, registration) {
-  const caddyfile = path14.join(request2.host.remoteRoot, "caddy", "Caddyfile");
-  const domainInclude = path14.join(request2.host.remoteRoot, "caddy", "hosts", `${request2.host.domain}.caddy`);
+  const caddyfile = path15.join(request2.host.remoteRoot, "caddy", "Caddyfile");
+  const domainInclude = path15.join(request2.host.remoteRoot, "caddy", "hosts", `${request2.host.domain}.caddy`);
   const bootstrapped = await pathExists(caddyfile) && await pathExists(domainInclude);
   if (bootstrapped) {
     return;
@@ -52172,11 +52315,11 @@ async function generateHostSealedEnvKeyPair(dataDirectory) {
   };
 }
 async function openOrCreateRuntimeDirectory(parentHandle, targetPath) {
-  const descriptorPath = descriptorChildPath(parentHandle.fd, path14.basename(targetPath), targetPath);
-  await mkdir7(descriptorPath, { mode: 448 }).catch((error) => {
+  const descriptorPath = descriptorChildPath(parentHandle.fd, path15.basename(targetPath), targetPath);
+  await mkdir8(descriptorPath, { mode: 448 }).catch((error) => {
     if (errorDetails(error).code !== "EEXIST") throw runtimeDataTrustError(targetPath);
   });
-  const handle = await open7(
+  const handle = await open8(
     descriptorPath,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -52193,8 +52336,8 @@ async function openOrCreateRuntimeDirectory(parentHandle, targetPath) {
   return handle;
 }
 async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mode) {
-  const descriptorPath = descriptorChildPath(parentHandle.fd, path14.basename(targetPath), targetPath);
-  const handle = await open7(
+  const descriptorPath = descriptorChildPath(parentHandle.fd, path15.basename(targetPath), targetPath);
+  const handle = await open8(
     descriptorPath,
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
     mode
@@ -52216,24 +52359,24 @@ async function writeExclusiveRuntimeFile(parentHandle, targetPath, contents, mod
   }
 }
 async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boundary) {
-  const temporaryPath = path14.join(path14.dirname(targetPath), `.${path14.basename(targetPath)}.tmp-${process.pid}-${randomBytes9(8).toString("hex")}`);
+  const temporaryPath = path15.join(path15.dirname(targetPath), `.${path15.basename(targetPath)}.tmp-${process.pid}-${randomBytes10(8).toString("hex")}`);
   await writeExclusiveRuntimeFile(parentHandle, temporaryPath, contents, mode);
-  const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path14.basename(temporaryPath), temporaryPath);
-  const targetDescriptor = descriptorChildPath(parentHandle.fd, path14.basename(targetPath), targetPath);
+  const temporaryDescriptor = descriptorChildPath(parentHandle.fd, path15.basename(temporaryPath), temporaryPath);
+  const targetDescriptor = descriptorChildPath(parentHandle.fd, path15.basename(targetPath), targetPath);
   try {
     await pauseRuntimeTreePublication(boundary, targetPath);
     const parentIdentity = await parentHandle.stat();
-    await assertRuntimeDataPathIdentity(path14.dirname(targetPath), { dev: parentIdentity.dev, ino: parentIdentity.ino }, true);
+    await assertRuntimeDataPathIdentity(path15.dirname(targetPath), { dev: parentIdentity.dev, ino: parentIdentity.ino }, true);
     try {
-      const existing = await lstat12(targetPath);
+      const existing = await lstat13(targetPath);
       if (!existing.isFile() || existing.isSymbolicLink()) throw runtimeDataTrustError(targetPath);
     } catch (error) {
       if (errorDetails(error).code !== "ENOENT") throw error;
     }
-    await rename10(temporaryDescriptor, targetDescriptor).catch(() => {
+    await rename11(temporaryDescriptor, targetDescriptor).catch(() => {
       throw runtimeDataTrustError(targetPath);
     });
-    const installed = await open7(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+    const installed = await open8(targetDescriptor, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
       throw runtimeDataTrustError(targetPath);
     });
     try {
@@ -52244,7 +52387,7 @@ async function publishRuntimeFile(parentHandle, targetPath, contents, mode, boun
       await installed.close();
     }
   } finally {
-    await rm10(temporaryDescriptor, { force: true }).catch(() => {
+    await rm11(temporaryDescriptor, { force: true }).catch(() => {
     });
   }
 }
@@ -52270,9 +52413,9 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
         for (const entry of entries) {
           const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
           if (!match || referencedFingerprints.has(match[1])) continue;
-          const targetPath = path14.join(paths2.keys, entry);
+          const targetPath = path15.join(paths2.keys, entry);
           const descriptorPath = descriptorChildPath(keysHandle.fd, entry, targetPath);
-          const retained = await open7(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
+          const retained = await open8(descriptorPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => {
             throw runtimeDataTrustError(targetPath);
           });
           try {
@@ -52281,7 +52424,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
             await pauseRuntimeTreePublication("sealed-key-cleanup", targetPath);
             await assertRuntimeDataPathIdentity(paths2.keys, { dev: keysIdentity.dev, ino: keysIdentity.ino }, true);
             await assertRuntimeDataPathIdentity(targetPath, { dev: details.dev, ino: details.ino }, false);
-            await rm10(descriptorPath, { force: true });
+            await rm11(descriptorPath, { force: true });
           } finally {
             await retained.close();
           }
@@ -52328,7 +52471,7 @@ async function inspectHostSealedEnvKey(record, remoteRoot) {
   if (typeof publicKeyFingerprint !== "string" || publicKeyFingerprint.length === 0) {
     return null;
   }
-  const dataDirectory = path14.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
+  const dataDirectory = path15.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
   const paths2 = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
   const [publicKeyReadable, privateKeyReadable] = await Promise.all([
     pathReadable(paths2.publicKey),
@@ -52395,13 +52538,13 @@ function currentReleaseSealedServerEnvFingerprint(record) {
   return typeof fingerprint === "string" ? fingerprint : null;
 }
 function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
-  const root = path14.join(dataDirectory, "sealed-server-env");
-  const keys2 = path14.join(root, "keys");
+  const root = path15.join(dataDirectory, "sealed-server-env");
+  const keys2 = path15.join(root, "keys");
   return {
     root,
     keys: keys2,
-    privateKey: path14.join(keys2, `${fingerprint}.private.pem`),
-    publicKey: path14.join(keys2, `${fingerprint}.public.pem`)
+    privateKey: path15.join(keys2, `${fingerprint}.private.pem`),
+    publicKey: path15.join(keys2, `${fingerprint}.public.pem`)
   };
 }
 function fingerprintPublicKey2(publicKey) {
@@ -52461,20 +52604,20 @@ function normaliseBootstrap(request2) {
   const provided = request2.bootstrap ?? {};
   const remoteRoot = request2.host.remoteRoot;
   const domain = request2.host.domain;
-  const caddyDirectory = path14.join(remoteRoot, "caddy");
-  const domainDirectory = path14.join(remoteRoot, "hosts", domain);
-  const tlsDirectory = path14.join(domainDirectory, "tls");
+  const caddyDirectory = path15.join(remoteRoot, "caddy");
+  const domainDirectory = path15.join(remoteRoot, "hosts", domain);
+  const tlsDirectory = path15.join(domainDirectory, "tls");
   const expectedDirectories = {
     remoteRoot,
-    bin: path14.join(remoteRoot, "bin"),
-    incoming: path14.join(remoteRoot, "incoming"),
+    bin: path15.join(remoteRoot, "bin"),
+    incoming: path15.join(remoteRoot, "incoming"),
     caddy: caddyDirectory,
-    caddyHosts: path14.join(caddyDirectory, "hosts"),
-    hosts: path14.join(remoteRoot, "hosts"),
+    caddyHosts: path15.join(caddyDirectory, "hosts"),
+    hosts: path15.join(remoteRoot, "hosts"),
     domain: domainDirectory,
     tls: tlsDirectory,
-    registry: path14.join(domainDirectory, "registry"),
-    capsules: path14.join(domainDirectory, "capsules")
+    registry: path15.join(domainDirectory, "registry"),
+    capsules: path15.join(domainDirectory, "capsules")
   };
   for (const [name2, value] of Object.entries(provided.directories ?? {})) {
     if (!(name2 in expectedDirectories) || value !== expectedDirectories[name2]) throw bootstrapPathError();
@@ -52484,8 +52627,8 @@ function normaliseBootstrap(request2) {
   const directories = {
     ...expectedDirectories
   };
-  const expectedCertificate = path14.join(directories.tls, "origin.crt");
-  const expectedKey = path14.join(directories.tls, "origin.key");
+  const expectedCertificate = path15.join(directories.tls, "origin.crt");
+  const expectedKey = path15.join(directories.tls, "origin.key");
   if (provided.tls?.directory !== void 0 && provided.tls.directory !== directories.tls) throw bootstrapPathError();
   if (provided.tls?.certificate != null && provided.tls.certificate !== expectedCertificate) throw bootstrapPathError();
   if (provided.tls?.key != null && provided.tls.key !== expectedKey) throw bootstrapPathError();
@@ -52495,8 +52638,8 @@ function normaliseBootstrap(request2) {
     certificate: tlsMode === "cloudflare-origin" ? expectedCertificate : null,
     key: tlsMode === "cloudflare-origin" ? expectedKey : null
   };
-  const expectedManagedInclude = path14.join(directories.caddy, "sporades-hosted-domains.caddy");
-  const expectedDomainInclude = path14.join(directories.caddyHosts, `${domain}.caddy`);
+  const expectedManagedInclude = path15.join(directories.caddy, "sporades-hosted-domains.caddy");
+  const expectedDomainInclude = path15.join(directories.caddyHosts, `${domain}.caddy`);
   const expectedAccessLog = defaultCaddyAccessLogPath(remoteRoot);
   if (provided.caddy?.managedInclude !== void 0 && provided.caddy.managedInclude !== expectedManagedInclude) throw bootstrapPathError();
   if (provided.caddy?.domainInclude !== void 0 && provided.caddy.domainInclude !== expectedDomainInclude) throw bootstrapPathError();
@@ -52511,11 +52654,11 @@ function normaliseBootstrap(request2) {
     tls,
     network: provided.network ?? hostHelperConfig.hostedCapsule.dockerNetwork,
     caddy: {
-      caddyfile: path14.join(directories.caddy, "Caddyfile"),
+      caddyfile: path15.join(directories.caddy, "Caddyfile"),
       managedInclude: expectedManagedInclude,
       domainInclude: expectedDomainInclude,
-      routesDirectory: path14.join(directories.caddyHosts, domain),
-      healthRoute: path14.join(directories.caddyHosts, domain, "host.caddy"),
+      routesDirectory: path15.join(directories.caddyHosts, domain),
+      healthRoute: path15.join(directories.caddyHosts, domain, "host.caddy"),
       accessLog: expectedAccessLog
     }
   };
@@ -52528,7 +52671,7 @@ function bootstrapPathError() {
 }
 function bootstrapTrustManifest(request2) {
   const bootstrap = normaliseBootstrap(request2);
-  const placeholder = path14.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  const placeholder = path15.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   const finalFiles = [
     { path: bootstrap.caddy.caddyfile },
     { path: bootstrap.caddy.managedInclude },
@@ -52543,8 +52686,8 @@ function bootstrapTrustManifest(request2) {
   return {
     directories: [
       ...Object.values(bootstrap.directories).map((entry) => ({ path: entry })),
-      { path: path14.dirname(bootstrap.caddy.accessLog), caddyOwned: true },
-      { path: path14.join(bootstrap.directories.registry, "capsules") },
+      { path: path15.dirname(bootstrap.caddy.accessLog), caddyOwned: true },
+      { path: path15.join(bootstrap.directories.registry, "capsules") },
       { path: bootstrap.caddy.routesDirectory }
     ],
     finalFiles
@@ -52556,24 +52699,24 @@ async function ensureBootstrapDirectories(bootstrap) {
     bootstrap.directories.bin,
     bootstrap.directories.incoming,
     bootstrap.directories.caddy,
-    path14.dirname(bootstrap.caddy.accessLog),
+    path15.dirname(bootstrap.caddy.accessLog),
     bootstrap.directories.caddyHosts,
     bootstrap.directories.hosts,
     bootstrap.directories.domain,
     bootstrap.directories.tls,
     bootstrap.directories.registry,
-    path14.join(bootstrap.directories.registry, "capsules"),
+    path15.join(bootstrap.directories.registry, "capsules"),
     bootstrap.directories.capsules,
     bootstrap.caddy.routesDirectory
   ];
   for (const directory2 of directories) {
-    const details = await lstat12(directory2);
+    const details = await lstat13(directory2);
     if (!details.isDirectory() || details.isSymbolicLink()) throw routeTrustError();
   }
 }
 async function provisionCaddyAccessLog(request2, bootstrap) {
   const logFile = bootstrap.caddy.accessLog;
-  const logDirectory = path14.dirname(logFile);
+  const logDirectory = path15.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser();
   if (!caddyUser) {
     throw helperError(
@@ -52608,7 +52751,7 @@ async function provisionCaddyOwnedLogDescriptors(options) {
   const fileIdentity = trust.finalFiles.find((entry) => entry.path === logFile && entry.caddyOwned);
   if (!directoryIdentity || !fileIdentity) throw routeTrustError();
   await assertManagedLogMutationBoundary(logFile);
-  const directoryHandle = await open7(
+  const directoryHandle = await open8(
     logDirectory,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -52617,17 +52760,17 @@ async function provisionCaddyOwnedLogDescriptors(options) {
   try {
     let directoryDetails = await directoryHandle.stat();
     if (!directoryDetails.isDirectory() || directoryDetails.dev !== directoryIdentity.dev || directoryDetails.ino !== directoryIdentity.ino || !(directoryIdentity.expectedOwner ? trustedExactOwnerMetadata(directoryDetails, directoryIdentity.expectedOwner) : trustedHostPathMetadata(directoryDetails))) throw routeTrustError();
-    const descriptorFile = process.platform === "linux" ? `/proc/self/fd/${directoryHandle.fd}/${path14.basename(logFile)}` : logFile;
+    const descriptorFile = process.platform === "linux" ? `/proc/self/fd/${directoryHandle.fd}/${path15.basename(logFile)}` : logFile;
     let fileHandle;
     try {
-      fileHandle = await open7(
+      fileHandle = await open8(
         descriptorFile,
         fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
         416
       );
     } catch (error) {
       if (errorDetails(error).code !== "EEXIST") throw routeTrustError();
-      fileHandle = await open7(descriptorFile, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW).catch(() => {
+      fileHandle = await open8(descriptorFile, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW).catch(() => {
         throw routeTrustError();
       });
     }
@@ -52659,10 +52802,10 @@ async function provisionCaddyOwnedLogDescriptors(options) {
         directoryDetails = await directoryHandle.stat();
         fileDetails = await fileHandle.stat();
       }
-      const directoryPathDetails = await lstat12(logDirectory).catch(() => {
+      const directoryPathDetails = await lstat13(logDirectory).catch(() => {
         throw routeTrustError();
       });
-      const filePathDetails = await lstat12(logFile).catch(() => {
+      const filePathDetails = await lstat13(logFile).catch(() => {
         throw routeTrustError();
       });
       if (!directoryPathDetails.isDirectory() || directoryPathDetails.isSymbolicLink() || !filePathDetails.isFile() || filePathDetails.isSymbolicLink() || directoryPathDetails.dev !== directoryDetails.dev || directoryPathDetails.ino !== directoryDetails.ino || filePathDetails.dev !== fileDetails.dev || filePathDetails.ino !== fileDetails.ino || !trustedExactOwnerMetadata(directoryDetails, owner) || !trustedExactOwnerMetadata(fileDetails, owner) || (Number(directoryDetails.mode) & 511) !== 488 || (Number(fileDetails.mode) & 511) !== 416) throw routeTrustError();
@@ -52694,7 +52837,7 @@ async function provisionRouteLogFile(route, mutationBoundary) {
   if (!logFile) {
     return;
   }
-  const logDirectory = path14.dirname(logFile);
+  const logDirectory = path15.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser() ?? {
     uid: String(process.geteuid?.() ?? process.getuid?.() ?? 0),
     gid: String(process.getegid?.() ?? process.getgid?.() ?? 0)
@@ -52766,19 +52909,19 @@ async function installCaddyBootstrapConfig(request2, bootstrap) {
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
-  const placeholderRoute = path14.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  const placeholderRoute = path15.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   await atomicPublishBootstrapFile(placeholderRoute, "# Sporades keeps this placeholder so Caddy route imports are valid before Capsules are registered.\n", "bootstrap-placeholder");
   await atomicPublishBootstrapFile(bootstrap.caddy.healthRoute, renderHostHealthRoute(request2.host.domain, bootstrap.tls), "bootstrap-health-route");
   await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
   await atomicPublishBootstrapFile(managedInclude, `# Sporades-managed Hosted domain include list.
-import ${path14.join(bootstrap.directories.caddyHosts, "*.caddy")}
+import ${path15.join(bootstrap.directories.caddyHosts, "*.caddy")}
 `, "bootstrap-managed-include");
   await atomicPublishBootstrapFile(domainInclude, `# Sporades-managed routes for ${request2.host.domain}.
-import ${path14.join(bootstrap.caddy.routesDirectory, "*.caddy")}
+import ${path15.join(bootstrap.caddy.routesDirectory, "*.caddy")}
 `, "bootstrap-domain-include");
   for (const record of await readCapsuleRegistryRecords(request2)) {
     if (record.status === "unregistered") continue;
-    const file = path14.join(bootstrap.caddy.routesDirectory, `${record.subname}.caddy`);
+    const file = path15.join(bootstrap.caddy.routesDirectory, `${record.subname}.caddy`);
     await assertBootstrapMutationBoundary("bootstrap-capsule-route-access", [file]);
     if (await pathExists(file)) await provisionCaddyRouteFileAccess(file);
   }
@@ -52842,17 +52985,17 @@ ${end}
   await atomicPublishBootstrapFile(caddyfile, next, "bootstrap-caddyfile");
 }
 async function atomicPublishBootstrapFile(target, contents, boundary) {
-  const temporary = `${target}.sporades-${process.pid}-${randomBytes9(8).toString("hex")}.tmp`;
+  const temporary = `${target}.sporades-${process.pid}-${randomBytes10(8).toString("hex")}.tmp`;
   await assertBootstrapMutationBoundary(`${boundary}-write`, [target, temporary]);
   await writeFile6(temporary, contents, { flag: "wx", mode: 420 });
   try {
     await assertBootstrapMutationBoundary(`${boundary}-publish`, [target, temporary]);
     await chmod4(temporary, 420);
-    await rename10(temporary, target);
+    await rename11(temporary, target);
     await refreshTrustedBootstrapFinalFileIdentity(target);
   } catch (error) {
     await assertBootstrapMutationBoundary(`${boundary}-cleanup`, [target, temporary]);
-    await rm10(temporary, { force: true });
+    await rm11(temporary, { force: true });
     throw error;
   }
 }
@@ -53100,7 +53243,7 @@ function ensureHostedBaseImage(lifecycle) {
   if (pull.ok) {
     return;
   }
-  const dockerfilePath = path14.join(lifecycle.remoteRoot, "Dockerfile.base");
+  const dockerfilePath = path15.join(lifecycle.remoteRoot, "Dockerfile.base");
   if (!pathExistsSync(dockerfilePath)) {
     throw helperError(
       "Unable to prepare the Sporades Base image.",
@@ -53190,7 +53333,7 @@ async function currentReleaseId(currentLink, request2) {
     }
     throw error;
   }
-  return path14.basename(target);
+  return path15.basename(target);
 }
 function loopbackRunningRoute(route, publishedPort) {
   return {
@@ -53419,13 +53562,13 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   const tempRouteFile = `${routeFile}.tmp`;
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-temp", [tempRouteFile, previousRouteFile]);
-  await rm10(tempRouteFile, { force: true });
+  await rm11(tempRouteFile, { force: true });
   await assertManagedRouteMutationBoundary(routeFile, "apply-remove-previous", [previousRouteFile]);
-  await rm10(previousRouteFile, { force: true });
+  await rm11(previousRouteFile, { force: true });
   await provisionCaddyRouteDirectoryAccess(routeFile);
   if (await pathExists(routeFile)) await provisionCaddyRouteFileAccess(routeFile);
   await assertManagedRouteMutationBoundary(routeFile, "apply-write-temp", [tempRouteFile]);
-  const candidate = await open7(tempRouteFile, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 384);
+  const candidate = await open8(tempRouteFile, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 384);
   try {
     await candidate.writeFile(contents);
     await provisionCaddyRouteFileAccess(tempRouteFile, candidate);
@@ -53436,7 +53579,7 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-validation-cleanup", [tempRouteFile]);
-    await rm10(tempRouteFile, { force: true });
+    await rm11(tempRouteFile, { force: true });
     throw error;
   }
   const hadPreviousRoute = await pathExists(routeFile);
@@ -53444,20 +53587,20 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
   try {
     if (hadPreviousRoute) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-move-current", [previousRouteFile]);
-      await rename10(routeFile, previousRouteFile);
+      await rename11(routeFile, previousRouteFile);
       previousRouteMoved = true;
     }
     await assertManagedRouteMutationBoundary(routeFile, "apply-publish-temp", [tempRouteFile, previousRouteFile]);
-    await rename10(tempRouteFile, routeFile);
+    await rename11(tempRouteFile, routeFile);
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-temp", [tempRouteFile, previousRouteFile]);
-    await rm10(tempRouteFile, { force: true });
+    await rm11(tempRouteFile, { force: true });
     await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-remove-current", [previousRouteFile]);
-    await rm10(routeFile, { force: true });
+    await rm11(routeFile, { force: true });
     if (previousRouteMoved) {
       await assertManagedRouteMutationBoundary(routeFile, "apply-rollback-restore", [previousRouteFile]);
-      await rename10(previousRouteFile, routeFile);
+      await rename11(previousRouteFile, routeFile);
     }
     if (previousRouteMoved) {
       try {
@@ -53472,7 +53615,7 @@ async function applyManagedRouteLocked(lifecycle, routeFile, contents) {
     throw error;
   }
   await assertManagedRouteMutationBoundary(routeFile, "apply-finalize-previous", [previousRouteFile]);
-  await rm10(previousRouteFile, { force: true });
+  await rm11(previousRouteFile, { force: true });
 }
 var cachedCaddyRouteGroup;
 function caddyRouteGroup() {
@@ -53488,10 +53631,10 @@ async function provisionCaddyRouteDirectoryAccess(routeFile) {
   if (!trust) throw routeTrustError();
   const gid = caddyRouteGroup();
   for (const identity of trust.directories) {
-    if (identity.path !== trust.managedRoot && !identity.path.startsWith(`${trust.managedRoot}${path14.sep}`)) continue;
-    if (!routeFile.startsWith(`${identity.path}${path14.sep}`)) continue;
+    if (identity.path !== trust.managedRoot && !identity.path.startsWith(`${trust.managedRoot}${path15.sep}`)) continue;
+    if (!routeFile.startsWith(`${identity.path}${path15.sep}`)) continue;
     await assertActiveManagedRouteTrust(trust.routeFile);
-    const handle = await open7(identity.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0));
+    const handle = await open8(identity.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0));
     try {
       const before = await handle.stat();
       if (!before.isDirectory() || before.dev !== identity.dev || before.ino !== identity.ino || !trustedHostPathMetadata(before)) throw routeTrustError();
@@ -53510,16 +53653,16 @@ async function provisionCaddyRouteDirectoryAccess(routeFile) {
 async function provisionCaddyRouteFileAccess(target, retained) {
   await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
   await assertTrustedRegularFileIfExists(target);
-  const handle = retained ?? await open7(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  const handle = retained ?? await open8(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   try {
     const before = await handle.stat();
-    const named = await lstat12(target);
+    const named = await lstat13(target);
     if (!before.isFile() || before.nlink !== 1 || !trustedHostPathMetadata(before) || named.isSymbolicLink() || named.dev !== before.dev || named.ino !== before.ino) throw routeTrustError();
     const gid = caddyRouteGroup();
     if (before.gid !== gid) await handle.chown(before.uid, gid);
     await handle.chmod(416);
     const after = await handle.stat();
-    const published = await lstat12(target);
+    const published = await lstat13(target);
     if (published.isSymbolicLink() || published.dev !== before.dev || published.ino !== before.ino || after.nlink !== 1 || after.uid !== before.uid || after.gid !== gid || (after.mode & 511) !== 416) throw routeTrustError();
     await assertActiveManagedRouteTrust(activeManagedRouteTrust?.routeFile ?? null);
   } finally {
@@ -53529,7 +53672,7 @@ async function provisionCaddyRouteFileAccess(target, retained) {
 async function removeManagedRouteLocked(lifecycle, routeFile) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await assertManagedRouteMutationBoundary(routeFile, "remove-remove-previous", [previousRouteFile]);
-  await rm10(previousRouteFile, { force: true });
+  await rm11(previousRouteFile, { force: true });
   const hadRoute = await pathExists(routeFile);
   if (!hadRoute) {
     return { routeFile, removed: false };
@@ -53537,12 +53680,12 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
   await provisionCaddyRouteDirectoryAccess(routeFile);
   await provisionCaddyRouteFileAccess(routeFile);
   await assertManagedRouteMutationBoundary(routeFile, "remove-move-current", [previousRouteFile]);
-  await rename10(routeFile, previousRouteFile);
+  await rename11(routeFile, previousRouteFile);
   try {
     reloadCaddy(lifecycle);
   } catch (error) {
     await assertManagedRouteMutationBoundary(routeFile, "remove-rollback-restore", [previousRouteFile]);
-    await rename10(previousRouteFile, routeFile);
+    await rename11(previousRouteFile, routeFile);
     try {
       reloadCaddy(lifecycle);
     } catch {
@@ -53561,7 +53704,7 @@ async function removeManagedRouteLocked(lifecycle, routeFile) {
 async function finalizeRemovedRouteLocked(route) {
   if (route?.previousRouteFile) {
     await assertManagedRouteMutationBoundary(route.routeFile, "remove-finalize-previous", [route.previousRouteFile]);
-    await rm10(route.previousRouteFile, { force: true });
+    await rm11(route.previousRouteFile, { force: true });
   }
 }
 async function restoreRemovedRouteLocked(lifecycle, route) {
@@ -53569,9 +53712,9 @@ async function restoreRemovedRouteLocked(lifecycle, route) {
     return;
   }
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-remove-current", [route.previousRouteFile]);
-  await rm10(route.routeFile, { force: true });
+  await rm11(route.routeFile, { force: true });
   await assertManagedRouteMutationBoundary(route.routeFile, "restore-publish-previous", [route.previousRouteFile]);
-  await rename10(route.previousRouteFile, route.routeFile);
+  await rename11(route.previousRouteFile, route.routeFile);
   reloadCaddy(lifecycle);
 }
 async function assertManagedRouteMutationBoundary(routeFile, boundary, relatedFiles = []) {
@@ -53629,7 +53772,7 @@ async function processRetainsOsFlock(lockFile) {
   for (const descriptor of descriptorNumbers) {
     for (const descriptorRoot of ["/proc/self/fd", "/dev/fd"]) {
       try {
-        const descriptorStat = await stat(path14.join(descriptorRoot, descriptor));
+        const descriptorStat = await stat(path15.join(descriptorRoot, descriptor));
         if (!routeLockFileIdentityMatches(descriptorStat, expected)) continue;
         if (process.platform === "linux") {
           if (descriptorStat.dev !== expected.dev) continue;
@@ -53733,15 +53876,15 @@ function managedRouteProtocolOwnerIsLive(owner) {
   return currentIdentity === null || currentIdentity === owner.processIdentity;
 }
 async function cleanupManagedRouteProtocolArtifacts(lockFile) {
-  const directory2 = path14.dirname(lockFile);
-  const base = path14.basename(lockFile);
+  const directory2 = path15.dirname(lockFile);
+  const base = path15.basename(lockFile);
   const artifact = new RegExp(`^${escapeRegExp(base)}\\.(?:claim|stale|reclaim)-[a-f0-9]{32}$`);
   const entries = (await readdir6(directory2)).filter((entry) => artifact.test(entry)).sort().slice(0, 100);
   for (const entry of entries) {
-    const artifactPath = path14.join(directory2, entry);
+    const artifactPath = path15.join(directory2, entry);
     const owner = await readManagedRouteProtocolOwner(artifactPath);
     if (owner.state === "owner" && !managedRouteProtocolOwnerIsLive(owner.owner)) {
-      await rm10(artifactPath, { force: true });
+      await rm11(artifactPath, { force: true });
     }
   }
 }
@@ -53756,7 +53899,7 @@ async function removePathIfPresent(targetPath, options = {}) {
   if (!existed) {
     return { path: targetPath, removed: false };
   }
-  await rm10(targetPath, { recursive: Boolean(options.recursive), force: true });
+  await rm11(targetPath, { recursive: Boolean(options.recursive), force: true });
   return { path: targetPath, removed: true };
 }
 async function prepareWritableDataPath(targetPath) {
@@ -53771,11 +53914,11 @@ async function prepareWritableDataPath(targetPath) {
 }
 async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   const managedRoot = activeManagedRouteTrust?.managedRoot;
-  if (!managedRoot || !path14.isAbsolute(targetPath) || path14.normalize(targetPath) !== targetPath) throw runtimeDataTrustError(targetPath);
-  const relative = path14.relative(managedRoot, targetPath);
-  const components = relative.split(path14.sep).filter(Boolean);
-  if (relative.startsWith("..") || path14.isAbsolute(relative) || components.length !== 5 || components[0] !== "hosts" || components[2] !== "capsules" || components[4] !== "data" || !/^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?$/.test(components[1]) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(components[3])) throw runtimeDataTrustError(targetPath);
-  let handle = await open7(
+  if (!managedRoot || !path15.isAbsolute(targetPath) || path15.normalize(targetPath) !== targetPath) throw runtimeDataTrustError(targetPath);
+  const relative = path15.relative(managedRoot, targetPath);
+  const components = relative.split(path15.sep).filter(Boolean);
+  if (relative.startsWith("..") || path15.isAbsolute(relative) || components.length !== 5 || components[0] !== "hosts" || components[2] !== "capsules" || components[4] !== "data" || !/^[a-z0-9.-]+(?::[1-9][0-9]{0,4})?$/.test(components[1]) || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(components[3])) throw runtimeDataTrustError(targetPath);
+  let handle = await open8(
     managedRoot,
     fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
   ).catch(() => {
@@ -53784,14 +53927,14 @@ async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   let logical = managedRoot;
   try {
     for (let index = 0; index < components.length; index += 1) {
-      logical = path14.join(logical, components[index]);
+      logical = path15.join(logical, components[index]);
       const descriptorPath = descriptorChildPath(handle.fd, components[index], logical);
       if (createData && index === components.length - 1) {
-        await mkdir7(descriptorPath, { mode: 448 }).catch((error) => {
+        await mkdir8(descriptorPath, { mode: 448 }).catch((error) => {
           if (errorDetails(error).code !== "EEXIST") throw runtimeDataTrustError(logical);
         });
       }
-      const child = await open7(
+      const child = await open8(
         descriptorPath,
         fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (fsConstants.O_DIRECTORY ?? 0)
       ).catch(() => {
@@ -53814,7 +53957,7 @@ async function openCanonicalRuntimeDataDirectory(targetPath, createData) {
   }
 }
 function descriptorChildPath(parentFd, name2, fallbackPath) {
-  if (name2.length === 0 || name2 === "." || name2 === ".." || name2.includes(path14.sep)) throw runtimeDataTrustError(fallbackPath);
+  if (name2.length === 0 || name2 === "." || name2 === ".." || name2.includes(path15.sep)) throw runtimeDataTrustError(fallbackPath);
   return process.platform === "linux" ? `/proc/self/fd/${parentFd}/${name2}` : fallbackPath;
 }
 async function prepareWritableDataHandle(handle, targetPath, directory2) {
@@ -53834,11 +53977,11 @@ async function prepareWritableDataHandle(handle, targetPath, directory2) {
     throw runtimeDataTrustError(targetPath);
   });
   for (const entry of entries) {
-    if (entry.name === "." || entry.name === ".." || entry.name.includes(path14.sep)) throw runtimeDataTrustError(targetPath);
-    const childPath = path14.join(targetPath, entry.name);
+    if (entry.name === "." || entry.name === ".." || entry.name.includes(path15.sep)) throw runtimeDataTrustError(targetPath);
+    const childPath = path15.join(targetPath, entry.name);
     const descriptorPath = descriptorChildPath(handle.fd, entry.name, childPath);
     const flags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | (entry.isDirectory() ? fsConstants.O_DIRECTORY ?? 0 : 0);
-    const child = await open7(descriptorPath, flags).catch(() => {
+    const child = await open8(descriptorPath, flags).catch(() => {
       throw runtimeDataTrustError(childPath);
     });
     try {
@@ -53849,7 +53992,7 @@ async function prepareWritableDataHandle(handle, targetPath, directory2) {
   }
 }
 async function assertRuntimeDataPathIdentity(targetPath, identity, directory2) {
-  const details = await lstat12(targetPath).catch(() => {
+  const details = await lstat13(targetPath).catch(() => {
     throw runtimeDataTrustError(targetPath);
   });
   if (details.isSymbolicLink() || details.dev !== identity.dev || details.ino !== identity.ino || (directory2 ? !details.isDirectory() : !details.isFile())) throw runtimeDataTrustError(targetPath);
@@ -53903,7 +54046,7 @@ function validateCaddyRoute(routeFile) {
   }
 }
 function reloadCaddy(lifecycle) {
-  const configPath = path14.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
+  const configPath = path15.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
   const result = spawnSync8("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4 });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -54222,12 +54365,12 @@ function releaseSealedServerEnvPrivateKeyMount(registryRecord, paths2) {
   const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
   if (typeof fingerprint === "string" && /^[a-f0-9]{16}$/.test(fingerprint)) {
     return {
-      host: path14.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
+      host: path15.join(paths2.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
       fingerprint
     };
   }
   return {
-    host: path14.join(paths2.data, "sealed-server-env", "server-env.private.pem"),
+    host: path15.join(paths2.data, "sealed-server-env", "server-env.private.pem"),
     fingerprint: null
   };
 }
@@ -54239,7 +54382,7 @@ function releaseSshAuthorizedKeysMount(registryRecord, paths2) {
     return null;
   }
   return {
-    host: path14.join(paths2.currentLink, ".sporades", "ssh", "authorized_keys"),
+    host: path15.join(paths2.currentLink, ".sporades", "ssh", "authorized_keys"),
     container: "/run/sporades/ssh/authorized_keys",
     mode: "ro",
     optional: false
@@ -54409,9 +54552,9 @@ async function writeRegistryContentsAtomic(registryRecordPath, contents) {
         "Check Host server disk permissions and free space, then retry the command."
       );
     }
-    await rename10(tempPath, registryRecordPath);
+    await rename11(tempPath, registryRecordPath);
   } catch (error) {
-    await rm10(tempPath, { force: true });
+    await rm11(tempPath, { force: true });
     throw error;
   }
 }
@@ -54421,7 +54564,7 @@ async function withRegistryLock(request2, fn) {
   const startedAt = Date.now();
   while (true) {
     try {
-      await mkdir7(lockDir, { recursive: false });
+      await mkdir8(lockDir, { recursive: false });
       break;
     } catch (error) {
       if (errorDetails(error).code !== "EEXIST") {
@@ -54439,11 +54582,11 @@ async function withRegistryLock(request2, fn) {
   try {
     return await fn();
   } finally {
-    await rm10(lockDir, { recursive: true, force: true });
+    await rm11(lockDir, { recursive: true, force: true });
   }
 }
 function registryPath(request2) {
-  return path14.join(
+  return path15.join(
     request2.host.remoteRoot,
     "hosts",
     request2.host.domain,
@@ -54453,7 +54596,7 @@ function registryPath(request2) {
   );
 }
 function registryLockPath(request2) {
-  return path14.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", ".lock");
+  return path15.join(request2.host.remoteRoot, "hosts", request2.host.domain, "registry", ".lock");
 }
 function capsuleData(request2, lifecycle) {
   return {
@@ -54555,14 +54698,14 @@ function createHostedContainerName(domain, subname) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 function defaultCaddyAccessLogPath(remoteRoot) {
-  return path14.join(remoteRoot, "caddy", "logs", "access.log");
+  return path15.join(remoteRoot, "caddy", "logs", "access.log");
 }
 function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
-  return path14.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
+  return path15.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 function canonicalCapsuleHttpLogPath(request2, validatedRemoteRoot = validateCanonicalHostRouteRoot(request2)) {
   canonicalManagedRouteFile(request2, validatedRemoteRoot);
-  const expectedDirectory = path14.resolve(
+  const expectedDirectory = path15.resolve(
     validatedRemoteRoot,
     "hosts",
     request2.host.domain,
@@ -54570,8 +54713,8 @@ function canonicalCapsuleHttpLogPath(request2, validatedRemoteRoot = validateCan
     request2.capsule.subname,
     "logs"
   );
-  const expected = path14.resolve(expectedDirectory, "http.log");
-  if (path14.dirname(expected) !== expectedDirectory) throw invalidCapsuleHttpLogPathError();
+  const expected = path15.resolve(expectedDirectory, "http.log");
+  if (path15.dirname(expected) !== expectedDirectory) throw invalidCapsuleHttpLogPathError();
   const lifecycle = request2.lifecycle;
   const supplied = [
     request2.registration?.route?.log?.file,
@@ -54586,7 +54729,7 @@ function canonicalCapsuleHttpLogPath(request2, validatedRemoteRoot = validateCan
 function capsuleHttpLogTrustManifest(request2, validatedRemoteRoot) {
   const logFile = canonicalCapsuleHttpLogPath(request2, validatedRemoteRoot);
   return {
-    directories: [{ path: path14.dirname(logFile), caddyOwned: true }],
+    directories: [{ path: path15.dirname(logFile), caddyOwned: true }],
     finalFiles: [{ path: logFile, caddyOwned: true }]
   };
 }
@@ -54597,10 +54740,10 @@ function invalidCapsuleHttpLogPathError() {
   );
 }
 function hostedPreservedFilesRoot(paths2) {
-  return path14.join(paths2.capsule, "preserved-files");
+  return path15.join(paths2.capsule, "preserved-files");
 }
 async function prepareHostedRuntimeFileAccess(target, mode, failure) {
-  const handle = await open7(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  const handle = await open8(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   try {
     const identity = await handle.stat();
     if (!identity.isFile() || identity.nlink !== 1) throw helperError(failure.message, failure.hint);
@@ -54653,7 +54796,7 @@ async function reconcileReleaseAttempt(request2) {
   if (!recorded) {
     await rollbackPreservedFiles(attempt.seeds);
     if (attempt.seeds.length) actions.push("seeds-rolled-back");
-    const recordedTarget = record.currentRelease?.id ? path14.join(paths2.releases, record.currentRelease.id) : null;
+    const recordedTarget = record.currentRelease?.id ? path15.join(paths2.releases, record.currentRelease.id) : null;
     const currentTarget = await readlink(paths2.currentLink).catch((error) => {
       if (errorDetails(error).code === "ENOENT") return null;
       throw error;
@@ -54665,7 +54808,7 @@ async function reconcileReleaseAttempt(request2) {
     const candidate = canonicalRollbackPaths(request2, attempt.release);
     await removeReleasePrivateKeyIfPresent(candidate, attempt.release);
     if (await pathExists(candidate.release)) {
-      await rm10(candidate.release, { recursive: true, force: true });
+      await rm11(candidate.release, { recursive: true, force: true });
       actions.push("candidate-release-removed");
     }
   }
@@ -54731,7 +54874,7 @@ async function recordedReleaseFileClaims(releaseDirectory, recordedRelease) {
     const normalized = file.normalize("NFC");
     if (canonical.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
     canonical.add(normalized);
-    const stats = await lstat12(path14.join(releaseDirectory, ...file.split("/")));
+    const stats = await lstat13(path15.join(releaseDirectory, ...file.split("/")));
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
       throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
     }
@@ -54747,8 +54890,8 @@ async function deriveReleaseFileClaims(root) {
       if (!safeRecordedReleasePath(relative)) {
         throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
       }
-      const entryPath = path14.join(directory2, entry.name);
-      const stats = await lstat12(entryPath);
+      const entryPath = path15.join(directory2, entry.name);
+      const stats = await lstat13(entryPath);
       if (stats.isSymbolicLink()) {
         throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
       }
@@ -54771,7 +54914,7 @@ function validRecordedReleaseIdentity(file) {
   return file && safeRecordedReleasePath(file.path) && Number.isSafeInteger(file.size) && file.size >= 0 && typeof file.sha256 === "string" && /^[a-f0-9]{64}$/.test(file.sha256);
 }
 function safeRecordedReleasePath(file) {
-  return file.length > 0 && !file.startsWith("/") && !file.includes("\\") && !file.includes("\0") && path14.posix.normalize(file) === file && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+  return file.length > 0 && !file.startsWith("/") && !file.includes("\\") && !file.includes("\0") && path15.posix.normalize(file) === file && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 async function verifyRegisteredCapsule(request2, purpose = "push") {
   const record = await readRegistryRecordForCapsule(request2, purpose);

@@ -42,7 +42,7 @@ import { signInWithEmail, signUpWithEmail } from "./auth-runtime.js";
 // `auth-runtime.ts` in that batch, once the HTTP layer stopped holding them.
 import { beginOAuthSignIn, reconcileOAuthRegistrationKeys, resolvePasswordResetConfig, retireOAuthRegistrationKeys } from "./auth-runtime.js";
 import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./user-preferences-runtime.js";
-import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { countAcceptedTeamMembers, countTeamAdmins, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
@@ -7790,8 +7790,9 @@ function createTeamBillingAuthorityContext(database, auth, trustedDb, teamId, as
                 if (requestedTeamId !== teamId)
                     throw commandError("Team Billing operation denied.", "Count accepted members only for the Team whose billing authority is being evaluated.", "TEAM_BILLING_DENIED");
                 const totalCount = await countAcceptedTeamMembers(database.adapter, teamId, () => commandError("Team Billing operation denied.", "Retry against the current Team state.", "TEAM_BILLING_DENIED"));
+                const adminCount = await countTeamAdmins(database.adapter, teamId);
                 assertActive();
-                return Object.freeze({ totalCount });
+                return Object.freeze({ totalCount, adminCount });
             },
         }),
     }, database.app);

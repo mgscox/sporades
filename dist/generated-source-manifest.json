@@ -48,6 +48,7 @@
       "src/cli/host-helper-validation.ts",
       "src/cli/host-inventory.ts",
       "src/cli/host-metrics.ts",
+      "src/cli/host-observability-mail.ts",
       "src/cli/host-observability.ts",
       "src/cli/host-request-builders.ts",
       "src/cli/host-telemetry-relay.ts",
@@ -149,6 +150,7 @@
       "src/types/admission-policy.d.ts",
       "src/types/client.d.ts",
       "src/types/host-backups.d.ts",
+      "src/types/host-observability.d.ts",
       "src/types/monitoring.d.ts",
       "src/types/observability.d.ts",
       "src/types/server.d.ts",
@@ -160,7 +162,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "fb91f1ef78cf60b6c00dfe1a13861e0ec2b7b457844a055a5b7ab6605e948e18"
+    "digest": "0d77ed6b62ef53dbc36af85d173bdc8d912c83659ef2c1f2a0f3ee8891890010"
   },
   "outputs": {
     "files": [
@@ -322,6 +324,10 @@
       "dist/cli/host-metrics.d.ts.map",
       "dist/cli/host-metrics.js",
       "dist/cli/host-metrics.js.map",
+      "dist/cli/host-observability-mail.d.ts",
+      "dist/cli/host-observability-mail.d.ts.map",
+      "dist/cli/host-observability-mail.js",
+      "dist/cli/host-observability-mail.js.map",
       "dist/cli/host-observability.d.ts",
       "dist/cli/host-observability.d.ts.map",
       "dist/cli/host-observability.js",
@@ -716,6 +722,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "2f2e2443ce24fa38962cfd7d61909f987553afaf469084829118665c1a404582"
+    "digest": "54117f9907a5441850b17a3aa2a6209998c8828fe2e61a2ce653675ef7a532a0"
   }
 }
