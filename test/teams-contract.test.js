@@ -62,6 +62,8 @@ test("the published Teams contract defines the public boundaries and is reachabl
   assert.match(clientTypes, /countMembers\(teamId: string\): Promise<SporadesResult<TeamMemberCountResult>>/);
   assert.match(serverTypes, /export type CurrentUserTeamsApi/);
   assert.match(serverTypes, /countMembers\(teamId: string\): Promise<TeamMemberCountResult>/);
+  assert.match(serverTypes, /countMembers\(teamId: string\): Promise<Readonly<TeamMemberCountResult & \{ adminCount: number \}>>/);
+  assert.match(teams, /\{ totalCount, adminCount \}[\s\S]*same snapshot under the Team lifecycle lock/);
   assert.match(serverTypes, /admitJoin\?\(ctx: TeamJoinAdmissionContext<Schema>, input: TeamJoinAdmissionInput\)/);
   assert.match(serverTypes, /TeamJoinAdmissionContext[\s\S]*ReadOnlyDatabaseFromSchema<Schema>/);
   assert.match(serverTypes, /bypass the joining user's ordinary row ACLs[\s\S]*Runtime tables and mutations are unavailable/);

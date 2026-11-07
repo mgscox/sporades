@@ -353,7 +353,37 @@ transaction-bound read-only app tables. The same callback has only the
 transaction-bound `ctx.teams.countMembers(input.teamId)` inspection, allowing a
 downgrade policy to recheck exact accepted seats immediately before provider
 I/O. It cannot inspect another Team, enumerate members, or retain the count
-surface after callback settlement. Safe `read` authorization may
+surface after callback settlement. This authority-only count returns
+`{ totalCount, adminCount }`: both are exact accepted-membership counts from the
+same snapshot under the Team lifecycle lock. `adminCount` counts only accepted
+members whose management role is `admin`; ordinary members and pending Join
+links do not use an administrator seat. Existing consumers of `totalCount`
+continue to work. The browser, current-user, and Privileged count APIs still
+return only `{ totalCount }`.
+
+A Capsule that sells administrator seats separately can check its target
+product's staff limit for both Checkout and managed plan transitions, including
+direct SDK calls:
+
+```ts
+async authorize(ctx, input) {
+  const holder = await ctx.db.billingHolders.where("teamId", input.teamId).get();
+  if (holder?.userId !== ctx.auth.userId) return { allow: false };
+  if (input.operation === "checkout" || input.operation === "plan-transition") {
+    const { adminCount } = await ctx.teams.countMembers(input.teamId);
+    const product = input.productKey ? products[input.productKey] : undefined;
+    return { allow: product !== undefined && adminCount <= product.maxStaff };
+  }
+  return { allow: true };
+}
+```
+
+Here `products` is the Capsule's server-owned product policy. Administrator
+counting does not change the built-in `team-members` billing quantity, which
+continues to count all accepted members. The runtime does not expose a
+`teams.admitPromote` policy hook.
+
+Safe `read` authorization may
 additionally admit a current member, so the Capsule can render one Team-visible
 status without exposing provider identifiers.
 Captured policy tables expire when the callback settles. Removing membership or
