@@ -1730,6 +1730,9 @@ public analytics hostname independent of the Host/data identity; direct routing,
 status and provisioning use the same reserved hostname without rewriting browser
 Host/Origin authority. Disabled services retain this routing intent, and database
 restore preserves the destination's operator-selected hostname.
+Protected mail configuration gives GlitchTip authenticated implicit TLS SMTP,
+secret-free status and web/worker-only apply, retaining destination credentials
+through enable, disable and database restore. Absent configuration stays console-only.
 Resource refusal, retry convergence,
 disable/uninstall, scheduled restic database backups and monitored health are
 part of this contract. See [the operator runbook](./reference/host-observability.md).
