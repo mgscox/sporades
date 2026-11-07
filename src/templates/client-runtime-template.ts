@@ -924,7 +924,7 @@ function createConnection() {
         return;
       }` : ""}
       if (message.error && typeof window !== "undefined" && typeof window.CustomEvent === "function") {
-        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: message.error }));
+        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: { ...message.error, ...(typeof message.error.eventId === "string" && /^[a-f0-9]{32}$/.test(message.error.eventId) ? { sporadesSource: "server" } : {}) } }));
       }
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message, openedSocket);

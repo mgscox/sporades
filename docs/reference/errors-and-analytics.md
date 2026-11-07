@@ -41,7 +41,7 @@ No requests are sent when neither integration is active.
    `https://public-key@errors.example.com/42`. A path prefix is supported.
 3. Set `observability.errors` as above and rebuild/restart the Capsule.
 
-Uncaught query, mutation, Custom endpoint and Job failures produce envelopes
+Query, mutation, app-message, Custom endpoint and Job failures caught by the runtime produce envelopes
 with redacted messages and parsed stack frames, tagged with Capsule, release
 (`SPORADES_RELEASE_ID` when available), environment and runtime surface.
 The provider transport sends the standard Sentry authentication header using the
@@ -54,9 +54,58 @@ commit or retry decisions. `sampleRate` is an error probability from 0 to 1,
 defaulting to 1. Set 0 to suppress errors.
 
 Browser errors are separately opt-in with `client: true` (default false).
-The first-party loader captures `error`, `unhandledrejection`, and error results
-received by the Sporades client transport. This is basic collection: it does not
+The first-party loader captures `error`, `unhandledrejection`, and independent
+`sporades:error` events. The client transport marks server-error event mirrors
+with `sporadesSource: "server"` only when the DTO carries a server-generated
+opaque `eventId`; the loader skips these mirrors before counting
+its browser budget because the server catch path owns the original exception.
+Independent browser errors and uncaptured transport failures continue to report. This is basic collection: it does not
 upload source maps, capture console output, record sessions, or track users.
+
+
+### Exception provenance and source coordinates
+
+Capture preserves exception names and up to four exception values (outer error
+plus three causes), with cycle detection. All values share 20 parsed frames and
+2,048 message characters. V8/Node/Chrome, Safari/JSC and Firefox frames are
+recognized, including stacks with no header. Messages and frame fields follow
+the same diagnostic redaction policy. Arbitrary exception properties are dropped.
+Server events include the runtime-declared `handler`, safe `error_code` and
+`cause_code` when available, and `correlation_id` equal to the generated opaque
+`event_id`. Captured query, mutation and app-message error DTOs may include this
+opaque `eventId` for correlation, with no original diagnostics sent to browsers. Privileged wrappers retain their wrapper stack and existing audit-safe
+cause code; raw privileged cause messages and stacks stay private. Only explicit
+string cause codes are considered, with Server env redaction applied before code
+normalization. Primitive causes and missing or secret-bearing codes report
+`UNKNOWN_ERROR`. Query/mutation arguments, request headers and customer payloads
+are never added as context.
+
+Embedded `data:` module filenames become `sporades://capsule/server.mjs` in server
+events; browser embedded modules use `sporades://embedded/module`. Compound eval
+locations containing `data:` or `blob:` URLs use the same stable identifier before
+browser serialization; their retained coordinates describe the evaluated code.
+No embedded source, base64 payload, raw stack or source snippet is exported. Coordinates refer
+to the generated embedded module, scoped by the event release, rather than the
+original TypeScript. Parsing scans at most 1 MiB and 100 lines per exception before
+reducing to the shared frame budget; oversized or malformed frames may be absent.
+The browser normalizes frames before its existing 8,192-character stack transport
+limit. Release tagging remains available for private operator-managed source-map
+matching. Sporades does not fetch arbitrary source URLs, upload or publish source
+maps, decode embedded source, or promise original-source symbolication.
+
+Each exception labels `mechanism.data.stack_source` as `original`, `error_event`
+or `absent`. When an ErrorEvent has no error object, its available filename,
+line and column can supply an `error_event` frame after redaction. Stackless
+throws, rejection values and transport DTOs remain honestly stackless; collection
+does not synthesize a capture-site throw. Browsers may expose only `Script error.`
+for cross-origin scripts without the appropriate CORS response and script
+`crossorigin` setting. Such reports cannot recover the original exception or
+coordinates. Client submissions remain untrusted, always use `surface: client`
+and the public delivery lane, and cannot assign server handler, codes, release,
+correlation or event identity.
+
+These diagnostics apply to newly built runtimes and new events. Existing stored
+provider events are not rewritten or repaired by a CLI upgrade or PR merge.
 
 ## CSP violation reports
 
