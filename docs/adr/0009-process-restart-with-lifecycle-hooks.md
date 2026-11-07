@@ -1,5 +1,19 @@
 # Process restart for dev rebuilds, structured for future hot reload
 
-v0 dev rebuilds do a full process restart: kill the Node process, start a fresh one, re-import the bundle. The client reconnects through a bounded four-attempt WebSocket recovery episode with exponential backoff and jitter. Brief restarts can recover within that episode; a rejected page connection token is replaced through the runtime's no-store token route before the next attempt, while a restart or outage that outlasts the episode renders a runtime-owned error with a manual retry instead of reconnecting forever. The server runtime has `init()` and `shutdown()` lifecycle hooks from day one — v0 uses them as "start" and "die", but they exist so v1 can implement hot reload (call `shutdown()`, re-import, call `init()`) without restructuring.
+Dev rebuilds do a full process restart by stopping the Node process, starting
+a fresh one, and re-importing the bundle. The server runtime has `init()` and
+`shutdown()` lifecycle hooks so a future implementation can reload the bundle
+inside the same process.
 
-Recovery checks the closed socket's token through the same protected no-store route, retaining a valid token without extending its TTL and replacing an expired or evicted one. HTTP upgrade rejection does not supply a browser-visible auth close code. A failed check can retry the existing token, but stays within the four-attempt budget. Individual responses cannot reset that budget; only five minutes of continuous healthy connection rearm it. Exhaustion informs live-query subscribers and requires the manual retry action.
+The browser keeps reconnecting for as long as the page is active. The client
+checks the closed socket's token through the protected no-store token route. A
+valid token keeps its original TTL, and an expired or evicted token is replaced.
+A failed check falls back to the existing token. HTTP upgrade rejection does
+not supply a browser-visible auth close code.
+
+The retry delay uses exponential backoff with jitter and caps at 30 seconds.
+A stalled upgrade times out after ten seconds. Only five continuous healthy
+minutes reset the backoff. After four attempts without a sustained connection,
+the client reports the outage to live-query subscribers and offers a manual
+retry that skips the delay. The client keeps trying automatically and
+restores live subscriptions once the connection opens.
