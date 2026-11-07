@@ -47411,14 +47411,16 @@ function observabilityPort(host, service) {
   if (!match || +match[1] < 1024 || +match[1] > 65535) fail4("Observability service has no private published port.");
   return +match[1];
 }
-async function api(host, service, route, token, body, optional = false) {
+async function api(host, service, route, token, body, optional = false, method = body === void 0 ? "GET" : "POST") {
   try {
-    const response = await fetch(`http://127.0.0.1:${observabilityPort(host, service)}${route}`, { method: body === void 0 ? "GET" : "POST", headers: { "Content-Type": "application/json", ...token ? { Authorization: `Bearer ${token}` } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(1e4) });
+    const response = await fetch(`http://127.0.0.1:${observabilityPort(host, service)}${route}`, { method, headers: { "Content-Type": "application/json", ...token ? { Authorization: `Bearer ${token}` } : {} }, body: body === void 0 ? void 0 : JSON.stringify(body), redirect: "error", signal: AbortSignal.timeout(1e4) });
     if (optional && response.status === 404) return null;
     if (!response.ok) fail4();
     const text2 = await response.text();
     if (text2.length > 1024 * 1024) fail4();
-    return text2 ? JSON.parse(text2) : {};
+    const value = text2 ? JSON.parse(text2) : {};
+    if (service === "web" && value === null) fail4();
+    return value;
   } catch {
     return fail4();
   }
@@ -47535,12 +47537,26 @@ async function provisionObservability(host, target) {
   const slug = `capsule-${hash2.slice(0, 32)}`;
   const values = {};
   if (target.errors) {
-    if (!await api(host, "web", `/api/0/projects/sporades/${slug}/`, state.secrets.token, void 0, true)) await api(host, "web", "/api/0/teams/sporades/capsules/projects/", state.secrets.token, { name: slug, slug, platform: "node" });
+    const route = `/api/0/projects/sporades/${slug}/`;
+    const existing = await api(host, "web", route, state.secrets.token, void 0, true);
+    const project = existing ?? await api(host, "web", "/api/0/teams/sporades/capsules/projects/", state.secrets.token, { name: slug, slug, platform: "node" });
+    if (!project || typeof project.id !== "string" || !/^[1-9]\d*$/.test(project.id) || project.slug !== slug || typeof project.name !== "string" || !project.name || !existing && project.name !== slug) fail4();
+    if (project.name === slug) {
+      const name2 = identity.slice(0, 64);
+      const updated = await api(host, "web", route, state.secrets.token, { name: name2, slug }, false, "PUT");
+      if (!updated || updated.id !== project.id || updated.slug !== slug || updated.name !== name2) fail4();
+    }
     let keys2 = await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token);
-    if (!Array.isArray(keys2)) keys2 = keys2.items ?? keys2.results;
-    if (!keys2?.length) keys2 = [await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token, { name: "Sporades" })];
-    const dsn = new URL(keys2[0].dsn.public);
-    if (!/\/\d+$/.test(dsn.pathname) || !/^[a-f0-9]{32}$/.test(dsn.username)) fail4();
+    if (!Array.isArray(keys2)) keys2 = keys2?.items ?? keys2?.results;
+    if (!Array.isArray(keys2)) fail4();
+    if (!keys2.length) keys2 = [await api(host, "web", `/api/0/projects/sporades/${slug}/keys/`, state.secrets.token, { name: "Sporades" })];
+    let dsn;
+    try {
+      dsn = new URL(keys2[0].dsn.public);
+    } catch {
+      return fail4();
+    }
+    if (!/\/\d+$/.test(dsn.pathname) || dsn.pathname.split("/").at(-1) !== project.id || !/^[a-f0-9]{32}$/.test(dsn.username)) fail4();
     values.ERROR_DSN = `https://${dsn.username}@errors.${host.domain}${dsn.pathname}`;
   }
   if (target.analytics) {
