@@ -1,14 +1,19 @@
 # Runtime timing tests
 
-Keep `SPORADES_CONFIG_DIR` and `TMPDIR` inside the worktree when running CLI
-tests. All infrastructure in the deploy and File ingress test files is local
+For the bounded PR regression gate, tool inventory, timings and CI coverage, see
+[QA regression lanes](qa-test-lanes.md). Use `npm run test:qa` plus focused tests
+on a QA desk.
+
+Keep `SPORADES_CONFIG_DIR` inside the worktree when running CLI tests. On a
+CubeFarm desk, set `TMPDIR` to the assigned `CUBEFARM_JOB_SCRATCH`; elsewhere,
+use an owned temporary directory. All infrastructure in the deploy and File ingress test files is local
 and synthetic; these files do not need a real Docker daemon or Host server.
 Tests that need real services retain their explicit opt-in guards.
 
 ```sh
 mkdir -p .tmp .dev-config
 export SPORADES_CONFIG_DIR="$PWD/.dev-config"
-export TMPDIR="$PWD/.tmp"
+export TMPDIR="${CUBEFARM_JOB_SCRATCH:-$PWD/.tmp}"
 # Prevent AppleDouble archive entries on macOS.
 export COPYFILE_DISABLE=1
 node --test --test-concurrency=1 test/admission-lifecycle-proof.test.js test/file-ingress.test.js
@@ -40,7 +45,11 @@ Do not repair cache permissions by changing unrelated user-owned directories.
 Unix socket fixtures use `test/support/unix-socket-path.js`. It keeps a short
 absolute pathname when possible and otherwise uses a pathname relative to the
 shared working directory, bounded to 100 UTF-8 bytes for Darwin and Linux.
-The socket stays inside its unique, owned fixture directory. Listeners and
+When neither pathname fits, the helper creates a short owned symlink alias in
+the checkout. The socket bytes stay in the original job-backed fixture. The QA
+runner owns and removes the alias directory, including after timeout. Direct
+test processes remove their own aliases on normal exit. The socket stays inside
+its unique, owned fixture directory. Listeners and
 clients (including child processes) must retain the same working directory.
 Checkout depth and a worktree-local `TMPDIR` do not consume the socket budget.
 
