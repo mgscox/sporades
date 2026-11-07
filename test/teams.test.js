@@ -2396,7 +2396,7 @@ test("headless managed Plan transition stays pending through provider acknowledg
     assert.deepEqual(await runtime.database.adapter.withTransaction((transaction) => runtime.database.runTeamBillingAuthority(transaction, reconstructed, {
       operation: "plan-transition", teamId: team.id, teamRole: "admin", productKey: "agency",
     })), { allow: true });
-    assert.deepEqual(billingPolicyChecks.at(-1).memberCount, { totalCount: 2 });
+    assert.deepEqual(billingPolicyChecks.at(-1).memberCount, { totalCount: 2, adminCount: 1 });
     await assert.rejects(() => capturedBillingPolicyCountMembers(team.id), (error) => error.code === "TRUSTED_READ_ACCESS_INACTIVE");
     const awaiting = await waitForTeamPlanOperation(runtime.database, team.id, input.requestId, "awaiting-observation");
     assert.equal(providerInputs.length, 1);

@@ -688,7 +688,7 @@ async function currentTeamAdmin(tx: LooseRecord, teamId: string, userId: string)
   return membership?.role === "admin";
 }
 
-async function countTeamAdmins(tx: LooseRecord, teamId: string) {
+export async function countTeamAdmins(tx: LooseRecord, teamId: string) {
   const row = await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'",
   )).get(teamId);

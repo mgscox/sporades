@@ -71,7 +71,7 @@ import { createAnonymousAuthTables } from "./auth-runtime.js";
 import {
   createUserPreferencesTables, readCurrentUserPreferences, updateCurrentUserPreferences,
 } from "./user-preferences-runtime.js";
-import { countAcceptedTeamMembers, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
+import { countAcceptedTeamMembers, countTeamAdmins, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import {
   TEAM_BILLING_CHECKOUT_JOB,
   TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
@@ -7997,8 +7997,9 @@ function createTeamBillingAuthorityContext(database: LooseRecord, auth: LooseRec
           "Retry against the current Team state.",
           "TEAM_BILLING_DENIED",
         ));
+        const adminCount = await countTeamAdmins(database.adapter, teamId);
         assertActive();
-        return Object.freeze({ totalCount });
+        return Object.freeze({ totalCount, adminCount });
       },
     }),
   }, database.app);
