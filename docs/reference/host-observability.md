@@ -217,10 +217,29 @@ its own containers/volumes. It exercises interrupted enable recovery, repeated
 enable, per-Capsule API identities, readable-name creation and hashed-default
 migration, interrupted rename retries, operator-name preservation, unchanged
 IDs/slugs/key responses and history, no duplicate projects, encrypted env,
-continued DSN ingestion and stored pageviews, disable/re-enable and uninstall.
-It uses loopback collection URLs and
+and continued DSN ingestion. A generated synthetic
+Capsule writes and throws through its actual HTTP endpoint; the harness verifies
+the exact marked event in the provisioned GlitchTip project, including endpoint
+surface, Capsule, release and environment. Browser `error` and
+`unhandledrejection` hooks run through the generated loader and same-origin
+tunnel, with synthetic credential/query/fragment redaction checked in stored
+events. Direct capture remains separate lower-level transport coverage.
+
+The harness also checks opaque client errors, transaction rollback, successful
+commits and continued runtime health while the provider is running, stopped,
+and with no integration configured. Fault endpoints exist only in temporary
+test Bundles. Event polling is bounded and database totals alone cannot satisfy
+runtime capture acceptance. It exercises pageview storage, disable/re-enable
+and uninstall. It uses loopback collection URLs and
 a route callback; public DNS/TLS and systemd reboot behavior require the final
 disposable Linux Host rehearsal.
+
+Keep `SPORADES_CONFIG_DIR` inside the checkout. The harness pins the local Docker
+socket and a unique Compose project, never a saved remote Docker context. Its
+scratch path must have protected ancestors, as required by the production
+secret-path checks; on shared checkouts, run it in a disposable local runner
+with the checkout mounted under protected parents. No live Host, SSH, provider
+credentials or production fault routes are needed.
 
 For that rehearsal: enable twice, register/push an opted-in Capsule, trigger a
 query failure and browser pageview, confirm them in both dashboards, confirm
