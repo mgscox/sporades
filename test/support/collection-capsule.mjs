@@ -57,12 +57,19 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
   for (let attempt = 0; attempt < 2000; attempt++) {
     assert.ok(!failed && child.exitCode === null, 'Synthetic Capsule exited before readiness');
     const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
-    if (signal) return { origin: `http://127.0.0.1:${signal.listening}`, flush: async () => {
-      const result = once(child, 'message', { signal: AbortSignal.timeout(10000) });
-      child.send('flush-observability');
-      const [message] = await result;
-      assert.deepEqual(message, { flushed: true });
-    } };
+    if (signal) {
+      const lines = serverModuleSource.split("\n");
+      const line = lines.findIndex(value => value.includes("throw new Error("));
+      assert.ok(line >= 0, "Generated failure site is available for coordinate assertions");
+      return { origin: `http://127.0.0.1:${signal.listening}`, expectedFailureFrame: {
+        filename: "sporades://capsule/server.mjs", lineno: line + 1, colno: lines[line].indexOf("new Error") + 1,
+      }, flush: async () => {
+        const result = once(child, 'message', { signal: AbortSignal.timeout(10000) });
+        child.send('flush-observability');
+        const [message] = await result;
+        assert.deepEqual(message, { flushed: true });
+      } };
+    }
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   assert.fail('Synthetic Capsule readiness timed out');

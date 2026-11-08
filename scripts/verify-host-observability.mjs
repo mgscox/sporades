@@ -151,7 +151,7 @@ try {
   assert.match(projectId, /^\d+$/);
   const config = { name:'test',release:{id:marker},observability:{errors:{protocol:'sentry',dsnEnv:'ERROR_DSN',client:true,environment:'local-acceptance'}},analytics:{provider:'umami',endpointEnv:'ANALYTICS_ENDPOINT',websiteIdEnv:'ANALYTICS_WEBSITE_ID'} };
   const serverEnv = {...values,ERROR_DSN:dsn.href,ANALYTICS_ENDPOINT:`http://127.0.0.1:${observabilityPort(host,'umami')}/api/send`};
-  const { origin } = await startCollectionCapsule(fixture, { config, serverEnv, failureMarker: marker });
+  const { origin, expectedFailureFrame } = await startCollectionCapsule(fixture, { config, serverEnv, failureMarker: marker });
   const failureBody = await assertCollectionBusinessSemantics(origin);
   const browserMarkers = await emitCollectionBrowserFailures(fixture, origin, marker);
   process.stdout.write('Real generated Capsule HTTP failure, rollback, subsequent commits and browser hooks exercised.\n');
@@ -167,7 +167,7 @@ try {
   let events=[],views=0;
   do {
     // GlitchTip v5.2.1 stores full event data separately from grouped Issue totals.
-    events=JSON.parse(sql('errors-db','glitchtip',`SELECT COALESCE(json_agg(json_build_object('project', i.project_id, 'message', e.data #>> '{exception,values,0,value}', 'tags', e.tags, 'release', r.version, 'data', e.data)), '[]'::json) FROM issue_events_issueevent e JOIN issue_events_issue i ON i.id=e.issue_id LEFT JOIN releases_release r ON r.id=e.release_id WHERE e.data #>> '{exception,values,0,value}' LIKE '${marker}%'`,deadline));
+    events=JSON.parse(sql('errors-db','glitchtip',`SELECT COALESCE(json_agg(json_build_object('project', i.project_id, 'event_id', e.id, 'message', e.data #>> '{exception,values,0,value}', 'tags', e.tags, 'release', r.version, 'data', e.data)), '[]'::json) FROM issue_events_issueevent e JOIN issue_events_issue i ON i.id=e.issue_id LEFT JOIN releases_release r ON r.id=e.release_id WHERE e.data #>> '{exception,values,0,value}' LIKE '${marker}%'`,deadline));
     views=Number(sql('analytics-db','umami',"SELECT count(*) FROM website_event WHERE url_path='/acceptance'",deadline));
     if(events.length>=4&&views>0)break;
     await new Promise(r=>setTimeout(r,1000));
@@ -184,6 +184,19 @@ try {
     assert.equal(event.tags.environment,'local-acceptance');
     assert.equal(event.data.environment,'local-acceptance');
     assert.equal(event.data.platform,platform);
+    if(surface==='endpoint') {
+      const exception = event.data.exception.values[0];
+      assert.equal(exception.type, 'Error');
+      const frame = exception.stacktrace.frames.at(-1);
+      assert.equal(frame.filename, expectedFailureFrame.filename);
+      assert.equal(frame.lineno, expectedFailureFrame.lineno);
+      assert.equal(frame.colno, expectedFailureFrame.colno);
+      assert.equal(frame.function, '<anonymous>');
+      assert.equal(event.tags.handler, 'fail');
+      assert.match(event.tags.correlation_id, /^[a-f0-9]{32}$/);
+      assert.equal(event.event_id.replaceAll('-', ''), event.tags.correlation_id);
+      assert.doesNotMatch(JSON.stringify(event), /data:text|base64|sourcesContent/);
+    }
     if(surface==='client') {
       assert.match(event.message,/REDACTED/);
       // This pinned provider normalizes browser stack filenames to URL paths.

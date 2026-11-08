@@ -231,7 +231,7 @@ async function proveTransactionFailureRollback(database, fail) {
   const logs = [];
   const captured = [];
   database.log = { emit: async (event) => logs.push(event) };
-  database.observability.capture = (error) => captured.push({ code: error.code, message: error.message, hint: error.hint });
+  database.observability.capture = (error) => { captured.push({ code: error.code, message: error.message, hint: error.hint }); };
   await fail(async () => {
     assert.deepEqual((await call(database, user)).error, {
       code: "PASSWORD_CHANGE_DENIED",

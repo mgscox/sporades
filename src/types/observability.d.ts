@@ -5,6 +5,14 @@
  * the same bounds. Public HTTP ingress allows 8 concurrent requests / 120 attempts
  * per window, including invalid bodies. Saturation drops outbound events without
  * queuing; failures release concurrency but do not refund the window count.
+ * Original V8/JSC/Firefox frames retain generated coordinates; embedded module
+ * source is replaced with a stable identifier. Up to four exception values share
+ * the existing 20-frame and 2,048-character message limits. Browser messages
+ * share their limit after embedded-source redaction, including all retained causes.
+ * Privileged causes expose only existing audit-safe codes. Server events add declared handler and
+ * opaque event correlation; browser DTOs cannot assign trusted metadata.
+ * Stackless ErrorEvents retain available source coordinates; no throw site is fabricated.
+ * Server transport mirrors are excluded from duplicate browser error collection.
  * Diagnostics conceal complete sensitive
  * values (including arrays/objects) and URL queries/fragments, including relative
  * URLs in messages and stack filenames after punctuation or key/value delimiters.
@@ -13,6 +21,8 @@
  * later URL-like text, JSON fields and closing punctuation. Public prefixes and
  * following lines remain available. URL stripping precedes Server env substitution,
  * including URL-prefix env values and complete URL-valued secrets.
+ * Server env matching includes case variants, full audit-normalized values and
+ * URL pathname, query, fragment, username and password component echoes.
  */
 export type ObservabilityConfig = {
   errors?: {

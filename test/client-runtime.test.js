@@ -3700,7 +3700,7 @@ test("a delayed retired socket close cannot stop restored Journey capture", asyn
   }
 });
 
-test("generated client preserves the browser error budget after real ACL denials", async () => {
+test("generated client excludes server mirrors and preserves the browser error budget after real ACL denials", async () => {
   const { collectionLoaderSource } = await import("../dist/templates/observability-loader.js");
   const { mutation, table, String: Text } = await import("../dist/server.js");
   const { runMutation, resolveAnonymousSession } = await import("../dist/server-runtime-source.js");
@@ -3730,8 +3730,14 @@ test("generated client preserves the browser error budget after real ACL denials
       browser.emitWindow("unhandledrejection", { reason: Object.assign(new Error("expected"), { code }) });
     }
     assert.deepEqual(sent, [], "expected denials must never become browser collection requests");
-    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "error", error: { code: "INTERNAL", message: "real failure" } }) });
-    assert.deepEqual(sent, [{ url: "/__sporades/collect", type: "error", message: "real failure" }]);
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "error", error: { code: "INTERNAL", message: "real failure", eventId: "a".repeat(32) } }) });
+    assert.deepEqual(sent, [], "the transport mirror has no original browser throw site");
+    browser.emitWindow("unhandledrejection", { reason: new TypeError("independent browser failure") });
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].message, "independent browser failure");
+    assert.equal(sent[0].name, "TypeError");
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "error", error: { message: "uncaptured transport failure" } }) });
+    assert.equal(sent.length, 2, "unexpected uncaptured DTOs still report honestly without a stack");
   } finally {
     browser.cleanup();
     await db.close();
