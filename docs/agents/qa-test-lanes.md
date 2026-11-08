@@ -27,11 +27,27 @@ npm run test:qa -- --report="$CUBEFARM_JOB_SCRATCH/qa-times.json"
 ```
 
 The QA command builds and verifies generated CLI parity inside its overall
-**890-second (14-minute 50-second)** deadline. It uses Node's process isolation and
-up to sixteen independent file harnesses, bounded by Node’s available CPU count.
-The fifty longest measured files start first. The runner defaults `GOMAXPROCS=2` for its Go helper processes (including esbuild), while honoring an explicit override. This bounds build concurrency inside each file harness as well as the number of harnesses; see [Go’s runtime environment contract](https://pkg.go.dev/runtime#hdr-Environment_Variables). Each harness receives one file; the
-worker pool supplies parallelism across files. Node also receives the lane’s
-concurrency limit.
+**two-hour safety deadline**. QA starts **up to four file harnesses**, bounded by available CPUs, each using
+`node --test --test-concurrency=1`. The pool sets the file concurrency;
+compiler-heavy files run in a separate serial lane. `GOMAXPROCS`,
+`UV_THREADPOOL_SIZE` and `RAYON_NUM_THREADS` are clamped to at most two in QA (or the smaller worker cap).
+This limits esbuild's Go pool, Tailwind/Lightning CSS's Rayon pool and native
+asynchronous work inherited by child
+Capsules and Vite builds. Tests retain their explicit concurrency assertions.
+QA never selects real Docker containers or Postgres services; loopback libSQL
+emulators remain isolated within their file harness. Explicit real-service lanes
+in `npm test` still run serially. CI's default file concurrency remains unchanged.
+
+The desk budget assumes about 8 GiB is available for one session. QA watches a
+**6,144 MiB process-tree RSS ceiling** and a **1,536 MiB available-memory floor**,
+leaving margin above the required 1 GiB. On Linux it samples `/proc` every 100 ms,
+including observed detached descendants, and uses `MemAvailable` plus readable
+cgroup v2 limits and OOM counters. RSS sums conservatively include shared pages;
+these are sampled watchdog limits, not kernel reservations. A burst can overshoot
+between samples, so retain the margin and do not launch multiple gates per desk.
+Other desks can consume the remaining memory; the runner stops its own work when
+the floor is crossed and never stops another desk's processes.
+
 Separate harnesses prevent Node 22’s ordered reporting from hiding completed
 sibling-file results behind an earlier hang. The Dev suite keeps all 215 original registration blocks and 68 helper
 declarations across `dev.test.js`, `dev-part-2.test.js` through
@@ -48,6 +64,13 @@ emulator. Malformed-response classification advances a controlled monotonic
 clock after one actual emulator reply, so a final short probe cannot replace
 that result with a startup timeout. Host process observations allow 15 seconds;
 dedicated timeout cases retain their short budgets.
+
+The measured profile placed every file at or above **512 MiB** in the serial
+memory lane, alongside the existing full Capsule/compiler and parser fixtures.
+That selects 44 files in this tree. Four remaining file trees budget about
+2 GiB at their measured upper bound, leaving headroom under the 6 GiB aggregate
+ceiling for warm-up and scheduling variation. The per-file table and CSV below
+record the calibration. The worker cap stays four even on this 18-CPU desk.
 
 Seven files run serially because concurrent compiler/watch activity exposes
 fixture timing races: `dev-watch.test.js`, `container-services-dev.test.js`,
@@ -78,8 +101,19 @@ with that flag. Existing
 automatic local restic tests still run when restic is installed. Its runner has a
 60-minute safety deadline for deliberately enabled service matrices. A targeted
 run can use `node scripts/run-tests.mjs --no-build test/example.test.js`; build
-first. `--concurrency=N`, `--timeout-ms=N` and `--report=PATH` are diagnostic
-options, not a way to relax the PR QA gate.
+first. The environment variable `SPORADES_TEST_MAX_WORKERS` provides a hard ceiling for
+`--concurrency=N`, including inherited nested gate invocations. An inherited larger
+ceiling does not raise QA's four-file default, and children receive the effective
+file limit. It also works for
+`npm test` on desks without changing CI's defaults. Use
+`SPORADES_TEST_MEMORY_LIMIT_MB` and `SPORADES_TEST_FREE_MEMORY_FLOOR_MB` to select
+another documented desk budget. `--memory-limit-mb=N` and
+`--free-memory-floor-mb=N` are equivalent diagnostic overrides. Keep QA's default
+limits for the PR gate; use `--timeout-ms=N` only for watchdog fixtures or a
+recorded diagnostic run. `--report=PATH` records every file's sampled peak tree
+RSS, wall time, lane and cleaned surviving PIDs, plus per-lane peaks and duration.
+With a report selected, `QA_FILE` lines retain per-file measurements as they
+finish even if the overall run is interrupted.
 
 Both runners preserve test diagnostics and stdout/stderr, print per-file results, and emit a final machine-readable line (`npm test` retains its separate pretest build; `test:qa` also summarizes build failure):
 
@@ -87,16 +121,54 @@ Both runners preserve test diagnostics and stdout/stderr, print per-file results
 QA_SUMMARY {"pass":123,"fail":0,"skip":12,"todo":0,"unfinishedFiles":0,"timedOut":false,"interrupted":false,"durationSeconds":42,"skippedLanes":["..."]}
 ```
 
-Allow the command at least 15 minutes in the QA job; do not wrap this gate in
-a 600-second tool timeout. Its own deadline owns cleanup and the summary.
+Allow the command its full safety deadline; do not wrap this gate in a
+600-second or 15-minute tool timeout. #345 corrects the earlier diagnosis:
+raising concurrency to satisfy a time budget exhausted the VM's memory.
+Memory headroom takes precedence over the earlier 15-minute target.
 
 Counts are tests, including Node's parent tests, rather than files. Cancelled
-tests count as failures; build, runner, timeout and interruption failures also
-make the command fail. Missing Python skips each affected file as one file-level
+tests without memory-pressure evidence count as failures; build, runner, timeout
+and interruption failures also make the command fail. Missing Python skips each affected file as one file-level
 skip, with its name and reason. An interrupted file retains completed-test
 counts and is listed in `unfinishedFiles`. On timeout or SIGINT/SIGTERM the
 watchdog kills its own test/build process groups, prints totals, and exits
 nonzero. The regression test checks that a hung fixture's child cannot survive.
+
+### Resource exhaustion and exit codes
+
+Exit **0** means the selected regression gate passed; **1** means a test,
+build, timeout, interruption or runner error. Exit **75** means
+`failureKind: environment`: the RSS ceiling or free-memory floor was crossed,
+a cgroup OOM kill was observed, or a child reported SIGKILL, ENOMEM, a worker-thread
+heap limit (`ERR_WORKER_OUT_OF_MEMORY`) or V8 heap exhaustion. SIGKILL alone cannot prove an OOM kill, so the reason records that
+signal as environment evidence rather than blaming a test assertion.
+
+Before killing owned work, the runner prints `RESOURCE PRESSURE` with the active
+filenames (or build/probe command), reason, peak RSS, available memory and swap.
+It retains `QA_SUMMARY`, then prints a final **`RESOURCE EXHAUSTION`** JSON line
+with `failureKind`, `cancelled`, `runningAtExhaustion`, peak/free memory and swap.
+The summary records initial, minimum and final free memory. Pending registered
+tests in interrupted files count as cancelled; an interrupted file with no test
+registrations counts as one cancelled file. Queued files remain unfinished and
+do not inflate the cancelled test count. Resource cancellation is excluded from
+`fail` and `timedOut`; assertions completed before pressure retain their evidence.
+QA must record this check as `failureKind: environment`, retain the resource
+line and active file list, and rerun when the desk has headroom. It is not a pass.
+
+A deliberately low-cap diagnostic is safe and quick:
+
+```sh
+npm run test:qa -- --no-build --memory-limit-mb=1 test/qa-runner.test.js
+# Exit 75, RESOURCE EXHAUSTION; no test assertions run.
+```
+
+The runner's focused tests additionally allocate bounded memory in a disposable
+child, exhaust an 8 MiB worker-thread heap, simulate SIGKILL and ENOMEM, cross an
+impossible free-memory floor, and
+prove that ordinary assertion/cancellation failures keep exit 1. Cleanup tracks
+PID birth times and removes observed detached survivors between files, recording
+`CLEANUP` and `cleanedProcesses` for leak investigation. Open servers or DB handles
+that prevent a file exiting remain subject to the overall watchdog.
 
 Docker readiness probes have a five-second bound; selected PostgreSQL endpoints
 have a three-second connection bound. Unavailable selections are removed with a
@@ -213,7 +285,11 @@ checkout test workflow. A specialist audit unable to meet its extra isolation
 contract should identify the missing sandbox control separately and follow its
 existing desk-limit policy, without misreporting the runtime suite as executed.
 
-## Measurements
+## Historical #344 measurements
+
+These measurements used sixteen harnesses and did not collect memory. They do
+not establish the current memory-bounded QA budget. See the #345 measurements
+below for the current gate.
 
 Measured on 2026-11-07 in disposable desk worktrees, using Node 24.22.0, 18 available CPUs and approximately 31 GiB RAM. Other office
 jobs shared the machine; these are observed wall times, not isolated CPU
@@ -311,3 +387,111 @@ The baseline `dev.test.js` was the unfinished original monolith. The baseline
 Host and Deploy files were also monoliths; their final rows describe the first
 shard, so compare each suite’s combined workload accordingly. Both final runs retain Node's exact pass/fail/skip totals in
 the table above and emit a JSON report through `--report` for future comparisons.
+
+## Memory-bounded measurements (#345)
+
+Measured on this shared Linux desk with Node 24.22.0 and approximately 31 GiB
+of physical RAM. The per-session budget is 8 GiB; other desks shared the VM.
+Values are sampled process-tree RSS, not just the test worker heap.
+Machine-wide available memory and swap also reflect other desks.
+
+The final full-suite command was `npm run test:qa -- --report=...`, including
+its build/parity checks within the memory guard. No real-service acceptance
+flags were selected.
+
+| Lane | Files | File concurrency | Peak tree RSS (MiB) | Wall time (s) |
+| --- | ---: | ---: | ---: | ---: |
+| parallel | 201 | 4 | 1620.0 | 857.28 |
+| serial memory-heavy | 44 | 1 | 1847.9 | 2221.32 |
+| serial shared-service | 7 | 1 | 1161.6 | 94.52 |
+
+| Measurement | Initial instrumented profile | Final calibrated QA |
+| --- | ---: | ---: |
+| Peak tree RSS (MiB) | 2381.1 | 1847.9 |
+| Minimum available memory (MiB) | 4187.2 | 17226.2 |
+
+The initial profile used four files and thirteen serial Capsule/parser fixtures.
+It found two readiness-wait failures, fixed before the final gate; it is not a
+passing validation result. Its measurements selected the additional serial files.
+Machine-wide free-memory values are not a controlled comparison between runs.
+
+Full command wall time (including build): **3180.86 s**.
+Tests: **6698 passed, 0 failed, 0 cancelled, 310 skipped**.
+Runner tree peak: **1847.9 MiB** against the **6,144 MiB** ceiling.
+Available memory: **22619.4 MiB before**, **17226.2 MiB minimum**,
+**28598.3 MiB after** (floor 1,536 MiB).
+Swap available: **411.1 MiB before**, **411.1 MiB minimum**,
+**417.1 MiB after**.
+
+The manager-reported legacy run in #345 fell below 1 GiB available memory,
+exhausted swap and left 204 tests cancelled. Its peak RSS was not recorded.
+This comparison does not recreate an OOM on the shared machine.
+
+### Twenty highest-memory files
+
+| File (`test/`) | Peak tree RSS (MiB) | Wall time (s) | Lane |
+| --- | ---: | ---: | --- |
+| `dev.test.js` | 1774.5 | 104.83 | serial memory-heavy |
+| `deploy.test.js` | 1706.2 | 124.90 | serial memory-heavy |
+| `dev-part-6.test.js` | 1530.4 | 89.39 | serial memory-heavy |
+| `dev-part-2.test.js` | 1436.7 | 128.66 | serial memory-heavy |
+| `dev-part-5.test.js` | 1352.7 | 83.20 | serial memory-heavy |
+| `dev-part-3.test.js` | 1260.9 | 108.52 | serial memory-heavy |
+| `host-part-2.test.js` | 1221.4 | 155.62 | serial memory-heavy |
+| `doctor.test.js` | 1189.8 | 23.95 | serial memory-heavy |
+| `dev-part-4.test.js` | 1142.7 | 80.66 | serial memory-heavy |
+| `public-assets.test.js` | 1142.4 | 47.52 | serial memory-heavy |
+| `dev-watch.test.js` | 1088.0 | 24.56 | serial shared-service |
+| `dev-stripe-origin.test.js` | 1039.0 | 14.39 | serial memory-heavy |
+| `server-bundle-module-graph.test.js` | 1022.0 | 61.65 | serial memory-heavy |
+| `host.test.js` | 1020.7 | 76.78 | serial memory-heavy |
+| `telemetry-jobs-bundle.test.js` | 977.9 | 53.93 | serial memory-heavy |
+| `html-document-injection.test.js` | 975.3 | 11.40 | serial memory-heavy |
+| `deploy-part-2.test.js` | 939.3 | 128.53 | serial memory-heavy |
+| `sealed-env.test.js` | 926.5 | 13.91 | serial memory-heavy |
+| `admission-evidence-lifecycle.test.js` | 890.2 | 22.97 | serial memory-heavy |
+| `telemetry-websocket-bundle.test.js` | 870.0 | 33.14 | serial shared-service |
+
+### Twenty longest files
+
+| File (`test/`) | Peak tree RSS (MiB) | Wall time (s) | Lane |
+| --- | ---: | ---: | --- |
+| `job-scheduling.test.js` | 501.6 | 238.53 | parallel |
+| `file-ingress.test.js` | 435.4 | 194.05 | serial memory-heavy |
+| `collection-tunnel.test.js` | 835.6 | 186.80 | serial memory-heavy |
+| `host-part-2.test.js` | 1221.4 | 155.62 | serial memory-heavy |
+| `database-adapter-conformance-coverage.test.js` | 286.2 | 149.21 | parallel |
+| `monitoring-release-verifier.test.js` | 662.4 | 137.33 | serial memory-heavy |
+| `dev-part-2.test.js` | 1436.7 | 128.66 | serial memory-heavy |
+| `deploy-part-2.test.js` | 939.3 | 128.53 | serial memory-heavy |
+| `resource-transactions.test.js` | 238.1 | 127.60 | parallel |
+| `deploy.test.js` | 1706.2 | 124.90 | serial memory-heavy |
+| `database-adapter.test.js` | 255.4 | 116.20 | parallel |
+| `dev-part-3.test.js` | 1260.9 | 108.52 | serial memory-heavy |
+| `dev.test.js` | 1774.5 | 104.83 | serial memory-heavy |
+| `database-adapter-conformance-auth-storage.test.js` | 410.1 | 104.25 | parallel |
+| `team-destructive-policy.test.js` | 320.3 | 100.28 | parallel |
+| `stripe-webhook.test.js` | 417.4 | 100.03 | parallel |
+| `email-events.test.js` | 172.5 | 93.68 | parallel |
+| `monitoring-maintenance.test.js` | 298.3 | 92.29 | parallel |
+| `postgres-emitted-sql-quoting.test.js` | 268.4 | 89.78 | parallel |
+| `dev-part-6.test.js` | 1530.4 | 89.39 | serial memory-heavy |
+
+### Cleanup observations
+
+No completed file left an observed surviving child process. The detached-helper
+regression fixture independently proves that the runner reports and reaps such
+helpers before advancing to another file.
+
+The Job wake-timer cleanup test now uses the runtime clock at its original
+100 ms/110 ms boundaries and verifies no delayed handler runs after close. Its
+failure path also closes the database before removing fixture storage. This
+removes a real-clock race and a missed database cleanup discovered while profiling.
+
+The packaged Mail Capsule permits 30 seconds for its startup port within the
+existing 60-second case. The Checkout fixture permits 30 seconds for its four
+durable attempts, retaining the exact attempt-count, failure, recovery and
+revocation assertions. Short transport and rejection deadlines are unchanged.
+
+[All per-file memory measurements](qa-test-lanes-memory.csv) include wall time,
+lane, test totals and the number of surviving processes cleaned by the runner.

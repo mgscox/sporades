@@ -1523,18 +1523,21 @@ export default capsule({ name: 'mail-job-206', jobs: {
     child = spawn(process.execPath, [path.join(root, "server.mjs")], { cwd: root, env: { ...env, PORT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
-    const waitFor = async probe => {
-      for (let attempt = 0; attempt < 200; attempt++) {
+    const waitFor = async (probe, timeoutMs = 5_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (true) {
+        if (child.signalCode) throw Object.assign(new Error("Capsule exited by signal"), { signal: child.signalCode, stderr });
         assert.equal(child.exitCode, null, stderr);
         const result = await probe();
         if (result) return result;
+        if (Date.now() >= deadline) break;
         await new Promise(resolve => setTimeout(resolve, 25));
       }
       assert.fail(`Capsule did not reach expected state: ${stderr}`);
     };
     const port = await waitFor(() => stdout.split("\n").map(line => {
       try { return JSON.parse(line).listening; } catch { return null; }
-    }).find(Number.isInteger));
+    }).find(Number.isInteger), 30_000);
     const origin = `http://127.0.0.1:${port}`;
     for (const automated of [true, false]) {
       const response = await fetch(`${origin}/enqueue?automated=${automated}&correlation=intent-${automated}`, { method: "POST" });

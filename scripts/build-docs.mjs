@@ -11,6 +11,10 @@ execFileSync(process.execPath, ["./node_modules/vitepress/bin/vitepress.js", "bu
 });
 
 cpSync("docs/api", "docs/.vitepress/dist/api", { recursive: true });
+// VitePress does not copy documents referenced by Markdown links.
+for (const file of ["qa-test-lanes-times.csv", "qa-test-lanes-memory.csv"]) {
+  cpSync(`docs/agents/${file}`, `docs/.vitepress/dist/agents/${file}`);
+}
 
 await generateLlmsDocumentation({
   docsDir: "docs",

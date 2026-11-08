@@ -189,8 +189,20 @@ test("queued cancellation prevents execution behind a running Job", async () => 
 });
 
 test("closing the runtime clears a delayed Job wake timer", async () => {
- const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-close-")); const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{noop:job(()=>null)},mutations:{enqueue:mutation((ctx)=>ctx.jobs.enqueue("noop",{},{availableAt:new Date(Date.now()+100).toISOString()}))}});
- try {db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); await runMutation(db,auth,"enqueue",[]); await new Promise(r=>setTimeout(r,5)); assert.ok(db.__jobWakeTimer); db.close(); assert.equal(db.__jobWakeTimer,null); await new Promise(r=>setTimeout(r,110)); } finally {await rm(dir,{recursive:true,force:true});}
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-close-"));
+ const clock=createControllableRuntimeClock("2030-01-01T00:00:00.000Z");const seen=[];let closed=false;
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{noop:job(()=>seen.push("ran"))},mutations:{enqueue:mutation(ctx=>ctx.jobs.enqueue("noop",{},{availableAt:new Date(clock.now().getTime()+100).toISOString()}))}},{clock});
+ try {
+  db.adapter.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",clock.now().toISOString(),"u",null,null,0,1,"anonymous");
+  await runMutation(db,auth,"enqueue",[]);
+  await clock.runDueTimers();
+  assert.ok(db.__jobWakeTimer);
+  await db.close();closed=true;
+  assert.equal(db.__jobWakeTimer,null);
+  clock.advanceBy(110);
+  await clock.runDueTimers();
+  assert.deepEqual(seen,[],"closing must prevent the delayed handler from running");
+ } finally {if(!closed) await db.close();await rm(dir,{recursive:true,force:true});}
 });
 
 test("expired-lease recovery waits for runtime initialization and close clears its wake", async () => {

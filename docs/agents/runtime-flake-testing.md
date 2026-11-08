@@ -18,7 +18,8 @@ export TMPDIR="${CUBEFARM_JOB_SCRATCH:-$PWD/.tmp}"
 export COPYFILE_DISABLE=1
 node --test --test-concurrency=1 test/admission-lifecycle-proof.test.js test/file-ingress.test.js
 npm run typecheck
-npm test
+# Full desk regression with the QA memory budget.
+npm test -- --qa
 ```
 
 ## Native capabilities and offline package installs
