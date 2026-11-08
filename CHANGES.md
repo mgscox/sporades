@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- Export the typed container Bundle API as `sporades/build`, so build scripts can
+  call `createBundle` without importing private `dist/` paths (#355).
+
 ## v0.9.46 - 2026-11-08
 
 Changes since v0.9.45.
