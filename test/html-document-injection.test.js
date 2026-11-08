@@ -267,7 +267,7 @@ for (const mode of ['dev', 'container']) test(`${mode} preserves parsing modes w
 });
 
 for (const mode of ['dev', 'container', 'docker']) test(`Chromium preserves standards-mode layout and injection for ${mode} documents with omitted head tags`, {
-  skip: process.env.SPORADES_REAL_CSP_BROWSER !== '1' || (mode === 'docker' && process.env.SPORADES_REAL_HTML_CONTAINER !== '1'),
+  skip: (process.env.SPORADES_REAL_CSP_BROWSER !== '1' || (mode === 'docker' && process.env.SPORADES_REAL_HTML_CONTAINER !== '1')) && 'Set SPORADES_REAL_CSP_BROWSER=1 and SPORADES_REAL_HTML_CONTAINER=1 for the Docker mode; requires Playwright Chromium',
   timeout: mode === 'docker' ? 150000 : 30000,
 }, async t => {
   const { chromium } = await import('playwright');

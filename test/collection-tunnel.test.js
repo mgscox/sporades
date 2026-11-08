@@ -568,7 +568,7 @@ async function generatedCollectionFixture(t, serverEnv = {}, { mode = 'available
   const received = [];
   const receiver = await listen(t, async (request, response) => { let body = ''; for await (const part of request) body += part; received.push({ headers: request.headers, body }); response.writeHead(mode === 'unavailable' ? 503 : 200).end(); });
   const config = { name: 'bundle-collection', ...(mode === 'absent' ? {} : { observability: { errors: { protocol: 'sentry', dsnEnv: 'DSN', client: true } }, analytics: { provider: 'umami', endpointEnv: 'ANALYTICS', websiteIdEnv: 'WEBSITE' } }), security: { csp: { mode: 'enforce', ...(mode === 'absent' ? {} : { reportTo: 'observability' }), directives: { 'script-src': ["'self'"], 'connect-src': ["'self'"] } } } };
-  const { origin } = await startCollectionCapsule(t, { config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret', ...serverEnv } });
+  const { origin, flush } = await startCollectionCapsule(t, { config, serverEnv: { DSN: receiver.replace('http://', 'http://key@') + '/1', ANALYTICS: receiver + '/analytics', WEBSITE: 'website-234', SECRET: 'server-only-secret', ...serverEnv } });
   const document = await fetch(origin + '/', { headers: { 'sec-fetch-dest': 'document' } });
   const html = await document.text();
   if (mode === 'absent') assert.doesNotMatch(html, /__sporades\/observe\.js/);
@@ -576,7 +576,7 @@ async function generatedCollectionFixture(t, serverEnv = {}, { mode = 'available
   assert.match(document.headers.get('content-security-policy'), /script-src 'self'(?:;|$)/);
   const script = await (await fetch(origin + '/__sporades/observe.js')).text();
   assert.doesNotMatch(script, /server-only-secret|website-234|DSN|127\.0\.0\.1/);
-  return { origin, received, script };
+  return { origin, received, script, flush };
 }
 
 test('generated Capsule reserves server delivery after public outbound and ingress exhaustion', async t => {
@@ -638,7 +638,7 @@ test('generated Capsule separately delivers browser errors and unhandled rejecti
 
 test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
   const { Window } = await import('happy-dom');
-  const { origin, received, script } = await generatedCollectionFixture(t);
+  const { origin, received, script, flush } = await generatedCollectionFixture(t);
   const window = new Window({ url: origin + '/?request=client-secret#client-fragment' });
   t.after(() => window.happyDOM.abort());
   const sends = [];
@@ -659,14 +659,19 @@ test('generated Capsule serves the loader under self CSP and collects client err
     window.dispatchEvent(new window.ErrorEvent('error', { error }));
     await Promise.all(sends);
   }
+  // Privacy assertions require delivered examples; queue saturation is tested separately.
+  await flush();
   window.dispatchEvent(new window.ErrorEvent('error', { error: new Error('browser failure?request=token-error#fragment') }));
   const rejection = new window.Event('unhandledrejection');
   Object.defineProperty(rejection, 'reason', { value: new Error('unhandled server-only-secret') });
   window.dispatchEvent(rejection);
   window.dispatchEvent(new window.CustomEvent('sporades:error', { detail: { message: 'transport failed?token=token-transport#fragment' } }));
+  await Promise.all(sends);
+  await flush();
   window.location.hash = '#second-route?request=route-token';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await Promise.all(sends);
+  await flush();
   const expectedErrors = 3 + credentialDiagnostics.length + privateDiagnosticUrls.length;
   for (let i = 0; i < 100 && received.length < expectedErrors + 2; i++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope').length, expectedErrors);

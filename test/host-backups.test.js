@@ -10,7 +10,7 @@ import { attemptJournalPath } from '../dist/deploy-files.js';
 import { atomicBackupJson, backupTimerUnits, configureHostBackups, createHostBackup, hostBackupDirectory, hostBackupRetention, hostBackupStatus, listHostBackups, pruneHostBackups, publishHostBackupMetric, recoverHostBackupRestore, restoreHostBackup, trustedBackupPath, validateHostBackupPolicy } from '../dist/cli/host-backups.js';
 
 const root = process.cwd();
-const hasRestic = spawnSync('restic', ['version']).status === 0;
+const hasRestic = spawnSync('restic', ['version'], { timeout: 5000, killSignal: 'SIGKILL' }).status === 0;
 async function fixture(fn) {
   const dir = await createHostFixture('sporades-backup-', { privateAncestors: true });
   try { await withFixtureUmask(() => fn(dir)); } finally { await removeHostFixture(dir); }

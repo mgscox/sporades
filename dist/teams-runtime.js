@@ -606,7 +606,7 @@ async function currentTeamAdmin(tx, teamId, userId) {
     const membership = await tx.prepare(tx.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, userId);
     return membership?.role === "admin";
 }
-async function countTeamAdmins(tx, teamId) {
+export async function countTeamAdmins(tx, teamId) {
     const row = await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [role] = 'admin'")).get(teamId);
     return Number(row?.count ?? 0);
 }

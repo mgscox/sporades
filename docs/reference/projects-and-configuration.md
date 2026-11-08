@@ -1425,6 +1425,10 @@ sporades dev
 The command prints a local URL, usually `http://localhost:4000`. Open that URL
 in a browser.
 
+The JSON `started` event is published after shutdown handlers are installed. An
+immediate `SIGINT`, `SIGTERM` or `SIGHUP` at that boundary therefore initiates
+normal cleanup of the Dev session record and its owned action Bundle.
+
 During a Dev session, Sporades watches `server/`, `client/`, `shared/`,
 `index.html`, and `sporades.json`. Client-only changes rebuild the client
 Bundle. Server or shared changes restart the server runtime and reconnect the

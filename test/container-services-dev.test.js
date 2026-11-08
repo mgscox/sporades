@@ -51,11 +51,11 @@ if(args.includes('config')){
 else if(args.includes('port'))process.stdout.write('127.0.0.1:'+process.env.FAKE_PORT);
 `,{mode:0o755});
   await writeFile(path.join(fakeBin,'package.json'),'{"type":"module"}');
+  // Every CLI invocation must use the disposable Docker emulator, including stop/reset.
+  Object.assign(env,{PATH:fakeBin+path.delimiter+env.PATH,FAKE_PORT:String(servicePort),FAKE_CALLS:log,...(networkMode?{FAKE_NETWORK_MODE:networkMode}:{})});
   const source=version=>`import {capsule,endpoint,job} from 'sporades/server';
 export default capsule({name:'capsule',jobs:{embed:job(async ctx=>{const svc=ctx.services.embeddings;if(svc.url!==${JSON.stringify(`http://127.0.0.1:${servicePort}`)})throw new Error('Unexpected service origin');const response=await fetch(svc.url+'/v1/embeddings',{method:'POST',headers:{authorization:'Bearer '+svc.secrets.apiKey,'content-type':'application/json'},body:JSON.stringify({input:['probe']})});return response.json();})},endpoints:{ready:endpoint({method:'GET',path:'/ready'},ctx=>({body:{version:${version},declared:!!ctx.services.embeddings}})),start:endpoint({method:'POST',path:'/start'},async ctx=>({body:await ctx.jobs.enqueue('embed',{})}))}});`;
   await writeFile(path.join(project,'server/index.ts'),source(1));
-  // Lifecycle controls must use the same synthetic Docker as the running Dev session.
-  Object.assign(env,{PATH:fakeBin+path.delimiter+env.PATH,FAKE_PORT:String(servicePort),FAKE_CALLS:log,...(networkMode?{FAKE_NETWORK_MODE:networkMode}:{})});
   child=spawn(process.execPath,[cli,'dev','--port',String(devPort),'--json'],{cwd:project,env,stdio:['ignore','pipe','pipe']});
   child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>errors+=b);
   const ready=async expected=>until(async()=>{assert.equal(child.exitCode,null,output+errors);try{const res=await fetch(`http://127.0.0.1:${devPort}/ready`);const body=await res.json();return body.version===expected&&body;}catch{return null;}});

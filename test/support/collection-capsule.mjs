@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import { createServerBundleModuleSource } from '../../dist/templates/server-bundle-module-graph.js';
 import { bundleServerCapsuleModule } from '../../dist/bundle-pipeline.js';
 
-export async function startCollectionCapsule(t, { config, serverEnv, failureMarker = 'generated server failure' }) {
+export async function startCollectionCapsule(t, { config, serverEnv, failureMarker = 'generated server failure', dynamicFailureMarker = false }) {
   const scratch = path.join(process.cwd(), '.scratch');
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, 'collect-bundle-'));
@@ -31,7 +31,7 @@ export async function startCollectionCapsule(t, { config, serverEnv, failureMark
 export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: table({ text: StringField() }) }, endpoints: {
   fail: endpoint({ method: 'GET', path: '/failure' }, async ctx => {
     await ctx.db.notes.insert({ text: 'rolled-back' });
-    throw new Error(${JSON.stringify(failureMarker)});
+    throw new Error(${dynamicFailureMarker ? `(String(ctx.request.query.marker ?? '').match(/^acceptance-[a-f0-9]{32}-server-error$/) ? ctx.request.query.marker + ' password="synthetic-server-password"' : ${JSON.stringify(failureMarker)})` : JSON.stringify(failureMarker)});
   }),
   commit: endpoint({ method: 'POST', path: '/commit' }, async ctx => {
     await ctx.db.notes.insert({ text: 'committed' });
@@ -43,10 +43,13 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
   await mkdir(path.join(root, 'public'), { recursive: true });
   await writeFile(path.join(root, 'public', 'index.html'), '<!doctype html><html><head></head><body>Collection fixture</body></html>');
   await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv, serverSource, serverModuleSource,
-    epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");' }));
+    epilogue: `process.on('message', async command => {
+      if (command === 'flush-observability') { await database.observability.flush(); process.send({ flushed: true }); }
+    });
+    process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");` }));
   child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: {
     SPORADES_CONFIG_DIR: path.join(root, 'config'), PORT: '0', SPORADES_SECURITY_SESSION: 'dev',
-  }, stdio: ['ignore', 'pipe', 'pipe'] });
+  }, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let output = '';
   child.on('error', () => { failed = true; });
   child.stdout.on('data', chunk => { output = (output + chunk).slice(-65536); });
@@ -56,10 +59,15 @@ export default capsule({ name: ${JSON.stringify(config.name)}, schema: { notes: 
     const signal = output.split('\n').map(line => { try { return JSON.parse(line); } catch { return null; } }).find(event => Number.isInteger(event?.listening));
     if (signal) {
       const lines = serverModuleSource.split("\n");
-      const line = lines.findIndex(value => value.includes("throw new Error(" + JSON.stringify(failureMarker)));
+      const line = lines.findIndex(value => value.includes("throw new Error("));
       assert.ok(line >= 0, "Generated failure site is available for coordinate assertions");
       return { origin: `http://127.0.0.1:${signal.listening}`, expectedFailureFrame: {
         filename: "sporades://capsule/server.mjs", lineno: line + 1, colno: lines[line].indexOf("new Error") + 1,
+      }, flush: async () => {
+        const result = once(child, 'message', { signal: AbortSignal.timeout(10000) });
+        child.send('flush-observability');
+        const [message] = await result;
+        assert.deepEqual(message, { flushed: true });
       } };
     }
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -88,7 +96,7 @@ export async function assertCollectionBusinessSemantics(origin, committed = 0) {
   return body;
 }
 
-export async function emitCollectionBrowserFailures(t, origin, marker) {
+export async function emitCollectionBrowserFailures(t, origin, marker, kinds = ['browser-error', 'browser-rejection']) {
   const { Window } = await import('happy-dom');
   const response = await fetch(origin + '/__sporades/observe.js', { signal: AbortSignal.timeout(5000) });
   assert.equal(response.status, 200);
@@ -103,14 +111,18 @@ export async function emitCollectionBrowserFailures(t, origin, marker) {
     return send;
   };
   window.eval(script);
-  const markers = ['browser-error', 'browser-rejection'].map(kind => `${marker}-${kind}`);
+  const markers = kinds.map(kind => `${marker}-${kind}`);
   const error = value => Object.assign(new Error(`${value} password="synthetic-password" https://example.test/private?token=synthetic-query#synthetic-fragment`), {
     stack: `Error: ${value}\n    at execute (https://example.test/client.js?token=synthetic-stack#synthetic-fragment:12:8)`,
   });
-  window.dispatchEvent(new window.ErrorEvent('error', { error: error(markers[0]) }));
-  const rejection = new window.Event('unhandledrejection');
-  Object.defineProperty(rejection, 'reason', { value: error(markers[1]) });
-  window.dispatchEvent(rejection);
+  for (const [index, kind] of kinds.entries()) {
+    if (kind === 'browser-error') window.dispatchEvent(new window.ErrorEvent('error', { error: error(markers[index]) }));
+    else {
+      const rejection = new window.Event('unhandledrejection');
+      Object.defineProperty(rejection, 'reason', { value: error(markers[index]) });
+      window.dispatchEvent(rejection);
+    }
+  }
   for (const sent of await Promise.all(sends)) assert.equal(sent.status, 204);
   return markers;
 }

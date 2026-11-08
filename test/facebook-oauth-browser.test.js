@@ -58,7 +58,7 @@ function waitForStarted(child) {
   });
 }
 
-test("real browser clicks the generated Facebook control and performs a top-level protocol redirect", { skip: !enabled }, async () => {
+test("real browser clicks the generated Facebook control and performs a top-level protocol redirect", { skip: !enabled && "Set SPORADES_REAL_FACEBOOK_BROWSER=1 with Playwright Chromium and registry access" }, async () => {
   const { chromium } = await import("playwright").catch(() => {
     throw new Error("Install Playwright and its Chromium binary before running SPORADES_REAL_FACEBOOK_BROWSER=1 npm test.");
   });

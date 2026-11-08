@@ -1131,8 +1131,8 @@ function validateServerEnvKeyName(name) {
 function parseHostArgs(args) {
     if (args[0] === "services") {
         const [_, operation, name, ...rest] = args;
-        if (!["enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name || (operation !== "connect" && name !== "observability"))
-            throw commandError("Invalid Host services command.", "Use host services enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
+        if (!["mail-configure", "mail-apply", "enable", "disable", "uninstall", "status", "connect", "backup", "backups", "restore"].includes(operation) || !name || (operation !== "connect" && name !== "observability"))
+            throw commandError("Invalid Host services command.", "Use host services mail-configure|mail-apply|enable|disable|uninstall|status|backup|backups|restore observability or connect <subname>.");
         const options = { subcommand: "services", operation, subname: operation === "connect" ? name : undefined, json: false, projectDir: process.cwd() };
         if (options.subname)
             validateCapsuleSubname(options.subname);
@@ -1141,11 +1141,13 @@ function parseHostArgs(args) {
                 options.json = true;
                 continue;
             }
-            const field = { "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm" }[rest[i]];
+            const field = { "--host": "hostAlias", "--on": "servicesAlias", "--id": "id", "--confirm": "confirm", "--file": "file" }[rest[i]];
             if (!field || options[field] !== undefined)
                 throw commandError("Invalid Host services option.", "Use --host <Capsule-host>, --on <services-host> and --json.");
             options[field] = readFlagValue(rest, ++i, rest[i - 1]);
         }
+        if ((operation === "mail-configure") !== (typeof options.file === "string"))
+            throw commandError("Invalid mail configuration input.", "Use mail-configure observability --file <absolute-on-Host-staged-file>; other operations do not accept --file.");
         for (const alias of [options.hostAlias, options.servicesAlias])
             if (alias)
                 validateHostAlias(alias);
@@ -2873,7 +2875,6 @@ async function startDevSession(options) {
                 });
             }
         }, () => [...clientDependencies], initialDependencySignatures);
-        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
         let shutdownStarted = false;
         shutdown = async () => {
             if (shutdownStarted)
@@ -2926,6 +2927,7 @@ async function startDevSession(options) {
         process.on("SIGTERM", shutdown);
         process.on("SIGINT", shutdown);
         process.on("SIGHUP", shutdown);
+        emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev"), ...(runtime.database.runtimeDiagnostics.payments ? { payments: runtime.database.runtimeDiagnostics.payments } : {}), ...(bundle.clientDiagnostics.warnings?.length ? { warnings: bundle.clientDiagnostics.warnings } : {}) });
     }
     catch (error) {
         let cleanupFailure;
@@ -3893,7 +3895,7 @@ async function manageHost(options) {
                 data = await connectProjectObservability(options, resolved, options.servicesAlias ? resolveHostProfile(config, options.servicesAlias) : resolved);
             }
             else {
-                const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, backup: { id: options.id, confirm: options.confirm } });
+                const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: `host.services.${options.operation}`, projectDir: options.projectDir, mail: options.file ? { stagedFile: options.file } : undefined, backup: { id: options.id, confirm: options.confirm } });
                 if (!result.ok)
                     throw commandError(result.error.message, result.error.hint);
                 data = result.data;
@@ -5985,6 +5987,8 @@ function invokeRemoteHostHelper(options) {
     };
     if (options.admission)
         request.admission = options.admission;
+    if (options.mail)
+        request.mail = options.mail;
     if (options.services)
         request.services = options.services;
     if (options.backup)

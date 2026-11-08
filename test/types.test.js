@@ -556,6 +556,12 @@ const app = capsule({
       input.teamRole satisfies "admin" | "member";
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
       input.productKey?.toUpperCase();
+      const counts = await ctx.teams.countMembers(input.teamId);
+      const totalCount: number = counts.totalCount;
+      const adminCount: number = counts.adminCount;
+      const existingConsumer: { totalCount: number } = counts;
+      // @ts-expect-error Authority counts are immutable snapshots.
+      counts.adminCount = 0;
       // @ts-expect-error Team Billing authority reads are transaction-bound and read-only.
       ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
       // @ts-expect-error Team Billing authority receives no Team management surface.

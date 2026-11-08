@@ -92,7 +92,9 @@ The repository currently includes:
   explicit Team. The declaration names 1-32 stable product keys, exact distinct
   Stripe sandbox/live Price bindings, fixed or accepted-Team-member quantity
   with an optional positive integer billable-seat floor,
-  and one transaction-bound read-only authorization policy. Sporades first
+  and one transaction-bound read-only authorization policy. Its exact-Team
+  `countMembers` inspection returns `{ totalCount, adminCount }` from the same
+  lifecycle-locked snapshot for Capsule-owned staff limits. Sporades first
   requires the current linked caller to remain an administrator of the exact
   Team, then rechecks Capsule policy on every operation without issuing a
   reusable capability. Runtime-owned tables retain private Customer,
@@ -676,17 +678,18 @@ without extending its TTL; an expired or evicted token is replaced before retryi
 An upgrade rejection is an HTTP 403, not a distinguishable WebSocket close code,
 so the client does not infer authorization failure from an opaque close event.
 Checks keep the runtime-only request marker, no-store and same-origin authority.
-An unavailable check falls back to the existing token within the same bounded
-exponential backoff and jitter policy. Four connection attempts end in a visible
-runtime-owned error with a manual retry, including notification to existing and
-late live-query subscribers. Brief successful connections and individual messages
-do not reset the budget: only five continuous healthy minutes rearm it. Manual
-retry explicitly starts a new budget and obtains a fresh token. The client never
-reconnects forever or leaves the Capsule shell in an indefinite loading state. Returning
-from the Back/Forward cache restores the existing page runtime, requires fresh
-Session confirmation, resubscribes, and resumes only identity-owned consented
-Journey capture. Repeated cached visits retain bounded recovery; permanent page
-retirement stops transport and settles pending operations.
+An unavailable check falls back to the existing token. Active pages retry
+automatically with exponential backoff and jitter capped at 30 seconds between
+attempts after each token check. Stalled upgrades time out after ten seconds.
+After four attempts without a sustained connection, the runtime shows a warning
+and notifies existing and late live-query subscribers. Requests made during the warning fail promptly. The warning's
+manual retry button skips the scheduled delay. When the connection opens, the
+warning clears and the client restores live subscriptions. Five continuous
+healthy minutes reset the backoff so brief successful connections and individual
+messages cannot keep the client retrying at the fastest rate. Returning from the
+Back/Forward cache restores the existing page runtime, requires fresh Session
+confirmation, resubscribes, and resumes only identity-owned consented Journey
+capture. Permanent page retirement stops transport and settles pending operations.
 The runtime sends a WebSocket ping every 30 seconds so an idle page keeps its
 socket through proxy idle timeouts (Cloudflare closes idle sockets at 100
 seconds) and can reach the healthy period. A peer whose ping is still
@@ -1728,6 +1731,9 @@ public analytics hostname independent of the Host/data identity; direct routing,
 status and provisioning use the same reserved hostname without rewriting browser
 Host/Origin authority. Disabled services retain this routing intent, and database
 restore preserves the destination's operator-selected hostname.
+Protected mail configuration gives GlitchTip authenticated implicit TLS SMTP,
+secret-free status and web/worker-only apply, retaining destination credentials
+through enable, disable and database restore. Absent configuration stays console-only.
 Resource refusal, retry convergence,
 disable/uninstall, scheduled restic database backups and monitored health are
 part of this contract. See [the operator runbook](./reference/host-observability.md).

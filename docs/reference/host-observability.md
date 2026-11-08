@@ -43,8 +43,8 @@ the passwords from that protected file. Do not copy it into a Capsule or commit
 it. Status never returns passwords or provider tokens. The GlitchTip admin is
 `ops@<hosted-domain>`; the Umami admin is `admin`. Public self-registration is
 disabled. GlitchTip host and CSRF origin checks explicitly allow its managed
-HTTPS hostname (plus loopback API access). No SMTP credentials are provisioned: configure notification delivery
-separately if email alerts are wanted.
+HTTPS hostname (plus loopback API access). Mail defaults to console-only output. Configure protected SMTP below if email
+alerts are wanted; Capsule `mail.smtp` is a separate subsystem.
 
 Retry the same enable after a failed installation. Intent is written before
 starting containers; service hostnames remain reserved through partial installs,
@@ -83,6 +83,121 @@ snapshots do not replace the destination's routing configuration.
 Verify an authenticated dashboard after a hostname change, including a page
 refresh and website navigation. Heartbeat/login API success alone does not
 establish that dashboard Server Actions work.
+
+## Protected GlitchTip SMTP
+
+The installed helper and CLI must include `mail-configure` and `mail-apply`.
+Installing that version is a separate operator-controlled deployment. Applying or
+rotating SMTP on a compatible installation does **not** require `host upgrade` or
+restarting the whole stack. These commands target the services Host (`--on`).
+
+Stage a JSON file **on the services Host**, using the helper's OS user. Use an
+operator password manager or a protected editor with backup/swap disabled; never
+put credentials in a shell command, environment override, command history, chat,
+or a diagnostic capture. The staged file and its eventual `mail.json` must be
+regular single-link files owned by that user with exact mode `0600`. All parent
+directories must be helper/root-owned and not writable by group/other. Symbolic
+links, hard links, unsafe ownership/modes, unknown fields and partial input fail
+closed. Keep staging outside `/tmp` and outside Capsule-readable directories.
+
+For example, create `<remote-root>/mail-staging/` with mode `0700`, then use the
+protected editor to write `<remote-root>/mail-staging/glitchtip.json` with mode
+`0600`. Its complete schema is:
+
+```json
+{
+  "version": 1,
+  "transport": "smtp-ssl",
+  "host": "smtp.example.com",
+  "port": 465,
+  "username": "synthetic-user@example.com",
+  "password": "synthetic-replace-in-protected-editor",
+  "from": "alerts@example.com"
+}
+```
+
+Only authenticated implicit TLS is supported. Supply an exact lowercase DNS
+hostname, an integer port `1..65535` (including `465`), nonempty printable ASCII credentials and
+a plain sender mailbox without a display name. The helper encodes credentials
+for the pinned provider's `smtp+ssl://` URL. Certificate and hostname verification
+use the provider container's normal CA store. There is no insecure, plaintext,
+STARTTLS fallback, arbitrary environment input, or verification bypass.
+
+From the configuring workstation, publish the on-Host staged file and apply it:
+
+```sh
+sporades host services mail-configure observability --on ops --file /srv/sporades/mail-staging/glitchtip.json --json
+sporades host services mail-apply observability --on ops --json
+sporades host services status observability --on ops --json
+```
+
+Substitute the actual protected remote root in `--file`; this is an absolute
+**remote** path, not a file uploaded/read from the workstation. Publication is
+atomic and synced to disk under the Host lock. It writes the validated setting to
+`<remote-root>/hosts/<hosted-domain>/services/observability/mail.json`, without
+printing credentials. Remove the staged copy securely after publication according
+to the operator's storage policy. Status reports only `mail.configured` and
+`mail.transport`; it does not test authentication, message acceptance or receipt.
+
+`mail-apply` requires an enabled, ready stack with no interrupted restore. It
+updates the mail fields in the protected Compose file and pins the existing web
+listener so Caddy keeps its working route, then recreates exactly
+**web and worker**, using `up -d --no-deps --force-recreate web worker`. There is a
+brief GlitchTip interruption. Postgres, Valkey, Umami, Caddy, Capsules, volumes,
+image pins, project identities, DSNs and analytics routing remain in place.
+Readiness checks the web API; it is not SMTP acceptance. Configuration may also be
+staged while services are disabled or before initial installation; the next
+`enable` consumes it. Repeated enable and disable/uninstall/re-enable retain it.
+Do not edit the generated Compose file to configure mail.
+
+### Rotation, rollback and recovery
+
+Keep a protected rollback copy in the operator credential store. Stage a complete
+replacement with the new credential, run `mail-configure`, then `mail-apply`.
+Verify a real GlitchTip notification before revoking the previous credential.
+If apply fails or stops between recreations, retain both credentials and retry
+`mail-apply`; the desired config remains durable. For rollback, stage the previous
+complete JSON and run the same two commands. Provider authentication responses
+are omitted from helper diagnostics; investigate with the provider's protected
+operator tooling without publishing raw responses or container environment dumps.
+
+To return to console-only behavior, stage `{"version":1,"transport":"console"}`
+and publish/apply it the same way. Console mail writes notification content into
+GlitchTip logs. Removing `mail.json` also restores the historical default at the
+next apply/enable, so loss of this file must be treated as lost configuration.
+Malformed/unsafe installed config fails closed: repair ownership/mode or quarantine
+the damaged file in protected storage, then republish a complete known-good copy.
+Never repair by printing its contents. If credentials are lost, issue a replacement
+through the provider's operator process and stage it; do not infer them from logs.
+
+Database backup/restore does not back up or replace SMTP credentials or `public.json`.
+After database restore, enable reads the **destination's current** mail setting.
+For Host disaster recovery, separately restore `mail.json`, `public.json` and the
+existing protected service secrets with their ownership/modes. Preserve the old
+integration identities and database history. Keep these files in encrypted
+operator-controlled backups, separate from application database dumps.
+
+### Acceptance evidence
+
+Run the disposable local acceptance from a Linux checkout with protected
+ancestors, Docker Compose v2, OpenSSL and restic `0.18.1` (the tested version).
+The older restic `0.14` emits short backup summary IDs that the existing helper
+rejects. A container runner can bind the checkout under protected ancestors;
+keep its CLI configuration inside that checkout. The command is:
+
+```sh
+SPORADES_CONFIG_DIR="$PWD/.tmp/observability-config" SPORADES_OBSERVABILITY_SMTP_TEST=1 SPORADES_OBSERVABILITY_BACKUP_TEST=1 node scripts/verify-host-observability.mjs
+```
+
+It uses the pinned providers, synthetic credentials, an isolated TLS SMTP receiver
+on internal port 465, and a real GlitchTip worker alert for a stored issue. It
+checks rejection of the receiver's initially untrusted certificate, then adds its
+test CA **only to the disposable containers**, and repeats delivery after enable,
+database restore and disable/re-enable. No receiver port is published. A passing
+receiver acceptance proves authenticated SMTP acceptance; it does **not** prove
+external inbox receipt, spam placement, SPF/DKIM/DMARC alignment or live delivery.
+Jem owns operator deployment and live acceptance, including sender verification,
+a real notification, provider acceptance and separately confirmed inbox receipt.
 
 ## Connect Capsules
 
@@ -124,9 +239,29 @@ outage. Explicit connect requires removing conflicting sealed keys first.
 
 Provider identity is deterministic from the exact Capsule subname and Hosted
 domain, so retrying after an API success or local sealing failure reuses the same
-project/site. GlitchTip project names are `capsule-<32 hex digest>` because this
-pinned version derives slugs from names. Identical subnames on different Hosted
-domains have separate identities. Custom domain aliases do not create new sites.
+project/site. The GlitchTip slug remains
+`capsule-<first 32 lowercase hex characters of SHA256(subname + "." + domain)>`.
+GlitchTip `v5.2.1` derives the initial slug from the name, so provisioning first
+creates with both name and slug set to that hashed identity. It then uses
+`PUT /api/0/projects/sporades/<slug>/` with only
+`{"name":"<subname>.<Hosted domain>","slug":"<unchanged slug>"}`. The readable
+name uses the **Capsule's Hosted domain**, even on a dedicated services Host,
+and is truncated to the pinned API's 64-character name limit. Hashing always
+uses the full identity. Identical subnames on different Hosted domains have
+separate identities. Custom and canonical domain aliases change neither name
+nor identity and do not create new sites.
+
+On a subsequent registration/connect, only an exact hashed default name equal
+to that project's deterministic slug is migrated. Any other existing name is
+treated as operator-owned and preserved, including already readable names.
+No background sweep or production reprovisioning is required. Interruption
+after create or rename is safe to retry: provisioning looks up the same slug
+and never rotates keys to reconcile a name. Before using keys, it validates the
+provider's project ID, slug and name; the rename response must retain the same
+ID and slug and return the requested name. A mismatch stops with an opaque
+error rather than creating a replacement or repairing provider identity. The
+DSN must reference that project ID. Project IDs, slugs, keys/DSNs and collected
+history are retained.
 Disable/unregister does not delete collected history. A public DSN grants event
 ingestion only; provisioning credentials stay on the ops Host.
 
@@ -194,7 +329,10 @@ local contracts. Run `node scripts/verify-host-observability.mjs` against a
 `SPORADES_OBSERVABILITY_BACKUP_TEST=1` with restic installed to include real
 database backup/restore. The harness creates unique projects and removes only
 its own containers/volumes. It exercises interrupted enable recovery, repeated
-enable, per-Capsule API identities and encrypted env. A generated synthetic
+enable, per-Capsule API identities, readable-name creation and hashed-default
+migration, interrupted rename retries, operator-name preservation, unchanged
+IDs/slugs/key responses and history, no duplicate projects, encrypted env,
+and continued DSN ingestion. A generated synthetic
 Capsule writes and throws through its actual HTTP endpoint; the harness verifies
 the exact marked event in the provisioned GlitchTip project, including endpoint
 surface, Capsule, release and environment. Browser `error` and
@@ -223,3 +361,151 @@ query failure and browser pageview, confirm them in both dashboards, confirm
 no credentials in CLI status or page source, snapshot/disable/restore/enable,
 and reboot. Verify TLS, retained data and fresh monitoring samples. Never run
 this rehearsal on a production Capsule.
+
+## Explicit observability acceptance
+
+`host push --verify` verifies restart, the release public tree and protected
+runtime health. Generated autodeploy keeps that behavior. It does not deliberately
+throw application errors, collect pageviews, query stored provider events or
+claim notification delivery. Service health and a provider HTTP 2xx are also
+insufficient evidence of app-runtime capture.
+
+A separate checkout workflow runs only after an operator explicitly selects the
+exact Capsule origin and release. This issue authorizes disposable tests only;
+Jem owns operator deployment and any later live acceptance. A disposable Linux
+rehearsal remains necessary for public DNS, TLS and reboot evidence.
+
+Build the checkout and create a private configuration directory and a reviewed
+plan. Example plan (all identities are synthetic):
+
+```json
+{
+  "version": 1,
+  "target": {
+    "origin": "https://capsule.example.test",
+    "capsule": "synthetic",
+    "release": "release-334",
+    "environment": "acceptance"
+  },
+  "analytics": false,
+  "notifications": false,
+  "surfaces": {
+    "server-error": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-protected-diagnostic", "approval": "OPS-334"}
+    },
+    "browser-error": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-diagnostic-page", "approval": "OPS-334"}
+    },
+    "browser-rejection": {
+      "provider": "glitchtip", "project": "42", "state": "enabled",
+      "diagnostic": {"path": "/existing-diagnostic-page", "approval": "OPS-334"}
+    }
+  }
+}
+```
+
+Paths in a plan refer to **existing operator-approved app diagnostics**. The
+workflow never installs them. Omit `diagnostic` when no safe path exists: that
+surface is `blocked`, and the process exits unsuccessfully. Do not add a public
+crash endpoint, enable a shipped fault switch, fail a customer request, upgrade a
+helper, reconnect/provision a registration, change existing IDs or inspect
+sibling credentials to make the gate pass. `state: "missing"` or `"disabled"`
+records unavailable configuration explicitly. Environment may be omitted when
+none is configured; configured release, Capsule and environment must match.
+
+The driver is an explicitly supplied local ES module exporting a default object
+with `probe(context)`, `readBack(context)` and `cleanup(signal)`. It is trusted,
+reviewed executable operator code, **not a sandbox or automatic credential
+lookup**. Imports must be inert; allocate resources in the probe and register
+cleanup before any operation that can fail. See [the driver and evidence types](https://github.com/mgscox/sporades/blob/main/src/types/observability-acceptance.d.ts)
+for the complete contract. The disposable pinned-provider harness in
+`scripts/verify-host-observability.mjs` is a working example using the existing
+local stack and generated synthetic Capsule. Different Capsules need their own
+reviewed safe diagnostics; there is deliberately no universal server crash probe.
+
+```sh
+npm run build
+mkdir -p .sporades/acceptance-config
+umask 077
+SPORADES_CONFIG_DIR="$PWD/.sporades/acceptance-config" \
+  node scripts/accept-observability.mjs \
+  --plan ./reviewed-plan.json --driver ./reviewed-driver.mjs \
+  --authorize-target https://capsule.example.test --release release-334 \
+  > .sporades/observability-evidence.json
+```
+
+Authorization must exactly match the plan **before the driver is imported**.
+Keep the configuration directory inside the working checkout; no saved Host or
+Telemetry profile is selected. The command writes one JSON report to stdout and
+returns 0 only for `pass`, 1 for `fail` or `blocked`, and 2 for invalid startup.
+Keep plans, drivers containing private configuration, and reports in protected
+operator storage, outside version control.
+
+The driver must verify the selected running release before probing, send each
+probe only once through its approved runtime path, and honor the abort signal.
+For `server-error`, exercise a controlled real handler failure and check its
+opaque response, rollback and continued health. For browser surfaces, exercise
+real `error` and `unhandledrejection` hooks in the running Capsule, through its
+existing loader/tunnel. Return `capture: "app-runtime"` only after this happens,
+along with the attested target and synthetic redaction canaries actually injected
+by that probe. Direct `capture()` or envelope submission is lower-level evidence
+and cannot satisfy this receipt. Do not report a probe as exercised merely
+because an HTTP request succeeded.
+
+`readBack` uses separately authorized read access to the **existing** provider
+project. It returns null while waiting, or actual stored event evidence with an
+opaque read-back ID, exact marker, provider timestamp, Capsule, release,
+configured environment and surface, plus the complete stored payload for
+redaction checks. Derive these fields from provider evidence, never copy the
+expected context into an unverified result. Normalize provider `endpoint` and
+`client` surface tags only after checking their platform and the exact probe
+marker; the two browser probes have distinct markers. A stored timestamp must
+fall between run start and read-back; synchronize clocks before acceptance.
+Historical events, missing markers, wrong projects/tags, empty lists, HTTP 2xx
+and absent redaction exercises cannot pass. Provider response bodies, errors,
+credentials, canary values and raw event payloads are omitted from the report.
+Only validated opaque handles and the selected public identity are retained.
+
+Polling defaults to 30 seconds per selected surface (library maximum 90 seconds),
+with a five-second cleanup budget. A timeout or SIGINT/SIGTERM interruption fails; provider unavailability blocks.
+Interruption aborts active work and runs bounded cleanup before reporting.
+The driver must bound its own network operations and release only resources it
+owns, including after partial failure. Abort is cooperative: executable drivers
+must stop their work when signaled. Cleanup failure prevents overall acceptance.
+
+Analytics stays `skipped` unless the plan explicitly sets `analytics: true` and
+supplies an enabled `analytics-pageview` surface with the **existing** website ID
+as `project`, an approved path and approval reference. Navigate once through
+normal app collection to a synthetic marker-bearing path with synthetic query
+and fragment canaries; read back that exact stored pageview and verify that
+the stored URL contains neither query nor fragment. Never install a second collector,
+send a direct provider pageview, alter working IDs or poll by navigating again.
+The driver must attest the actual target release and associate the stored path
+with that release when the analytics provider does not store release tags.
+
+Notifications stay `skipped` unless `notifications: true`. Configure separate
+`notification-smtp` and `notification-inbox` surfaces for the existing error
+project. These are read-only checks after the verified server event; they do not
+send extra notifications. Each receipt must carry the exact server event marker
+and `relatedEventHandle`, and its own provider read-back handle and timestamp.
+SMTP server acceptance and a message actually received in the designated test
+inbox are separate boundaries. Do not substitute SMTP success for inbox receipt,
+or event storage for either. Missing notification configuration is blocked;
+requested delivery without read-back times out and fails. Do not promise regression
+alerts unless the selected provider/version actually supports them.
+
+For handoff, attach the report with the approved target/release, approval references,
+run window, unique markers and provider handles. Identify skipped and blocked
+surfaces explicitly; a skipped optional surface is not evidence of acceptance.
+Have the operator review driver provenance and read access separately from probe
+authorization. Retain existing integration identities and history.
+
+To roll back this workflow, stop further acceptance runs and let the driver's
+cleanup release its own test sessions/resources. No deployment or integration
+configuration changes are made by the gate. Remove only synthetic diagnostic
+access or fixtures specifically created for the rehearsal under their own
+approval. Preserve customer state, registrations, analytics, support, billing,
+provider history and credentials; never use a blanket Docker prune or unrelated
+service restart. Review any cleanup failure before retrying.

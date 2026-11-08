@@ -7,6 +7,7 @@ import {promisify} from 'node:util';
 import {mkdir,writeFile,readFile,rm,chmod,symlink,link} from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {generateKeyPairSync} from 'node:crypto';
 import {assertObservabilityResources,OBSERVABILITY_IMAGES,observabilityCompose,observabilityProject,observabilityDirectory,readObservabilityState,observabilityMonitorUnits,provisionObservability,renderObservabilityRoutes,observabilityUrls} from '../dist/cli/host-observability.js';
 import {assertHostnamesAvailable} from '../dist/cli/host-domain-aliases.js';
 import {unsealServerEnv,readSealedServerEnv,readKeyPair,sealedServerEnvPaths,ensureSealedServerEnvKeyPair,sealServerEnv,writeSealedServerEnv} from '../dist/sealed-server-env.js';
@@ -62,6 +63,124 @@ test('pending or disabled service installs reserve both domains across Hosted do
 }));
 test('unconfigured provisioning is inert',()=>fixture(async dir=>{
  assert.equal((await provisionObservability(h(dir),{})).connected,false);
+}));
+const capsuleSlug='capsule-b197d192cbb5479bbbf8302af227700d';
+const capsuleRoute=`/api/0/projects/sporades/${capsuleSlug}/`;
+async function provisioningFixture(t,fn){
+ await fixture(async dir=>{
+  const host=h(dir),directory=observabilityDirectory(host);
+  await mkdir(directory,{recursive:true,mode:0o700});
+  await writeFile(path.join(directory,'secrets.json'),JSON.stringify({...state(),ready:true}),{mode:0o600});
+  const tools=path.join(dir,'tools');await mkdir(tools);
+  await writeFile(path.join(tools,'docker'),'#!/bin/sh\nprintf "127.0.0.1:5203\\n"\n',{mode:0o755});
+  const previousPath=process.env.PATH;process.env.PATH=`${tools}${path.delimiter}${previousPath}`;
+  const pair=generateKeyPairSync('rsa',{modulusLength:2048,publicKeyEncoding:{type:'spki',format:'pem'},privateKeyEncoding:{type:'pkcs8',format:'pem'}});
+  const target={domain:'capsules.example.test',subname:'test',errors:true,analytics:false,publicKey:pair.publicKey};
+  const requests=[];
+  const respond=handler=>t.mock.method(globalThis,'fetch',async(url,options)=>{
+   const request={route:new URL(url).pathname,method:options.method,body:options.body?JSON.parse(options.body):undefined};
+   requests.push(request);return handler(request);
+  });
+  try{await fn({host,target,pair,requests,respond});}
+  finally{t.mock.restoreAll();process.env.PATH=previousPath;}
+ });
+}
+test('GlitchTip creates its deterministic identity before naming it for the Capsule Hosted domain',t=>provisioningFixture(t,async({host,target,pair,requests,respond})=>{
+ let project=null;
+ const keys=[{dsn:{public:'http://0123456789abcdef0123456789abcdef@127.0.0.1/42'}}];
+ respond(request=>{
+  if(request.method==='POST'){
+   assert.equal(request.route,'/api/0/teams/sporades/capsules/projects/');
+   assert.deepEqual(request.body,{name:capsuleSlug,slug:capsuleSlug,platform:'node'});
+   project={id:'42',name:capsuleSlug,slug:capsuleSlug};
+  }else if(request.method==='PUT'){
+   assert.equal(request.route,capsuleRoute);
+   assert.deepEqual(request.body,{name:'test.capsules.example.test',slug:capsuleSlug});
+   project={...project,...request.body};
+  }else if(request.route===capsuleRoute+'keys/')return Response.json(keys);
+  return project?Response.json(project):new Response(null,{status:404});
+ });
+ const first=unsealServerEnv((await provisionObservability(host,target)).env,pair.privateKey);
+ assert.equal(project.name,'test.capsules.example.test');
+ assert.equal(project.slug,capsuleSlug);assert.equal(project.id,'42');
+ assert.equal(first.ERROR_DSN,'https://0123456789abcdef0123456789abcdef@errors.ops.example.test/42');
+ assert.deepEqual(unsealServerEnv((await provisionObservability(host,target)).env,pair.privateKey),first);
+ assert.equal(requests.filter(r=>r.method==='POST').length,1);
+ assert.equal(requests.filter(r=>r.method==='PUT').length,1);
+}));
+test('GlitchTip retries an interrupted rename on the existing hashed default without creating or rotating keys',t=>provisioningFixture(t,async({host,target,requests,respond})=>{
+ let project={id:'42',name:capsuleSlug,slug:capsuleSlug},interrupted=true;
+ respond(request=>{
+  if(request.method==='PUT'){
+   if(interrupted){interrupted=false;return new Response('private-provider-marker',{status:503});}
+   project={...project,...request.body};
+  }
+  if(request.route===capsuleRoute+'keys/')return Response.json([{dsn:{public:'http://0123456789abcdef0123456789abcdef@127.0.0.1/42'}}]);
+  return Response.json(project);
+ });
+ await assert.rejects(provisionObservability(host,target),error=>error.message==='Host observability operation failed.'&&!JSON.stringify(error).includes('private-provider-marker'));
+ assert.equal(project.name,capsuleSlug);
+ await provisionObservability(host,target);
+ assert.deepEqual(project,{id:'42',name:'test.capsules.example.test',slug:capsuleSlug});
+ assert.equal(requests.filter(r=>r.method==='POST').length,0);
+ assert.equal(requests.filter(r=>r.route.endsWith('/keys/')).length,1);
+}));
+for(const name of ['Operator project name','test.capsules.example.test','capsule-00000000000000000000000000000000'])test(`GlitchTip retains existing nondefault name ${name}`,t=>provisioningFixture(t,async({host,target,requests,respond})=>{
+ respond(request=>Response.json(request.route.endsWith('/keys/')?[{dsn:{public:'http://0123456789abcdef0123456789abcdef@127.0.0.1/42'}}]:{id:'42',name,slug:capsuleSlug}));
+ await provisionObservability(host,target);
+ assert.ok(requests.every(r=>r.method==='GET'));
+}));
+for(const phase of ['lookup','create','rename'])for(const [reason,change] of [
+ ['wrong slug',{slug:'private-provider-marker'}],['invalid ID',{id:null}],['missing name',{name:null}],
+ ...(phase==='lookup'?[]:[['unexpected name',{name:'private-provider-marker'}]]),
+ ...(phase==='rename'?[['changed ID',{id:'99'}]]:[]),
+])test(`GlitchTip fails closed on ${reason} during ${phase}`,t=>provisioningFixture(t,async({host,target,requests,respond})=>{
+ respond(request=>{
+  if(phase==='create'&&request.method==='GET')return new Response(null,{status:404});
+  const expected={id:'42',name:request.method==='PUT'?'test.capsules.example.test':capsuleSlug,slug:capsuleSlug};
+  return Response.json((phase==='lookup'||phase==='create'||request.method==='PUT')?{...expected,...change}:expected);
+ });
+ await assert.rejects(provisionObservability(host,{...target,analytics:true}),error=>error.message==='Host observability operation failed.'&&!JSON.stringify(error).includes('private-provider-marker'));
+ assert.equal(requests.some(r=>r.route.endsWith('/keys/')||r.route.startsWith('/api/auth/')),false);
+ assert.equal(requests.filter(r=>r.method==='POST').length,phase==='create'?1:0);
+}));
+test('GlitchTip limits only the readable name to its pinned API maximum',t=>provisioningFixture(t,async({host,target,respond})=>{
+ const subname='a'.repeat(63),identity=`${subname}.capsules.example.test`;
+ let project;
+ respond(request=>{
+  if(request.method==='POST')project={id:'42',name:request.body.name,slug:request.body.slug};
+  if(request.method==='PUT'){
+   assert.equal(request.body.name,'a'.repeat(63)+'.');
+   assert.equal(request.body.slug,project.slug);
+   project={...project,...request.body};
+  }
+  if(request.route.endsWith('/keys/'))return Response.json([{dsn:{public:'http://0123456789abcdef0123456789abcdef@127.0.0.1/42'}}]);
+  return project?Response.json(project):new Response(null,{status:404});
+ });
+ const result=await provisionObservability(host,{...target,subname});
+ assert.equal(result.identity,identity);
+ assert.equal(project.name.length,64);
+}));
+test('GlitchTip rejects a null successful lookup instead of treating it as a missing project',t=>provisioningFixture(t,async({host,target,requests,respond})=>{
+ respond(()=>Response.json(null));
+ await assert.rejects(provisionObservability(host,target),/Host observability operation failed/);
+ assert.equal(requests.length,1);
+}));
+test('GlitchTip refuses a key for another project without changing provider state',t=>provisioningFixture(t,async({host,target,requests,respond})=>{
+ respond(request=>Response.json(request.route.endsWith('/keys/')?[{dsn:{public:'http://0123456789abcdef0123456789abcdef@127.0.0.1/99'}}]:{id:'42',name:'Operator name',slug:capsuleSlug}));
+ await assert.rejects(provisionObservability(host,target),/Host observability operation failed/);
+ assert.ok(requests.every(r=>r.method==='GET'));
+}));
+test('Umami retains its successful null lookup contract for a missing website',t=>provisioningFixture(t,async({host,target,pair,requests,respond})=>{
+ respond(request=>{
+  if(request.route==='/api/auth/login')return Response.json({token:'synthetic-umami-token'});
+  if(request.method==='GET')return Response.json(null);
+  return Response.json(request.body);
+ });
+ const values=unsealServerEnv((await provisionObservability(host,{...target,errors:false,analytics:true})).env,pair.privateKey);
+ assert.equal(values.ANALYTICS_ENDPOINT,'https://analytics.ops.example.test/api/send');
+ assert.equal(values.ANALYTICS_WEBSITE_ID,'b197d192-cbb5-479b-abf8-302af227700d');
+ assert.deepEqual(requests.at(-1).body,{id:values.ANALYTICS_WEBSITE_ID,name:'test.capsules.example.test',domain:'test.capsules.example.test'});
 }));
 test('a protected public analytics domain owns the direct route and service URLs',()=>fixture(async dir=>{
  const host=h(dir),directory=observabilityDirectory(host);await mkdir(directory,{recursive:true,mode:0o700});
@@ -135,7 +254,7 @@ test('CLI registration and dedicated ops connect seal custom env names without d
  const fake=path.join(dir,'tools');await mkdir(fake);
  const ledger=path.join(dir,'requests.jsonl');
  const values={ERROR_DSN:'https://abcdef@errors.ops.example.test/42',ANALYTICS_ENDPOINT:'https://analytics.ops.example.test/api/send',ANALYTICS_WEBSITE_ID:'11111111-1111-4111-a111-111111111111'};
- await writeFile(path.join(fake,'ssh'),`#!/usr/bin/env node\nimport fs from 'node:fs';\nimport {sealServerEnv} from ${JSON.stringify(pathToFileURL(path.join(root,'dist/sealed-server-env.js')).href)};\nlet input='';for await(const c of process.stdin)input+=c;const r=JSON.parse(input);fs.appendFileSync(${JSON.stringify(ledger)},JSON.stringify(r)+'\\n');let data={registered:true,capsule:{subname:r.capsule?.subname}};if(r.action==='host.services.connect')data={connected:true,env:sealServerEnv(${JSON.stringify(values)},r.services.publicKey)};process.stdout.write(JSON.stringify({ok:true,data,error:null}));\n`,{mode:0o755});
+ await writeFile(path.join(fake,'ssh'),`#!/usr/bin/env node\nimport fs from 'node:fs';\nimport {sealServerEnv} from ${JSON.stringify(pathToFileURL(path.join(root,'dist/sealed-server-env.js')).href)};\nlet input='';for await(const c of process.stdin)input+=c;const r=JSON.parse(input);fs.appendFileSync(${JSON.stringify(ledger)},JSON.stringify(r)+'\\n');let data={registered:true,capsule:{subname:r.capsule?.subname,aliasDomains:r.registration?.aliasDomains,canonicalDomain:r.registration?.canonicalDomain,publicOrigin:r.registration?.canonicalDomain?'https://'+r.registration.canonicalDomain:undefined}};if(r.action==='host.services.connect')data={connected:true,env:sealServerEnv(${JSON.stringify(values)},r.services.publicKey)};process.stdout.write(JSON.stringify({ok:true,data,error:null}));\n`,{mode:0o755});
  env.PATH=`${fake}${path.delimiter}${process.env.PATH}`;
  const invoke=async(args,cwd=dir)=>JSON.parse((await run(process.execPath,[cli,...args],{cwd,env})).stdout);
  await invoke(['create','capsule','--no-install','--no-git','--json']);
@@ -143,7 +262,7 @@ test('CLI registration and dedicated ops connect seal custom env names without d
  config.observability={errors:{protocol:'sentry',dsnEnv:'CUSTOM_DSN'}};config.analytics={provider:'umami',endpointEnv:'CUSTOM_ENDPOINT',websiteIdEnv:'CUSTOM_SITE'};
  await writeFile(file,JSON.stringify(config));
  for(const [alias,domain] of [['app','apps.example.test'],['ops','ops.example.test']])await invoke(['host','add',alias,'--server',`${alias}@fake.invalid`,'--domain',domain,'--json']);
- const registration=await invoke(['host','register','hello','--host','app','--on','ops','--json'],project);
+ const registration=await invoke(['host','register','hello','--host','app','--on','ops','--alias-domain','alias.example.test','--canonical-domain','canonical.example.test','--json'],project);
  assert.equal(registration.data.observability.connected,true);
  assert.doesNotMatch(JSON.stringify(registration),/abcdef|11111111/);
  const paths=sealedServerEnvPaths(project),pair=await readKeyPair(paths);
@@ -153,6 +272,7 @@ test('CLI registration and dedicated ops connect seal custom env names without d
  assert.equal(connection.data.pushRequired,true);
  const requests=(await readFile(ledger,'utf8')).trim().split('\n').map(JSON.parse);
  assert.ok(requests.some(r=>r.action==='capsule.stats'&&r.host.domain==='apps.example.test'));
+ assert.equal(requests.find(r=>r.action==='capsule.register').registration.canonicalDomain,'canonical.example.test');
  for(const r of requests.filter(r=>r.action==='host.services.connect')){assert.equal(r.host.domain,'ops.example.test');assert.equal(r.services.domain,'apps.example.test');assert.equal(r.services.subname,'hello');}
  // External env selection is never silently overwritten by registration.
  config.observability.errors.dsnEnv='SPORADES_SECRET';await writeFile(file,JSON.stringify(config));
@@ -259,7 +379,7 @@ test('shipped helper dispatch keeps dormant services inert and rejects an unreta
  const env={...process.env,SPORADES_CONFIG_DIR:hostFixtureConfig(dir),SPORADES_TEST_FLOCK_PATH:path.join(root,'test/support/exec-flock.py')};
  const helper=path.join(root,'bin/sporades-host-helper.js');
  const invoke=extra=>JSON.parse(spawnSync(process.execPath,[helper],{input:JSON.stringify(request),env:{...env,...extra},encoding:'utf8'}).stdout);
- const dormant=invoke({});assert.equal(dormant.ok,true);assert.deepEqual(dormant.data,{installed:false,enabled:false});
+ const dormant=invoke({});assert.equal(dormant.ok,true);assert.deepEqual(dormant.data,{installed:false,enabled:false,mail:{configured:false,transport:"console"}});
  const spoofed=invoke({SPORADES_HOST_GLOBAL_ROUTE_LOCK_FILE:path.join(remoteRoot,'bin','.sporades-host-helper.host-route.lock')});
  assert.equal(spoofed.ok,false);assert.match(spoofed.error.message,/lock identity was not retained/);
 }));

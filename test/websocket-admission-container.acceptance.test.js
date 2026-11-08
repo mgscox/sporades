@@ -15,7 +15,7 @@ import { resetWebSocketUpgrade } from './helpers/reset-websocket-upgrade.js';
 const run = promisify(execFile);
 const enabled = process.env.SPORADES_REAL_ADMISSION_CONTAINER === '1';
 for (const status of [403, 429]) {
-  test(`real Base image survives reset clients during ${status} generated upgrade denial`, { skip: !enabled, timeout: 60000 }, async t => {
+  test(`real Base image survives reset clients during ${status} generated upgrade denial`, { skip: !enabled && "Set SPORADES_REAL_ADMISSION_CONTAINER=1 with Docker", timeout: 60000 }, async t => {
     const root = await mkdtemp(path.join(process.cwd(), '.agent-tmp-ws-container-'));
     const name = `sporades-ws-reset-${status}-${randomBytes(5).toString('hex')}`;
     let started = false;

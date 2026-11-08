@@ -1,3 +1,4 @@
+import type { HostObservabilityMail } from "./host-observability-mail.js";
 import type { HostHelperHost } from "./hosted-capsule-contract.js";
 export declare const OBSERVABILITY_IMAGES: Readonly<{
     glitchtip: "glitchtip/glitchtip:v5.2.1";
@@ -41,7 +42,7 @@ export declare function observabilityDirectory(host: HostHelperHost): string;
 export declare function observabilityProject(host: HostHelperHost): string;
 export declare function readObservabilityState(host: HostHelperHost): Promise<State | null>;
 export declare function assertObservabilityResources(cpus: number, memoryBytes: number, freeDiskBytes: number): void;
-export declare function observabilityCompose(host: HostHelperHost, state: State): {
+export declare function observabilityCompose(host: HostHelperHost, state: State, mail?: HostObservabilityMail | null): {
     name: string;
     services: {
         "errors-db": {
@@ -112,14 +113,6 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
         web: {
             image: "glitchtip/glitchtip:v5.2.1";
             environment: {
-                DATABASE_URL: string;
-                REDIS_URL: string;
-                SECRET_KEY: string;
-                GLITCHTIP_DOMAIN: string;
-                CSRF_TRUSTED_ORIGINS: string;
-                ALLOWED_HOSTS: string;
-                DEFAULT_FROM_EMAIL: string;
-                EMAIL_URL: string;
                 ENABLE_USER_REGISTRATION: string;
                 ENABLE_SOCIAL_APPS_USER_REGISTRATION: string;
                 ENABLE_ORGANIZATION_CREATION: string;
@@ -127,6 +120,14 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
                 UWSGI_WORKERS: string;
                 CELERY_WORKER_CONCURRENCY: string;
                 CELERY_WORKER_POOL: string;
+                EMAIL_URL: string;
+                DEFAULT_FROM_EMAIL: string;
+                DATABASE_URL: string;
+                REDIS_URL: string;
+                SECRET_KEY: string;
+                GLITCHTIP_DOMAIN: string;
+                CSRF_TRUSTED_ORIGINS: string;
+                ALLOWED_HOSTS: string;
             };
             depends_on: {
                 "errors-db": {
@@ -153,14 +154,6 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
             image: "glitchtip/glitchtip:v5.2.1";
             environment: {
                 SERVER_ROLE: string;
-                DATABASE_URL: string;
-                REDIS_URL: string;
-                SECRET_KEY: string;
-                GLITCHTIP_DOMAIN: string;
-                CSRF_TRUSTED_ORIGINS: string;
-                ALLOWED_HOSTS: string;
-                DEFAULT_FROM_EMAIL: string;
-                EMAIL_URL: string;
                 ENABLE_USER_REGISTRATION: string;
                 ENABLE_SOCIAL_APPS_USER_REGISTRATION: string;
                 ENABLE_ORGANIZATION_CREATION: string;
@@ -168,6 +161,14 @@ export declare function observabilityCompose(host: HostHelperHost, state: State)
                 UWSGI_WORKERS: string;
                 CELERY_WORKER_CONCURRENCY: string;
                 CELERY_WORKER_POOL: string;
+                EMAIL_URL: string;
+                DEFAULT_FROM_EMAIL: string;
+                DATABASE_URL: string;
+                REDIS_URL: string;
+                SECRET_KEY: string;
+                GLITCHTIP_DOMAIN: string;
+                CSRF_TRUSTED_ORIGINS: string;
+                ALLOWED_HOSTS: string;
             };
             depends_on: {
                 "errors-db": {
@@ -265,11 +266,19 @@ export declare function disableObservability(host: HostHelperHost, applyRoutes: 
 export declare function statusObservability(host: HostHelperHost): Promise<{
     installed: boolean;
     enabled: boolean;
+    mail: {
+        configured: boolean;
+        transport: "console" | "smtp-ssl";
+    };
     ready?: undefined;
     healthy?: undefined;
     urls?: undefined;
     images?: undefined;
 } | {
+    mail: {
+        configured: boolean;
+        transport: "console" | "smtp-ssl";
+    };
     installed: boolean;
     enabled: boolean;
     ready: boolean;
@@ -325,5 +334,13 @@ export declare function observabilityMonitorUnits(host: HostHelperHost): {
     timer: string;
 };
 export declare function installObservabilityMonitor(host: HostHelperHost, enabled: boolean, directory?: string): Promise<void>;
+/** Caller holds the Host-wide lock; retry after interrupted recreation. */
+export declare function applyObservabilityMail(host: HostHelperHost): Promise<{
+    mail: {
+        configured: boolean;
+        transport: "console" | "smtp-ssl";
+    };
+    recreated: string[];
+}>;
 export {};
 //# sourceMappingURL=host-observability.d.ts.map

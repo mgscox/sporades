@@ -106,9 +106,14 @@ export const CONFORMANCE_SURFACE = {
             if (value.id === id && value.data?.some((row) => row.text === text)) delivered.resolve(value);
           };
           peer.addEventListener("message", onResult);
-          const timer = setTimeout(() => delivered.reject(new Error(`Subscription stayed stale: ${text}`)), 2000);
+          let timer;
           try {
-            const [value] = await Promise.all([delivered.promise, Promise.resolve().then(trigger)]);
+            // Observe delivery before starting work, but measure its deadline
+            // after the mutation/Job finishes, rather than timing that work too.
+            await waitForGate(Promise.resolve().then(trigger), `subscription trigger: ${text}`);
+            const value = await Promise.race([delivered.promise, new Promise((_, reject) => {
+              timer = setTimeout(() => reject(new Error(`Subscription stayed stale: ${text}`)), 2000);
+            })]);
             assert.equal(value.error, null);
           } finally {
             clearTimeout(timer);
@@ -125,9 +130,12 @@ export const CONFORMANCE_SURFACE = {
         assert.deepEqual(runs, [1, 1]);
         const write = async (name, expected) => {
           events.length = 0;
-          const result = await send({ id: `write-${name}`, type: "mutation.run", mutation: "write", args: [name] });
-          assert.equal(result.error, null);
-          await pause();
+          const trigger = async () => {
+            const result = await send({ id: `write-${name}`, type: "mutation.run", mutation: "write", args: [name] });
+            assert.equal(result.error, null);
+          };
+          if (name === "transport_audits") { await trigger(); await pause(); }
+          else await expectResult(name, "mutation", trigger);
           await send({ id: `sentinel-${name}`, type: "auth.get" });
           assert.deepEqual(runs, expected);
           assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), name === "transport_audits" ? [] : [name]);
@@ -136,9 +144,10 @@ export const CONFORMANCE_SURFACE = {
         await write("transport_audits", [2, 1]);
         await write("transport_notes", [2, 2]);
         events.length = 0;
-        assert.equal((await send({ id: "enqueue", type: "mutation.run", mutation: "enqueue" })).error, null);
-        await runCurrentUserJobWorker(database);
-        await pause();
+        await expectResult("transport_notes", "job", async () => {
+          assert.equal((await send({ id: "enqueue", type: "mutation.run", mutation: "enqueue" })).error, null);
+          await runCurrentUserJobWorker(database);
+        });
         assert.deepEqual(runs, [2, 3]);
         assert.deepEqual(events.filter((event) => event.type === "query.result").map((event) => event.id), ["transport_notes"]);
 

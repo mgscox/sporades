@@ -23,7 +23,7 @@ function worker(file) {
       let timer;
       try { return await Promise.race([
         new Promise(resolve => waiting.set(kind, resolve)),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`worker barrier timeout: ${kind}`)), 10_000); }),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`worker barrier timeout: ${kind}`)), kind === "ready" ? 60000 : 10_000); }),
       ]); } finally { clearTimeout(timer); }
     },
   };
@@ -37,7 +37,7 @@ async function stopAtBarrier(worker) {
   }
   assert.fail('owner did not enter the OS stopped state');
 }
-async function setup(fail = false, sameOperation = false) {
+async function setup(fail = false, sameOperation = false, createWorker = worker) {
   const dir = await mkdtemp(path.join(tmpdir(), 'resource-process-'));
   const file = path.join(dir, 'data.db');
   const database = await openDevDatabase(file, '', {}, { name: 'resource-process' }, { schema: { anchors: table({ value: Text() }), writes: table({ value: Text() }) } });
@@ -49,15 +49,26 @@ async function setup(fail = false, sameOperation = false) {
   database.adapter.prepare('INSERT INTO sporades_team_memberships (teamId,userId,role,createdAt) VALUES (?,?,?,?)').run(teamId, 'actor', 'member', time);
   for (const id of ['a', 'b']) database.adapter.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory) VALUES (?,'work','actor','actor',?,'queued',?,0,?,?, '[]')").run(id, JSON.stringify({ operation: sameOperation ? 'shared' : id, fail: id === 'a' && fail }), time, time, '{"maxAttempts":2,"delayMs":0}');
   await database.close();
-  const a = worker(file); await a.wait('ready');
-  const b = worker(file); await b.wait('ready');
-  a.send('start'); await a.wait('claimed');
-  b.send('start'); await b.wait('claimed');
-  const read = await createSqliteDatabaseAdapter(file, { readOnly: true });
-  return { a, b, read, file, async close() {
-    for (const w of [a, b]) { if (w.child.exitCode === null && w.child.signalCode === null) { const exited = once(w.child, 'exit'); w.child.kill('SIGKILL'); await exited; } }
-    await read.close(); await rm(dir, { recursive: true, force: true });
-  } };
+  const owned = [];
+  let read;
+  const startWorker = () => { const owner = createWorker(file); owned.push(owner); return owner; };
+  const close = async () => {
+    for (const owner of owned) {
+      if (owner.child.exitCode === null && owner.child.signalCode === null) {
+        const exited = once(owner.child, 'exit'); owner.child.kill('SIGKILL'); await exited;
+      }
+    }
+    await read?.close();
+    await rm(dir, { recursive: true, force: true });
+  };
+  try {
+    const a = startWorker(); await a.wait('ready');
+    const b = startWorker(); await b.wait('ready');
+    a.send('start'); await a.wait('claimed');
+    b.send('start'); await b.wait('claimed');
+    read = await createSqliteDatabaseAdapter(file, { readOnly: true });
+    return { a, b, read, file, startWorker, close };
+  } catch (error) { await close(); throw error; }
 }
 
 for (const fail of [false, true]) test(`independent runtime workers: deterministic winner, immediate busy loser, ${fail ? 'rollback' : 'commit'}`, async () => {
@@ -88,7 +99,7 @@ test('stopped owner holds SQLite authority beyond the fixed deadline; kill relea
     await assert.rejects(competing.withResourceTransaction(() => null), { code: 'RESOURCE_BUSY' });
     await competing.close();
     const exited = once(f.a.child, 'exit'); f.a.child.kill('SIGKILL'); await exited;
-    const restarted = worker(f.file); await restarted.wait('ready');
+    const restarted = f.startWorker(); await restarted.wait('ready');
     assert.equal(f.read.prepare("SELECT claimToken IS NOT NULL present FROM sporades_jobs WHERE id='a'").get().present, 1);
     const postKill = await createSqliteDatabaseAdapter(f.file);
     await postKill.withResourceTransaction(() => null);
@@ -260,4 +271,20 @@ test('expired lease recovery cannot transfer a stopped owner claim before engine
     assert.equal(recovered.status, 'delayed'); assert.equal(recovered.claimToken, null);
     assert.equal(f.read.prepare('SELECT count(*) n FROM writes').get().n, 0);
   } finally { await f.close(); }
+});
+
+test('resource fixture cleans owned workers when startup fails', async () => {
+  const children = []; let directory; let unexpected;
+  try {
+    await assert.rejects(setup(false, false, file => {
+      directory = path.dirname(file);
+      const owner = worker(file); children.push(owner.child);
+      return { ...owner, wait: async () => { throw new Error('injected worker startup failure'); } };
+    }).then(value => { unexpected = value; return value; }), /injected worker startup failure/);
+    assert.ok(children.every(child => child.exitCode !== null || child.signalCode !== null), 'failed startup must leave no IPC child');
+  } finally {
+    await unexpected?.close();
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) { const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited; }
+    if (directory) await rm(directory, { recursive: true, force: true });
+  }
 });
