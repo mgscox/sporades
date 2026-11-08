@@ -1,5 +1,11 @@
 # Changes
 
+## Unreleased
+
+### 🐛 Bug Fixes
+
+- Provide transaction-bound Team lifecycle locks in privileged Job resource scopes, including scheduled Jobs; keep ordinary nontransactional lock calls fail-closed (#356).
+
 ## v0.9.46 - 2026-11-08
 
 Changes since v0.9.45.

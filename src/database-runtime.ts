@@ -1974,6 +1974,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           }
           begun = true;
           const result = await fn(transaction);
+          await runTransactionBeforeCommitChecks(transaction);
           beforeCommit?.(transaction);
           revokeTransactionScopedAdapter(transaction);
           commitIssued = true;
@@ -2401,6 +2402,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         });
         try {
           const result = await fn(transaction);
+          await runTransactionBeforeCommitChecks(transaction);
           await beforeCommit?.(transaction);
           revokeTransactionScopedAdapter(transaction);
           commitIssued = true;
