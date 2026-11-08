@@ -1,5 +1,13 @@
 # Changes
 
+## v0.9.45 - 2026-11-08
+
+Changes since v0.9.44.
+
+### 🚀 Features
+
+- Create probe parity fixture parent on clean checkouts (798e4b59).
+
 ## v0.9.44 - 2026-11-08
 
 Changes since v0.9.43.
