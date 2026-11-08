@@ -135703,9 +135703,10 @@ function createSharedDatabaseAdapterMethods(dialect) {
         whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
         params.push(query.ownerId);
       }
-      if (query.where) {
-        whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
-        params.push(query.where.value);
+      const predicates = Array.isArray(query.where) ? query.where : query.where ? [query.where] : [];
+      for (const clause of predicates) {
+        whereClauses.push(`${dialect.quoteIdentifier(clause.fieldName)} = ?`);
+        params.push(clause.value);
       }
       const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
       const orderSql = query.orderBy ? ` ORDER BY ${dialect.quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"}` : "";
@@ -153208,7 +153209,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return operation;
     },
     where(fieldName, value) {
-      return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
+      return createEndpointTableApi(database, table, { ...query, where: [...query.where ?? [], { fieldName, value }] }, contextGetter);
     },
     orderBy(fieldName, direction = "asc") {
       return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } }, contextGetter);
@@ -153219,13 +153220,13 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     get() {
       return runTableRead(contextGetter, (activeContext) => {
         const selected = database.adapter.selectAppRows(table, {
-          where: query.where ? {
-            fieldName: query.where.fieldName,
+          where: query.where?.map((clause) => ({
+            fieldName: clause.fieldName,
             value: serializeFieldValue(
-              table.fields.find((field) => field.name === query.where.fieldName),
-              query.where.value
+              table.fields.find((field) => field.name === clause.fieldName),
+              clause.value
             )
-          } : null,
+          })),
           orderBy: query.orderBy,
           limit: 1
         });
@@ -153245,13 +153246,13 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return runTableRead(contextGetter, (activeContext) => {
         const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
         const selected = database.adapter.selectAppRows(table, {
-          where: query.where ? {
-            fieldName: query.where.fieldName,
+          where: query.where?.map((clause) => ({
+            fieldName: clause.fieldName,
             value: serializeFieldValue(
-              table.fields.find((field) => field.name === query.where.fieldName),
-              query.where.value
+              table.fields.find((field) => field.name === clause.fieldName),
+              clause.value
             )
-          } : null,
+          })),
           orderBy: query.orderBy,
           limit
         });

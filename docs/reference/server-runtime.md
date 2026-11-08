@@ -273,6 +273,19 @@ ctx.db.projects.get()
 ctx.db.projects.all()
 ```
 
+Each `.where(field, value)` adds an equality predicate. Chained calls combine
+with AND on every Database adapter, for both `get()` and `all()`:
+
+```ts
+await ctx.db.reminderRuns.where("venueId", venueId).where("runDate", today).get();
+```
+
+Builders are immutable: extending a saved builder keeps its existing predicates
+without changing the saved builder. Repeating a field adds another condition;
+conflicting values match no rows. `orderBy` and `limit` preserve every predicate.
+Client Custom query calls and live subscriptions execute these same server
+predicates. The browser SDK does not expose a table query builder.
+
 Await terminal table operations (`get`, `all`, `insert`, `insertOrIgnore`,
 `update`, and `delete`) before using their results. They can return a Promise
 on any adapter, including SQLite while another transaction owns the connection.

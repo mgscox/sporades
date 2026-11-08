@@ -4,6 +4,15 @@
 
 - Team Billing products can offer several recurring Prices per environment, such as monthly and annual billing. Checkout and managed interval switches authorize the selected interval, verified billing truth reports it, and the Stripe test provider models interval changes. Existing single-Price bindings remain supported (#350).
 
+### Bug Fixes
+
+- Chained `.where()` calls now combine equality predicates with AND for `get()`
+  and `all()` across SQLite, PostgreSQL, and libSQL, including live queries
+  (#354). Previously each call silently replaced the previous clause. Audit
+  queries containing multiple `.where()` calls, including calls added to saved
+  builders: all earlier filters now apply. If code deliberately relied on
+  replacement, start a new query from `ctx.db.<table>` for the replacement filter.
+  Check previously returned data and app decisions for missing earlier filters.
 
 ## v0.9.46 - 2026-11-08
 

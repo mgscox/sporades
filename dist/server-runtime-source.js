@@ -4988,7 +4988,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             return operation;
         },
         where(fieldName, value) {
-            return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
+            return createEndpointTableApi(database, table, { ...query, where: [...(query.where ?? []), { fieldName, value }] }, contextGetter);
         },
         orderBy(fieldName, direction = "asc") {
             return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } }, contextGetter);
@@ -4999,12 +4999,10 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         get() {
             return runTableRead(contextGetter, (activeContext) => {
                 const selected = database.adapter.selectAppRows(table, {
-                    where: query.where
-                        ? {
-                            fieldName: query.where.fieldName,
-                            value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
-                        }
-                        : null,
+                    where: query.where?.map((clause) => ({
+                        fieldName: clause.fieldName,
+                        value: serializeFieldValue(table.fields.find((field) => field.name === clause.fieldName), clause.value),
+                    })),
                     orderBy: query.orderBy,
                     limit: 1,
                 });
@@ -5024,12 +5022,10 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             return runTableRead(contextGetter, (activeContext) => {
                 const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
                 const selected = database.adapter.selectAppRows(table, {
-                    where: query.where
-                        ? {
-                            fieldName: query.where.fieldName,
-                            value: serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value),
-                        }
-                        : null,
+                    where: query.where?.map((clause) => ({
+                        fieldName: clause.fieldName,
+                        value: serializeFieldValue(table.fields.find((field) => field.name === clause.fieldName), clause.value),
+                    })),
                     orderBy: query.orderBy,
                     limit,
                 });
