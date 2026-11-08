@@ -1,5 +1,11 @@
 # Changes
 
+## v0.9.46 - 2026-11-08
+
+Changes since v0.9.45.
+
+No changes detected.
+
 ## v0.9.45 - 2026-11-08
 
 Changes since v0.9.44.

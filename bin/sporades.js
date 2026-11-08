@@ -164774,7 +164774,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.45";
+var CLI_VERSION = "0.9.46";
 
 // src/cli/sporades.ts
 var containerSecretResolutions = /* @__PURE__ */ new WeakMap();
