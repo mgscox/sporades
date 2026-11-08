@@ -18,6 +18,14 @@ Browser errors, CSP reports and analytics share a separate outbound lane with
 the same bounds. Public HTTP ingress allows 8 concurrent requests / 120 attempts
 per window, including invalid bodies. Saturation drops outbound events without
 queuing; failures release concurrency but do not refund the window count.
+Original V8/JSC/Firefox frames retain generated coordinates; embedded module
+source is replaced with a stable identifier. Up to four exception values share
+the existing 20-frame and 2,048-character message limits. Browser messages
+share their limit after embedded-source redaction, including all retained causes.
+Privileged causes expose only existing audit-safe codes. Server events add declared handler and
+opaque event correlation; browser DTOs cannot assign trusted metadata.
+Stackless ErrorEvents retain available source coordinates; no throw site is fabricated.
+Server transport mirrors are excluded from duplicate browser error collection.
 Diagnostics conceal complete sensitive
 values (including arrays/objects) and URL queries/fragments, including relative
 URLs in messages and stack filenames after punctuation or key/value delimiters.
@@ -25,11 +33,13 @@ From the first literal or encoded query/fragment delimiter, the entire remaining
 diagnostic line is concealed, including whitespace, quotation, nested containers,
 later URL-like text, JSON fields and closing punctuation. Public prefixes and
 following lines remain available. URL stripping precedes Server env substitution,
-including URL-prefix env values and complete URL-valued secrets.</p>
+including URL-prefix env values and complete URL-valued secrets.
+Server env matching includes case variants, full audit-normalized values and
+URL pathname, query, fragment, username and password component echoes.</p>
 </div></section>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">ObservabilityConfig</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-property" href="#errors">errors</a><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-symbol">{</span><br/>        <span class="tsd-kind-property">client</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">boolean</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">dsnEnv</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">environment</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">protocol</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;sentry&quot;</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-kind-property">sampleRate</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span><span class="tsd-signature-symbol">;</span><br/>    <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L17">observability.d.ts:17</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L27">observability.d.ts:27</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -65,7 +75,7 @@ including URL-prefix env values and complete URL-valued secrets.</p>
 <div class="tsd-comment tsd-typography"><p>Error sampling probability from 0 to 1; defaults to 1.</p>
 </div></li></ul></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L18">observability.d.ts:18</a></li></ul></aside></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/observability.d.ts#L28">observability.d.ts:28</a></li></ul></aside></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">
