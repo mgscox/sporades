@@ -67,7 +67,9 @@ upload source maps, capture console output, record sessions, or track users.
 
 Capture preserves exception names and up to four exception values (outer error
 plus three causes), with cycle detection. All values share 20 parsed frames and
-2,048 message characters. V8/Node/Chrome, Safari/JSC and Firefox frames are
+2,048 message characters. Browser messages and causes share that cap after
+embedded-source redaction, even when replacement text expands the message.
+V8/Node/Chrome, Safari/JSC and Firefox frames are
 recognized, including stacks with no header. Messages and frame fields follow
 the same diagnostic redaction policy. Arbitrary exception properties are dropped.
 Server events include the runtime-declared `handler`, safe `error_code` and

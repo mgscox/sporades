@@ -7,8 +7,9 @@
  * queuing; failures release concurrency but do not refund the window count.
  * Original V8/JSC/Firefox frames retain generated coordinates; embedded module
  * source is replaced with a stable identifier. Up to four exception values share
- * the existing 20-frame and 2,048-character message limits. Privileged causes
- * expose only existing audit-safe codes. Server events add declared handler and
+ * the existing 20-frame and 2,048-character message limits. Browser messages
+ * share their limit after embedded-source redaction, including all retained causes.
+ * Privileged causes expose only existing audit-safe codes. Server events add declared handler and
  * opaque event correlation; browser DTOs cannot assign trusted metadata.
  * Stackless ErrorEvents retain available source coordinates; no throw site is fabricated.
  * Server transport mirrors are excluded from duplicate browser error collection.

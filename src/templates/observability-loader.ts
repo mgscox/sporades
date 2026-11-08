@@ -29,7 +29,8 @@ function collectionLoader(options: { errors: boolean; analytics: boolean; expect
           if (line.length + 1 > stackBudget) break;
           stack += line + "\n"; stackBudget -= line.length + 1;
         }
-        const message = String(item?.message ?? (item !== null && typeof item === "object" ? "Non-Error exception" : item ?? "Client error")).slice(0, messageBudget).replace(/data:[^\s)]+/gi, "[embedded source]");
+        // Embedded-source replacement can expand text; charge only the bounded result.
+        const message = String(item?.message ?? (item !== null && typeof item === "object" ? "Non-Error exception" : item ?? "Client error")).slice(0, messageBudget).replace(/data:[^\s)]+/gi, "[embedded source]").slice(0, messageBudget);
         messageBudget -= message.length;
         return { name: typeof item?.name === "string" ? item.name.slice(0, 64) : typeof item === "object" ? "Error" : "NonError", message, stack: stack || undefined };
       };

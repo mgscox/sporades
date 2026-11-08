@@ -636,6 +636,47 @@ test('generated Capsule separately delivers browser errors and unhandled rejecti
   }
 });
 
+test('browser embedded-source redaction preserves the shared cause message budget and delivery', async t => {
+  const { Window } = await import('happy-dom');
+  for (const [repeats, causeLength] of [[32, 20000], [292, 20000], [292, 100000]]) await t.test(`${repeats} data URLs and ${causeLength} cause characters`, async t => {
+    const { origin, received, script, flush } = await generatedCollectionFixture(t);
+    const window = new Window({ url: origin });
+    t.after(() => window.happyDOM.abort());
+    const sends = [];
+    window.fetch = (url, options) => {
+      const payload = JSON.parse(options.body);
+      const response = fetch(new URL(url, origin), { ...options, headers: { ...options.headers, origin } });
+      sends.push({ payload, bytes: Buffer.byteLength(options.body), response });
+      return response;
+    };
+    window.eval(script);
+    let error;
+    try {
+      try { throw new Error('B'.repeat(causeLength)); }
+      catch (cause) { throw new TypeError('data:x '.repeat(repeats), { cause }); }
+    } catch (caught) { error = caught; }
+    const rejection = new window.Event('unhandledrejection');
+    Object.defineProperty(rejection, 'reason', { value: error });
+    window.dispatchEvent(rejection);
+    const errors = sends.filter(send => send.payload.type === 'error');
+    assert.equal(errors.length, 1);
+    const [{ payload, bytes, response }] = errors;
+    const messages = [payload.message, ...payload.causes.map(cause => cause.message)];
+    assert(messages.reduce((sum, message) => sum + message.length, 0) <= 2048, 'messages share the post-redaction 2,048-character cap');
+    assert(bytes <= 16384, 'collection POST fits the ingress body limit');
+    assert.equal((await response).status, 204);
+    await Promise.all(sends.map(send => send.response));
+    await flush();
+    const events = received.filter(event => event.headers['content-type'] === 'application/x-sentry-envelope');
+    assert.equal(events.length, 1, 'provider stores the browser exception');
+    const event = JSON.parse(events[0].body.trim().split('\n')[2]);
+    assert.deepEqual(event.exception.values.map(value => value.type), ['Error', 'TypeError']);
+    assert(event.exception.values.every(value => value.stacktrace.frames.length > 0), 'native throw coordinates survive');
+    assert(event.exception.values.reduce((sum, value) => sum + value.value.length, 0) <= 2048);
+    assert.doesNotMatch(events[0].body, /data:x/);
+  });
+});
+
 test('generated Capsule serves the loader under self CSP and collects client errors with server-side redaction', async t => {
   const { Window } = await import('happy-dom');
   const { origin, received, script, flush } = await generatedCollectionFixture(t);
