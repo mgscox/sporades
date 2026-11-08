@@ -2166,7 +2166,9 @@ test("sporades dev persists private file uploads across dev session restarts", a
 
 
 test("installed Dev and generated Bundle preserve public availability probe parity", { timeout: 60_000 }, async () => {
-  const root = await mkdtemp(path.join(repoRoot, ".sporades", "probe-parity-"));
+  const scratchRoot = path.join(repoRoot, ".sporades");
+  await mkdir(scratchRoot, { recursive: true });
+  const root = await mkdtemp(path.join(scratchRoot, "probe-parity-"));
   const configDir = path.join(root, "config");
   const env = { SPORADES_CONFIG_DIR: configDir, COPYFILE_DISABLE: "1" };
   const received = [];
