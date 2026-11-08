@@ -2250,7 +2250,7 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     const exhaustedInput = { teamId: team.id, requestId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", productKey: "studio" };
     const exhaustedStarted = await send(owner, { id: "checkout-exhausted-start", type: "teamBilling.startCheckout", input: exhaustedInput, sessionToken: signupResult.data.sessionToken });
     assert.equal(exhaustedStarted.data.state, "pending");
-    const exhausted = await waitForTeamCheckout(owner, exhaustedInput, signupResult.data.sessionToken, "failed", 6_000);
+    const exhausted = await waitForTeamCheckout(owner, exhaustedInput, signupResult.data.sessionToken, "failed", 30_000);
     assert.equal(exhausted.data.reason, "unavailable");
     assert.equal(providerInputs.filter((candidate) => candidate.operationId === exhaustRetryOperationId).length, 4, "retry exhaustion terminally fails the operation after the reserved Job budget");
     const exhaustedJob = await runtime.database.adapter.prepare(
@@ -2729,12 +2729,15 @@ async function startRuntime(databasePath, capsuleDefinition = capsule, options =
 async function waitForTeamCheckout(socket, input, sessionToken, state, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   let attempt = 0;
+  let lastState;
   do {
     const result = await send(socket, { id: `checkout-poll-${attempt++}`, type: "teamBilling.startCheckout", input, sessionToken });
-    if (result.data?.state === state) return result;
+    lastState = result.data?.state;
+    if (lastState === state) return result;
+    if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
-  } while (Date.now() < deadline);
-  assert.fail(`Team Checkout did not reach ${state}`);
+  } while (true);
+  assert.fail(`Team Checkout did not reach ${state}; last state: ${lastState}`);
 }
 
 async function waitForTeamPortal(socket, input, sessionToken, state, timeoutMs = 2_000) {

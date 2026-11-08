@@ -1,0 +1,253 @@
+file,lane,peak_rss_mib,wall_seconds,passed,failed,skipped,cancelled,cleaned_processes
+test/access-key-cli.test.js,parallel,370.93,2.11,7,0,0,0,0
+test/access-key-files.test.js,parallel,180.37,14.14,4,0,0,0,0
+test/access-key-operator.test.js,parallel,164.17,14.58,5,0,0,0,0
+test/access-key-release-acceptance.test.js,parallel,33.38,0.09,0,0,1,0,0
+test/access-keys.test.js,parallel,179.74,25.39,8,0,0,0,0
+test/acl-postgres-contention.test.js,parallel,148.32,0.22,0,0,5,0,0
+test/admission-evidence-lifecycle.test.js,serial memory-heavy,890.24,22.97,3,0,0,0,0
+test/admission-evidence.test.js,parallel,437.24,1.72,6,0,0,0,0
+test/admission-lifecycle-proof.test.js,serial memory-heavy,549.69,11.57,18,0,0,0,0
+test/admission-lifecycle.acceptance.test.js,parallel,53.95,0.13,0,0,2,0,0
+test/admission-policy-container.acceptance.test.js,parallel,122.59,0.11,0,0,2,0,0
+test/admission-policy.test.js,parallel,249.43,2.83,9,0,0,0,0
+test/admission-rate-limit-bundle.test.js,parallel,477.02,3.76,1,0,0,0,0
+test/admission-rate-limit.test.js,parallel,171.44,0.63,8,0,0,0,0
+test/ai-endpoint-bundle.test.js,parallel,498,11.15,1,0,0,0,0
+test/ai-provider-overrides.test.js,parallel,176.84,10.03,4,0,0,0,0
+test/ai.test.js,parallel,212.19,26.82,11,0,0,0,0
+test/auth-provider-truth.test.js,parallel,222.33,23.18,7,0,0,0,0
+test/availability-drill-timing.test.js,parallel,102.59,0.08,6,0,0,0,0
+test/availability-rule-preflight.test.js,parallel,20.64,0.06,4,0,0,0,0
+test/base-image.acceptance.test.js,parallel,29.59,0.06,0,0,1,0,0
+test/capsule-rate-limit-bundle.test.js,parallel,474.67,5.31,1,0,0,0,0
+test/capsule-rate-limit-runtime.test.js,parallel,183.64,18.53,7,0,0,0,0
+test/capsule-rate-limit.test.js,parallel,7.9,0.08,5,0,0,0,0
+test/captured-job-actor.test.js,parallel,161.03,3.05,1,0,0,0,0
+test/clamav-acceptance-contract.test.js,parallel,53.95,0.07,1,0,0,0,0
+test/clamav-dev.acceptance.test.js,parallel,18.71,0.07,0,0,1,0,0
+test/clamav-docker.acceptance.test.js,parallel,47.56,0.07,0,0,1,0,0
+test/client-capabilities.test.js,parallel,102.96,0.08,4,0,0,0,0
+test/client-payments.test.js,parallel,178.55,13.87,4,0,0,0,0
+test/client-runtime.test.js,parallel,263.65,14.21,95,0,0,0,0
+test/collection-tunnel.test.js,serial memory-heavy,835.57,186.8,2946,0,0,0,0
+test/container-services-bundle.test.js,serial memory-heavy,595.06,3.86,2,0,0,0,0
+test/container-services-cli.test.js,parallel,265.67,3.24,3,0,0,0,0
+test/container-services-compose-cli.test.js,parallel,510.55,6.82,7,0,36,0,0
+test/container-services-compose.test.js,parallel,53.43,0.1,0,0,1,0,0
+test/container-services-dev.test.js,serial shared-service,736.84,9.62,2,0,0,0,0
+test/container-services-lifecycle.test.js,serial memory-heavy,692.16,29.28,10,0,0,0,0
+test/container-services-reset.test.js,parallel,261.74,4.02,12,0,0,0,0
+test/container-services-runtime.test.js,parallel,161.82,2.48,1,0,0,0,0
+test/container-services.test.js,parallel,149.67,1.2,34,0,0,0,0
+test/create.test.js,parallel,251.29,18.96,53,0,0,0,0
+test/csp-report-forwarding.test.js,parallel,191.02,0.45,8,0,0,0,0
+test/database-adapter-conformance-app-tables.test.js,parallel,242.08,7.17,66,0,1,0,0
+test/database-adapter-conformance-auth-storage.test.js,parallel,410.15,104.25,80,0,1,0,0
+test/database-adapter-conformance-coverage.test.js,parallel,286.2,149.21,8,0,0,0,0
+test/database-adapter-conformance-file-ingress-audit.test.js,parallel,176.35,1.97,4,0,2,0,0
+test/database-adapter-conformance-file-metadata.test.js,parallel,199.54,18.52,28,0,1,0,0
+test/database-adapter-conformance-human-identity-termination.test.js,parallel,195.3,7.86,14,0,1,0,0
+test/database-adapter-conformance-live-queries.test.js,parallel,282.98,1.68,16,0,1,0,0
+test/database-adapter-conformance-live-query-transport.test.js,parallel,339.91,9.85,4,0,1,0,0
+test/database-adapter-conformance-password-change-revocation.test.js,parallel,186.39,3.22,6,0,1,0,0
+test/database-adapter-conformance-team-billing-import.test.js,parallel,217.78,5.34,6,0,1,0,0
+test/database-adapter-conformance-team-storage.test.js,parallel,233.2,11.63,20,0,1,0,0
+test/database-adapter-conformance.test.js,parallel,185.29,4.15,14,0,1,0,0
+test/database-adapter-engine-seam.test.js,parallel,398.06,3.69,27,0,5,0,0
+test/database-adapter-service-backed-spike.test.js,parallel,332.09,9.63,1,0,0,0,0
+test/database-adapter.test.js,parallel,255.39,116.2,73,0,14,0,0
+test/database-transaction-serialization.test.js,parallel,288.84,4.96,16,0,6,0,0
+test/deploy-files.test.js,parallel,180.98,0.73,18,0,0,0,0
+test/deploy-part-2.test.js,serial memory-heavy,939.31,128.53,72,0,0,0,0
+test/deploy.test.js,serial memory-heavy,1706.15,124.9,84,0,0,0,0
+test/dev-clamav-sidecar.test.js,parallel,262.62,34.39,29,0,0,0,0
+test/dev-fixture-messages.test.js,parallel,266.6,0.77,9,0,0,0,0
+test/dev-part-2.test.js,serial memory-heavy,1436.66,128.66,41,0,0,0,0
+test/dev-part-3.test.js,serial memory-heavy,1260.93,108.52,54,0,0,0,0
+test/dev-part-4.test.js,serial memory-heavy,1142.68,80.66,37,0,0,0,0
+test/dev-part-5.test.js,serial memory-heavy,1352.7,83.2,40,0,0,0,0
+test/dev-part-6.test.js,serial memory-heavy,1530.35,89.39,43,0,0,0,0
+test/dev-stripe-origin.test.js,serial memory-heavy,1038.95,14.39,8,0,0,0,0
+test/dev-watch.test.js,serial shared-service,1087.98,24.56,5,0,0,0,0
+test/dev.test.js,serial memory-heavy,1774.49,104.83,49,0,0,0,0
+test/diagnostic-url-privacy.test.js,parallel,114.14,0.11,2,0,0,0,0
+test/docs-llms.test.js,parallel,54.47,0.08,2,0,0,0,0
+test/docs.test.js,parallel,261.68,0.66,54,0,0,0,0
+test/doctor.test.js,serial memory-heavy,1189.79,23.95,39,0,0,0,0
+test/email-events.test.js,parallel,172.47,93.68,35,0,0,0,0
+test/email-sign-in-throttle.test.js,parallel,215.93,38.14,7,0,0,0,0
+test/email-signup-transition.test.js,parallel,257.22,41.46,16,0,2,0,0
+test/endpoint-file-attachment-response.test.js,parallel,185.18,7.82,5,0,0,0,0
+test/endpoint-security-refusal-bundle.test.js,parallel,476.34,5.16,1,0,0,0,0
+test/facebook-oauth-browser.test.js,parallel,27.48,0.09,0,0,1,0,0
+test/facebook-oauth.test.js,serial shared-service,165.01,14.35,10,0,0,0,0
+test/file-ingress-deadline.test.js,serial shared-service,160.72,3.42,1,0,0,0,0
+test/file-ingress-rate-limit.test.js,parallel,216.52,32.17,13,0,0,0,0
+test/file-ingress-refusal.test.js,parallel,200.32,32.15,9,0,1,0,0
+test/file-ingress.test.js,serial memory-heavy,435.38,194.05,130,0,0,0,0
+test/file-policy.test.js,parallel,192.33,44.28,14,0,0,0,0
+test/file-transaction.test.js,parallel,120.78,0.11,28,0,0,0,0
+test/generated-artifacts-ci.test.js,parallel,272.03,5.94,12,0,0,0,0
+test/generated-source-manifest.test.js,parallel,235.44,0.43,6,0,0,0,0
+test/host-autostart.acceptance.test.js,parallel,33.18,0.07,0,0,1,0,0
+test/host-availability.test.js,parallel,177.37,2.29,9,0,0,0,0
+test/host-backups.test.js,parallel,218.76,0.56,12,0,3,0,0
+test/host-db-inspection.test.js,serial memory-heavy,782.34,14.62,6,0,0,0,0
+test/host-fixture-root.test.js,parallel,109.62,0.11,2,0,0,0,0
+test/host-inventory-reconnect.test.js,parallel,294.38,34.03,28,0,0,0,0
+test/host-locks.test.js,serial shared-service,454.05,8.64,9,0,0,0,0
+test/host-metrics.acceptance.test.js,parallel,44.29,0.08,0,0,1,0,0
+test/host-observability-mail.test.js,parallel,344.9,2.19,8,0,0,0,0
+test/host-observability.test.js,parallel,290.79,4.97,35,0,4,0,0
+test/host-part-2.test.js,serial memory-heavy,1221.35,155.62,168,0,2,0,0
+test/host-part-3.test.js,serial memory-heavy,545.64,83.12,109,0,2,0,0
+test/host-telemetry-relay.test.js,parallel,257.73,3.12,5,0,0,0,0
+test/host.test.js,serial memory-heavy,1020.75,76.78,101,0,7,0,0
+test/hosted-telemetry-coverage.test.js,parallel,27.48,0.06,3,0,0,0,0
+test/html-document-injection.test.js,serial memory-heavy,975.29,11.4,7,0,3,0,0
+test/html.test.js,parallel,93.25,0.08,2,0,0,0,0
+test/http-admission.test.js,parallel,168.12,0.33,25,0,0,0,0
+test/http-readiness.test.js,parallel,119.17,1.3,1,0,0,0,0
+test/human-identity-termination.test.js,serial memory-heavy,604.42,23.22,15,0,12,0,0
+test/human-security-transition.test.js,parallel,298.21,6.72,2,0,1,0,0
+test/implicit-mutations.test.js,parallel,188.29,18.74,9,0,0,0,0
+test/job-cli-inspection.test.js,parallel,342.55,1.8,6,0,0,0,0
+test/job-inspection.test.js,parallel,161.82,2.89,1,0,0,0,0
+test/job-lease-recovery.test.js,parallel,199.06,17.02,11,0,1,0,0
+test/job-operator-inspection.test.js,serial memory-heavy,488.37,1.15,4,0,1,0,0
+test/job-queue.test.js,parallel,211.23,50.28,15,0,2,0,0
+test/job-retry-cancel.test.js,parallel,183.79,85.21,32,0,3,0,0
+test/job-scheduling.test.js,parallel,501.56,238.53,98,0,13,0,0
+test/job-time-domain.test.js,parallel,176.82,42.1,15,0,2,0,0
+test/lifecycle-inventory.test.js,parallel,336.35,2.68,5,0,0,0,0
+test/live-query-refresh.test.js,parallel,105.22,0.08,4,0,0,0,0
+test/log-index-additive-migration.test.js,parallel,176.39,0.92,2,0,1,0,0
+test/log-index-sequence.test.js,parallel,176.43,0.62,7,0,1,0,0
+test/log-payload-config.test.js,serial memory-heavy,503.69,1.8,8,0,0,0,0
+test/mail.test.js,serial memory-heavy,679.56,53.1,41,0,0,0,0
+test/mailjet-smtp-live.test.js,parallel,141.33,0.22,0,0,1,0,0
+test/mcp-bridge.test.js,serial memory-heavy,550.71,8.73,11,0,0,0,0
+test/monitoring-maintenance-guards.acceptance.test.js,parallel,36.37,0.08,0,0,5,0,0
+test/monitoring-maintenance.acceptance.test.js,parallel,73.82,0.08,0,0,2,0,0
+test/monitoring-maintenance.test.js,parallel,298.27,92.29,37,0,0,0,0
+test/monitoring-pipeline-rules.test.js,parallel,54.32,0.06,0,0,1,0,0
+test/monitoring-pipeline.test.js,parallel,141.17,1.67,1,0,0,0,0
+test/monitoring-release-verifier.test.js,serial memory-heavy,662.36,137.33,10,0,0,0,0
+test/monitoring-smoke-origin.test.js,parallel,202.37,1.01,4,0,0,0,0
+test/monitoring-stack-cli.test.js,parallel,254.81,6.89,1,0,0,0,0
+test/monitoring-trace-stack.test.js,parallel,208.57,24.02,18,0,0,0,0
+test/mutation-cleanup.test.js,parallel,158.43,1.7,1,0,0,0,0
+test/notification-intents.test.js,parallel,216.83,80.9,36,0,0,0,0
+test/npm-release.test.js,parallel,228.64,3.17,13,0,0,0,0
+test/oauth-provider-deadline.test.js,serial shared-service,214.99,0.77,1,0,0,0,0
+test/oauth-provider.test.js,parallel,189.19,87.92,43,0,0,0,0
+test/observability-acceptance.test.js,parallel,481.35,4.95,30,0,0,0,0
+test/observability-budgets.test.js,parallel,201.46,3.44,14,0,0,0,0
+test/package-script.test.js,parallel,46.2,0.08,34,0,0,0,0
+test/packed-client-access-keys.test.js,parallel,365.5,2.56,1,0,0,0,0
+test/password-change-lifecycle.test.js,parallel,346.45,23.92,12,0,3,0,0
+test/password-change-revocation.test.js,parallel,180.57,14.07,9,0,0,0,0
+test/password-change-transport.test.js,parallel,493.39,6.14,2,0,0,0,0
+test/password-reset-config.test.js,parallel,138.34,0.27,4,0,0,0,0
+test/password-reset-transport.test.js,serial memory-heavy,532.7,17.41,10,0,0,0,0
+test/password-reset.test.js,parallel,238.44,62.91,21,0,0,0,0
+test/password-signin-postgres-race.test.js,parallel,153.4,0.23,0,0,7,0,0
+test/postgres-emitted-sql-quoting.test.js,parallel,268.4,89.78,3,0,0,0,0
+test/postgres-runtime-column-names.test.js,parallel,195.85,5.51,13,0,4,0,0
+test/prerender-client.test.js,parallel,141.5,0.25,5,0,0,0,0
+test/prerender-fragment.test.js,serial memory-heavy,664.31,9.8,59,0,0,0,0
+test/prerender-isolation.test.js,parallel,183.59,2.49,25,0,0,0,0
+test/prerender-placement.test.js,serial memory-heavy,643.66,6.57,2,0,0,0,0
+test/privileged-jobs.test.js,parallel,162.89,3.72,2,0,0,0,0
+test/privileged-only-acl.test.js,parallel,163.34,4.59,2,0,0,0,0
+test/process-json.test.js,parallel,27.47,0.08,4,0,0,0,0
+test/protected-fixture.test.js,parallel,53.14,0.07,1,0,0,0,0
+test/public-assets.test.js,serial memory-heavy,1142.37,47.52,12,0,2,0,0
+test/public-origin-bundle.test.js,serial memory-heavy,579.74,18.72,13,0,0,0,0
+test/public-origin-callbacks-bundle.test.js,parallel,464.54,5.0,3,0,0,0,0
+test/public-origin-callbacks.test.js,parallel,180.48,14.72,7,0,0,0,0
+test/public-origin-cli.test.js,serial memory-heavy,656.78,6.16,2,0,0,0,0
+test/public-origin.test.js,parallel,165.44,10.18,9,0,0,0,0
+test/public-tree.test.js,parallel,198.79,0.4,18,0,0,0,0
+test/qa-runner.test.js,serial memory-heavy,598.54,26.16,35,0,0,0,0
+test/query-array-indices.test.js,parallel,158.51,2.31,1,0,0,0,0
+test/real-vite-container.test.js,parallel,106.55,0.1,0,0,30,0,0
+test/reauthentication-proof.test.js,parallel,166.71,8.67,4,0,1,0,0
+test/registration-admission.test.js,parallel,252.55,21.3,8,0,2,0,0
+test/require-auth.test.js,serial memory-heavy,630.47,4.96,15,0,0,0,0
+test/required-server-env.test.js,serial memory-heavy,594.82,9.75,9,0,0,0,0
+test/reserved-job-names.test.js,parallel,161.16,3.45,2,0,0,0,0
+test/resource-postgres-process.test.js,parallel,153.7,0.24,0,0,2,0,0
+test/resource-postgres-publication.test.js,parallel,154.59,0.25,0,0,3,0,0
+test/resource-process.test.js,parallel,390.99,62.4,16,0,0,0,0
+test/resource-transactions.test.js,parallel,238.12,127.6,80,0,49,0,0
+test/runtime-clock.test.js,parallel,160.96,5.58,1,0,0,0,0
+test/runtime-database-lifecycle.test.js,parallel,168.8,27.49,17,0,0,0,0
+test/schedule-cli-inspection.test.js,serial memory-heavy,582.81,3.95,11,0,0,0,0
+test/sealed-env.test.js,serial memory-heavy,926.5,13.91,12,0,0,0,0
+test/security-hardening.test.js,parallel,170.35,0.3,9,0,0,0,0
+test/sender-credentials.test.js,parallel,385.88,30.1,8,0,0,0,0
+test/server-bundle-module-graph.test.js,serial memory-heavy,1022.0,61.65,40,0,1,0,0
+test/server-env-query-disclosure.test.js,parallel,504.46,9.16,3,0,0,0,0
+test/server-files.test.js,parallel,238.39,54.11,18,0,0,0,0
+test/service-users.test.js,parallel,370.68,21.55,9,0,3,0,0
+test/sessionless-endpoint-bundle.test.js,parallel,468.33,3.57,1,0,0,0,0
+test/sessionless-endpoint.test.js,parallel,162.89,4.22,4,0,0,0,0
+test/stripe-job-retention.test.js,parallel,228.86,68.64,17,0,7,0,0
+test/stripe-payment-config.test.js,parallel,155.39,0.26,7,0,0,0,0
+test/stripe-payment-integration.test.js,parallel,138.32,2.72,16,0,0,0,0
+test/stripe-payment-transaction.test.js,parallel,194.65,3.7,2,0,1,0,0
+test/stripe-team-billing-fake.test.js,serial memory-heavy,677.84,6.1,62,0,0,0,0
+test/stripe-team-billing-provider.test.js,parallel,144.92,0.72,15,0,0,0,0
+test/stripe-webhook.test.js,parallel,417.39,100.03,38,0,7,0,0
+test/table-acl.test.js,parallel,174.61,75.52,32,0,0,0,0
+test/table-insert-or-ignore-reactive.test.js,parallel,164.42,1.81,1,0,0,0,0
+test/table-insert-or-ignore.test.js,parallel,163.72,3.71,2,0,1,0,0
+test/table-read-lifecycle.test.js,parallel,511.84,15.99,8,0,0,0,0
+test/table-unique.test.js,parallel,165.45,6.71,7,0,0,0,0
+test/team-billing-checkout-concurrency.test.js,parallel,252.41,38.1,10,0,4,0,0
+test/team-billing-convergence.test.js,parallel,163.27,0.3,10,0,1,0,0
+test/team-billing-erasure.test.js,parallel,174.59,12.25,14,0,1,0,0
+test/team-billing-import.test.js,parallel,142.95,0.21,17,0,0,0,0
+test/team-billing-management.test.js,parallel,172.86,6.11,15,0,2,0,0
+test/team-billing-runtime.test.js,parallel,164.18,4.39,4,0,0,0,0
+test/team-create-admission.test.js,parallel,224.59,53.98,20,0,1,0,0
+test/team-destructive-policy.test.js,parallel,320.34,100.28,41,0,1,0,0
+test/teams-contract.test.js,parallel,105.2,0.1,1,0,0,0,0
+test/teams-runtime.test.js,parallel,215.08,73.78,39,0,2,0,0
+test/teams.test.js,parallel,285.18,72.53,26,0,2,0,0
+test/telemetry-auth-files.test.js,parallel,297.41,8.2,3,0,0,0,0
+test/telemetry-availability.test.js,parallel,161.26,1.61,5,0,0,0,0
+test/telemetry-background-isolation.test.js,parallel,175.44,6.46,5,0,0,0,0
+test/telemetry-container-ca.acceptance.test.js,parallel,47.89,0.09,0,0,2,0,0
+test/telemetry-database-bundle.test.js,parallel,496.57,3.1,1,0,1,0,0
+test/telemetry-database.test.js,parallel,178.56,0.91,3,0,1,0,0
+test/telemetry-diagnostics.test.js,parallel,134.97,0.14,2,0,0,0,0
+test/telemetry-export-policy.test.js,parallel,245.02,0.59,3,0,0,0,0
+test/telemetry-fetch-bundle.test.js,parallel,489.23,9.32,2,0,3,0,0
+test/telemetry-fetch-rejection.test.js,parallel,117.77,0.11,5,0,0,0,0
+test/telemetry-fetch.test.js,parallel,188.32,1.76,6,0,0,0,0
+test/telemetry-flush.test.js,parallel,176.33,2.03,3,0,0,0,0
+test/telemetry-http.test.js,parallel,185.26,21.8,16,0,0,0,0
+test/telemetry-identity.test.js,parallel,153.85,0.3,2,0,0,0,0
+test/telemetry-inventory-capacity.test.js,parallel,353.64,1.33,2,0,0,0,0
+test/telemetry-jobs-bundle.test.js,serial memory-heavy,977.9,53.93,10,0,0,0,0
+test/telemetry-outage.acceptance.test.js,parallel,52.78,0.11,0,0,1,0,0
+test/telemetry-outage.test.js,parallel,163.41,4.44,2,0,0,0,0
+test/telemetry-performance-rules.test.js,parallel,106.13,0.07,1,0,1,0,0
+test/telemetry-performance.test.js,parallel,110.07,1.27,5,0,0,0,0
+test/telemetry-pressure.test.js,parallel,165.63,48.33,9,0,1,0,0
+test/telemetry-profile.test.js,parallel,209.77,3.26,1,0,0,0,0
+test/telemetry-shutdown-failure.test.js,parallel,470.75,3.71,1,0,0,0,0
+test/telemetry-websocket-bundle.test.js,serial shared-service,870.04,33.14,10,0,0,0,0
+test/trusted-read.test.js,parallel,188.05,9.41,8,0,1,0,0
+test/types.test.js,parallel,501.8,1.62,1,0,0,0,0
+test/unix-socket-fixture.test.js,parallel,105.14,0.09,2,0,0,0,0
+test/unix-socket-path.test.js,parallel,107.57,0.09,1,0,0,0,0
+test/user-journey-expiry.test.js,parallel,315.98,72.06,8,0,0,0,0
+test/user-preferences.test.js,serial memory-heavy,566.6,15.02,8,0,0,0,0
+test/websocket-admission-container.acceptance.test.js,parallel,112.16,0.1,0,0,2,0,0
+test/websocket-admission-dev.test.js,serial memory-heavy,536.66,2.23,1,0,0,0,0
+test/websocket-admission.test.js,serial memory-heavy,588.5,15.0,9,0,0,0,0
+test/websocket-heartbeat.test.js,parallel,176.52,1.19,4,0,0,0,0
