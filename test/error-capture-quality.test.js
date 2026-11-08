@@ -298,6 +298,36 @@ for (const [casing, transform] of [
   }
 }
 
+for (const [component, echo] of [
+  ['fragment', 'PrivateFragment987'],
+  ['username', 'PrivateUser987'],
+  ['password', 'PrivatePassword987'],
+]) test(`standalone URL-secret ${component} echoes are concealed`, async t => {
+  const secret = 'https://PrivateUser987:PrivatePassword987@api.example.invalid/path#PrivateFragment987';
+  const cause = Object.assign(new TypeError(`credential ${echo.toUpperCase()}`), {
+    stack: `TypeError: private cause\n    at ${echo.toLowerCase()} (/safe/${echo}.js:7:9)`,
+  });
+  const { event, envelope } = await captured(t, new Error('public outer', { cause }), undefined, { SERVICE_SECRET: secret });
+  assert(!envelope.toLowerCase().includes(echo.toLowerCase()), 'complete envelope conceals the component');
+  assert.equal(event.exception.values[0].value, 'credential [REDACTED]');
+  assert.deepEqual(event.exception.values[0].stacktrace.frames[0], { filename: '/safe/[REDACTED].js', function: '[REDACTED]', lineno: 7, colno: 9 });
+  assert.equal(event.exception.values[1].value, 'public outer');
+});
+
+test('audit-normalized Server env echoes conceal the entire value beyond 64 characters', async t => {
+  const secret = 'private!'.repeat(10) + 'tail987';
+  const normalized = 'PRIVATE_'.repeat(10) + 'TAIL987';
+  const { event, envelope } = await captured(t, new Error('public outer', { cause: new TypeError(`credential ${normalized}`) }), undefined, { SERVICE_SECRET: secret });
+  assert.doesNotMatch(envelope, /TAIL987|PRIVATE_/i);
+  assert.equal(event.exception.values[0].value, 'credential [REDACTED]');
+  assert.equal(event.exception.values[1].value, 'public outer');
+});
+
+test('whitespace Server env values do not conceal unrelated diagnostics', async t => {
+  const { event } = await captured(t, new Error('public outer'), undefined, { SERVICE_SECRET: '\t' });
+  assert.equal(event.exception.values[0].value, 'public outer');
+});
+
 test('URL-secret matching cannot collide with diagnostic text', async t => {
   for (const [message, env] of [
     ['private sporades://redacted TOKENABC999', { SERVICE_SECRET: 'private sporades://redacted TOKENABC999' }],

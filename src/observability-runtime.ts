@@ -109,11 +109,14 @@ export function createRuntimeObservability(config: RecordValue = {}, env: Record
           const url = new URL(value, "https://redacted.invalid");
           if (url.pathname !== "/") forms.push(url.pathname);
           if (url.search) forms.push(url.search, url.search.slice(1));
+          forms.push(url.hash.slice(1), url.username, url.password);
         } catch { /* Malformed URL secrets still receive literal matching. */ }
       }
-      return forms.filter(Boolean).flatMap(form => [form, form.toUpperCase(), form.toLowerCase(), safePrivilegedAuditErrorCode({ code: form })]);
+      return forms.filter(Boolean).flatMap(form => [form, form.toUpperCase(), form.toLowerCase(),
+        // Pattern matching needs the whole normalized secret, as well as capped audit codes.
+        form.trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_"), safePrivilegedAuditErrorCode({ code: form })]);
     })
-    .filter((value): value is string => value !== null))]
+    .filter((value): value is string => value !== null && value.length > 0))]
     .sort((a, b) => b.length - a.length);
   const secretPattern = secretForms.length ? new RegExp(secretForms.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi") : null;
   const overlappingSecrets = secretPattern ? new RegExp(`(?=(${secretPattern.source}))`, "gi") : null;

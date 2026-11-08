@@ -20,6 +20,8 @@
  * later URL-like text, JSON fields and closing punctuation. Public prefixes and
  * following lines remain available. URL stripping precedes Server env substitution,
  * including URL-prefix env values and complete URL-valued secrets.
+ * Server env matching includes case variants, full audit-normalized values and
+ * URL pathname, query, fragment, username and password component echoes.
  */
 export type ObservabilityConfig = {
   errors?: {
