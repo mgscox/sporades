@@ -52,6 +52,7 @@
     "docs:preview": "vitepress preview docs",
     "docs:api": "typedoc",
     "package": "node ./scripts/package.mjs",
+    "gh-package": "node ./scripts/gh-package.mjs",
     "release": "node ./scripts/package.mjs --ci-publish",
     "monitoring:release-asset": "node ./scripts/monitoring-stack-release.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.runtime.json",

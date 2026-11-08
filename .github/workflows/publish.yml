@@ -9,6 +9,7 @@ on:
     paths:
       - '.github/workflows/publish.yml'
       - 'scripts/package.mjs'
+      - 'scripts/gh-package.mjs'
       - 'scripts/issue-npm-release.mjs'
       - '.github/ISSUE_TEMPLATE/release.yml'
       - 'docs/agents/npm-publishing.md'

@@ -9,6 +9,17 @@ applies exactly one of `release:patch`, `release:minor`, or `release:major`.
 The label is authoritative; the dropdown is context only. A 0.x minor bump may
 break compatibility, so no bump is inferred from merged PRs.
 
+With `gh` authenticated as `mgscox` or a repository administrator, run:
+
+```sh
+npm run gh-package -- --patch
+```
+
+Choose exactly one of `--patch`, `--minor`, or `--major`. The command creates
+the issue with `ready-for-human`, prints its URL, and applies the corresponding
+release label to start the workflow. If adding the label fails, fix the cause
+and apply the label to the printed issue.
+
 An administrator must first create these repository labels in GitHub's Labels UI:
 
 | Label | Purpose |

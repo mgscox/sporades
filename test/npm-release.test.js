@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -46,6 +46,47 @@ test("CI handoff never invokes local publishing and makes pending status explici
   let published;
   await publishOrHandoff(false, "candidate.tgz", async filename => { published = filename; }, () => {});
   assert.equal(published, "candidate.tgz");
+});
+
+test("gh-package requires one bump and labels the issue it creates", async t => {
+  const tools = await mkdtemp(path.join(tmpdir(), "sporades-gh-package-"));
+  t.after(() => rm(tools, { recursive: true, force: true }));
+  const log = path.join(tools, "gh-calls");
+  const issueUrl = "https://github.com/mgscox/sporades/issues/987";
+  await writeFile(path.join(tools, "gh"), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + "\\n");
+if (args[1] === "create") console.log(${JSON.stringify(issueUrl)});
+if (args[1] === "edit" && process.env.FAIL_GH_EDIT === "1") process.exit(1);
+`, { mode: 0o755 });
+  const run = (flags, failEdit = false) => spawnSync("npm", ["run", "gh-package", "--", ...flags], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${tools}${path.delimiter}${process.env.PATH}`, FAIL_GH_EDIT: failEdit ? "1" : "0" },
+  });
+
+  for (const flags of [[], ["--resume"], ["--patch", "--minor"]]) {
+    const result = run(flags);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Usage: npm run gh-package/);
+  }
+  await assert.rejects(readFile(log), { code: "ENOENT" });
+
+  const expectedCalls = [];
+  for (const bump of ["patch", "minor", "major"]) {
+    const result = run([`--${bump}`]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(issueUrl));
+    expectedCalls.push(
+      ["issue", "create", "--repo", "mgscox/sporades", "--title", "Release Sporades", "--body", `Requested version bump: ${bump}`, "--label", "ready-for-human"],
+      ["issue", "edit", issueUrl, "--repo", "mgscox/sporades", "--add-label", `release:${bump}`],
+    );
+  }
+  const calls = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.deepEqual(calls, expectedCalls);
+
+  const failed = run(["--patch"], true);
+  assert.equal(failed.status, 1);
+  assert.ok(failed.stdout.includes(issueUrl));
 });
 
 test("registry confirmation requires the exact tested tarball and provenance metadata", () => {
