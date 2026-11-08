@@ -340,11 +340,74 @@ capsule({
 
 Product keys are lowercase stable application identities. Each product binds
 one exact sandbox Price and one different live Price and declares either a
-positive fixed quantity or `team-members`. A `team-members` policy may declare
+positive fixed quantity, `team-members`, or `usage`. A `team-members` policy may declare
 an optional positive integer `minimum`; Sporades then bills the greater of the
 accepted-member count and that floor. Omitting `minimum` preserves the existing
 one-seat minimum. The declaration is server-only; the browser cannot select a
 mode or Price.
+
+### Resource-counted quantities
+
+Use `usage` for licensed per-venue, per-location, or per-project pricing. It is
+an exact resource count, not Stripe metered event billing:
+
+```ts
+teamBilling: {
+  catalogue: {
+    multi: {
+      quantity: { kind: "usage", meter: "maxVenues", minimum: 6, maximum: 50 },
+      stripe: {
+        sandbox: { priceId: "price_test_venues" },
+        live: { priceId: "price_live_venues" },
+      },
+    },
+  },
+  usage: async (ctx, { teamId }) => ({
+    maxVenues: (await ctx.db.venues.where("teamId", teamId).all()).length,
+  }),
+  authorize: async (ctx, input) => ({ allow: await isBillingHolder(ctx, input.teamId) }),
+  checkout: { successPath: "/billing/success", cancelPath: "/billing/cancelled" },
+}
+```
+
+The required `usage(ctx, { teamId })` hook returns counts keyed by meter, so an
+existing `billingUsage(ctx.db, teamId)` function can supply the result. Counts
+must be exact safe integers from zero through 999999, including resources from
+every creator in the Team and any legacy rows that belong to it. Never return
+a partial or estimated count. Missing meters, failed or unfinished reads,
+invalid results, exceptions, and five-second budget expiry fail closed. Hook
+access bypasses row ACLs for read-only Capsule tables, expires on settlement,
+and carries no current-user, write, runtime-table, or provider capability.
+All calls run inside the exact Team lifecycle lock and transaction.
+
+Meter names match `[a-zA-Z][a-zA-Z0-9_]{0,63}`. Optional `minimum` and `maximum`
+are positive integers through 999999, with maximum at least minimum. The
+billable quantity is `max(count, minimum ?? 1)`. Zero resources therefore bill
+one unit unless a larger floor is declared. `maximum` is an admission ceiling;
+it never truncates the resource count billed for existing data.
+
+Every resource mutation must first `await ctx.teams.lockLifecycle(teamId)`
+before reading or writing resources. For an active or past-due usage Plan,
+Sporades compares the initial and final exact counts before commit, refuses
+increases above `maximum`, and stages quantity convergence in the resource
+transaction. A failed mutation rolls back both resources and billing intent.
+Decreases remain possible when existing data already exceeds a newly lowered
+maximum. The same behavior applies to transaction-bound
+`privilegedCtx.teams.lockLifecycle(teamId)`. This lock does not grant row ACL
+permissions or replace the Capsule's resource authorization.
+
+Checkout and managed Plan transitions refuse a usage target above maximum.
+Before subscribing, or when an app imposes tighter product limits, its own
+admission/`authorize` policy must check the exact count in the locked
+transaction. Writes that omit the lifecycle lock do not trigger immediate
+quantity staging; startup repair reconstructs missing intent from the exact
+hook count. Provider updates use the existing latest-wins durable controller,
+stable proration date and `create_prorations`, with no Stripe I/O inside the
+resource transaction. Only verified Subscription evidence settles the target.
+The stateful Stripe fake accepts these licensed quantities and can inject drift
+with `subscriptions.setQuantity(...)`.
+
+### Billing authority
 
 Every operation re-reads the exact Team membership inside its transaction. A
 current linked Team administrator reaches the Capsule policy for every
@@ -479,8 +542,9 @@ button, progress state, error, retry, and navigation action; Portal return and
 provider acknowledgement never update billing truth.
 
 Portal remains the surface for switches whose source and target share the same
-quantity policy. A switch between fixed quantity and accepted-Team-member
-quantity uses the managed command instead:
+quantity policy. A switch between fixed, accepted-Team-member, or usage
+quantities uses the managed command instead. Changing a usage meter, floor, or
+maximum also changes its quantity policy:
 
 ```ts
 const transition = await teamBilling.requestPlanTransition({

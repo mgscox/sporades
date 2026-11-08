@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Features
+
+- Team Billing supports exact `usage` quantities for venues, locations, and other Capsule resources, with a billable floor, growth maximum, prorated convergence and restart repair (#351).
+
 ### Bug Fixes
 
 - Chained `.where()` calls now combine equality predicates with AND for `get()`

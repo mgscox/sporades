@@ -103,7 +103,7 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `portal.switchPrice(id, priceId)` | Simulates a Portal Price change and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
-| `subscriptions.setQuantity(id, quantity)` | Changes seats and emits an update. |
+| `subscriptions.setQuantity(id, quantity)` | Changes a licensed seat or usage quantity and emits an update. |
 | `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits an active update. |
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
