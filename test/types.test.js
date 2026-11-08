@@ -533,6 +533,13 @@ const app = capsule({
   },
   teamBilling: {
     catalogue: {
+      kitchen: {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: {
+          sandbox: { productId: "prod_kitchen", portalConfigurationId: "bpc_kitchen", prices: { "month:1": { priceId: "price_month" }, "year:1": { priceId: "price_year" } } },
+          live: { productId: "prod_live_kitchen", portalConfigurationId: "bpc_live_kitchen", prices: { "month:1": { priceId: "price_live_month" }, "year:1": { priceId: "price_live_year" } } },
+        },
+      },
       studio: {
         quantity: { kind: "fixed", value: 1 },
         stripe: { sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" }, live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" } },
@@ -556,6 +563,7 @@ const app = capsule({
       input.teamRole satisfies "admin" | "member";
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
       input.productKey?.toUpperCase();
+      input.interval?.toUpperCase();
       const counts = await ctx.teams.countMembers(input.teamId);
       const totalCount: number = counts.totalCount;
       const adminCount: number = counts.adminCount;
@@ -1144,10 +1152,11 @@ teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8
 teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
 teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
 teamBilling.get("00000000-0000-4000-8000-000000000000").then((result) => {
-  if (result.data?.state === "active") result.data.productKey.toUpperCase();
+  if (result.data?.state === "active") { result.data.productKey.toUpperCase(); result.data.interval?.toUpperCase(); }
   if (result.data?.state === "attention-required") result.data.reason.toUpperCase();
 });
 teamBilling.startCheckout({
+  interval: "year:1",
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "11111111-1111-4111-8111-111111111111",
   productKey: "agency",
@@ -1163,6 +1172,7 @@ teamBilling.openPortal({
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
 teamBilling.requestPlanTransition({
+  interval: "month:1",
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "33333333-3333-4333-8333-333333333333",
   productKey: "agency",

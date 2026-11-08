@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- Team Billing products can offer several recurring Prices per environment, such as monthly and annual billing. Checkout and managed interval switches authorize the selected interval, verified billing truth reports it, and the Stripe test provider models interval changes. Existing single-Price bindings remain supported (#350).
+
+
 ## v0.9.46 - 2026-11-08
 
 Changes since v0.9.45.
