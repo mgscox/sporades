@@ -5,6 +5,16 @@
 - Export the typed container Bundle API as `sporades/build`, so build scripts can
   call `createBundle` without importing private `dist/` paths (#355).
 
+### Bug Fixes
+
+- Chained `.where()` calls now combine equality predicates with AND for `get()`
+  and `all()` across SQLite, PostgreSQL, and libSQL, including live queries
+  (#354). Previously each call silently replaced the previous clause. Audit
+  queries containing multiple `.where()` calls, including calls added to saved
+  builders: all earlier filters now apply. If code deliberately relied on
+  replacement, start a new query from `ctx.db.<table>` for the replacement filter.
+  Check previously returned data and app decisions for missing earlier filters.
+
 ## v0.9.46 - 2026-11-08
 
 Changes since v0.9.45.
