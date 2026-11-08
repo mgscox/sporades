@@ -316,6 +316,7 @@ export type TableApi<Row extends Record<string, unknown> = Record<string, unknow
   insertOrIgnore(values: InsertValues<Row>, ...conflictFields: [keyof InsertValues<Row> & string, ...(keyof InsertValues<Row> & string)[]]): MaybePromise<Row | null>;
   update(id: string, values: UpdateValues<Row>): MaybePromise<Row | null>;
   delete(id: string): MaybePromise<boolean>;
+  /** Adds an equality predicate; chained where calls combine with AND and preserve this builder. */
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): TableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): TableApi<Row>;
   limit(count: number): TableApi<Row>;
@@ -328,6 +329,7 @@ export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
 };
 
 export type ReadOnlyTableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
+  /** Adds an equality predicate; chained where calls combine with AND and preserve this builder. */
   where<FieldName extends keyof Row & string>(fieldName: FieldName, value: Row[FieldName]): ReadOnlyTableApi<Row>;
   orderBy(fieldName: keyof Row & string, direction?: OrderDirection): ReadOnlyTableApi<Row>;
   limit(count: number): ReadOnlyTableApi<Row>;
