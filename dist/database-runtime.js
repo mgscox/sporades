@@ -1326,9 +1326,10 @@ export function createSharedDatabaseAdapterMethods(dialect) {
                 whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
                 params.push(query.ownerId);
             }
-            if (query.where) {
-                whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
-                params.push(query.where.value);
+            const predicates = Array.isArray(query.where) ? query.where : query.where ? [query.where] : [];
+            for (const clause of predicates) {
+                whereClauses.push(`${dialect.quoteIdentifier(clause.fieldName)} = ?`);
+                params.push(clause.value);
             }
             const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
             const orderSql = query.orderBy
