@@ -1,3 +1,5 @@
+import { exceptionFrames } from "./exception-stack.js";
+import { safePrivilegedAuditErrorCode } from "./acl-runtime.js";
 import { collectionLoaderSource } from "./templates/observability-loader.js";
 import { randomUUID } from "node:crypto";
 import { expectedDiagnosticErrorCodes } from "./runtime-errors.js";
@@ -114,7 +116,98 @@ export function createRuntimeObservability(config = {}, env = {}) {
     const acquireIngress = budget(8, 120);
     const acquirePublicDelivery = budget(4, 60);
     const acquireServerDelivery = budget(4, 60);
-    const safeText = (value, limit) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
+    // Include URL forms that can survive parsing before diagnostic redaction runs.
+    const secretForms = [...new Set(Object.values(env)
+            .filter((value) => typeof value === "string" && value.length > 0)
+            .flatMap(value => {
+            const forms = [value, redactDiagnosticText(value)];
+            if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(value)) {
+                forms.push(value.split(/[?#]|%(?:3f|23)/i, 1)[0]);
+                try {
+                    const url = new URL(value, "https://redacted.invalid");
+                    if (url.pathname !== "/")
+                        forms.push(url.pathname);
+                    if (url.search)
+                        forms.push(url.search, url.search.slice(1));
+                    forms.push(url.hash.slice(1), url.username, url.password);
+                }
+                catch { /* Malformed URL secrets still receive literal matching. */ }
+            }
+            return forms.filter(Boolean).flatMap(form => [form, form.toUpperCase(), form.toLowerCase(),
+                // Pattern matching needs the whole normalized secret, as well as capped audit codes.
+                form.trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_"), safePrivilegedAuditErrorCode({ code: form })]);
+        })
+            .filter((value) => value !== null && value.length > 0))]
+        .sort((a, b) => b.length - a.length);
+    const secretPattern = secretForms.length ? new RegExp(secretForms.map(value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi") : null;
+    const overlappingSecrets = secretPattern ? new RegExp(`(?=(${secretPattern.source}))`, "gi") : null;
+    const safeText = (value, limit) => {
+        const text = (typeof value === "string" ? value : "Error").slice(0, 65536);
+        // Identify overlapping secrets before transformations can split their bytes.
+        const spans = [];
+        if (overlappingSecrets)
+            for (const match of text.matchAll(overlappingSecrets)) {
+                const start = match.index, end = start + match[1].length, last = spans.at(-1);
+                if (last && start <= last.end)
+                    last.end = Math.max(last.end, end);
+                else
+                    spans.push({ start, end });
+            }
+        // The shared policy must see original URL, header and inline-source syntax.
+        const safe = redactDiagnosticText(text.replace(/data:[^\s)]+/gi, "[embedded source]"));
+        if (!spans.length)
+            return (secretPattern ? safe.replace(secretPattern, "[REDACTED]") : safe).slice(0, limit);
+        const rawLines = text.split("\n"), safeLines = safe.split("\n");
+        if (rawLines.length !== safeLines.length)
+            return "[REDACTED]".slice(0, limit);
+        let offset = 0, spanIndex = 0, result = "";
+        for (let index = 0; index < rawLines.length; index++) {
+            const raw = rawLines[index], line = safeLines[index], end = offset + raw.length;
+            let prefix = 0;
+            while (prefix < raw.length && prefix < line.length && raw[prefix] === line[prefix])
+                prefix++;
+            while (spanIndex < spans.length && spans[spanIndex].end <= offset)
+                spanIndex++;
+            const local = [];
+            let cutoff = line.length, privateNewline = false;
+            for (let cursor = spanIndex; cursor < spans.length && spans[cursor].start <= end; cursor++) {
+                const span = spans[cursor], start = Math.max(0, span.start - offset), stop = Math.min(raw.length, span.end - offset);
+                if (start < stop) {
+                    local.push({ start, end: stop });
+                    // A transformed suffix cannot be mapped back safely: conceal it as a unit.
+                    if (stop > prefix)
+                        cutoff = Math.min(cutoff, start, prefix);
+                }
+                if (span.start <= end && span.end > end)
+                    privateNewline = true;
+            }
+            let copied = 0;
+            for (const span of local) {
+                if (span.start >= Math.min(prefix, cutoff))
+                    break;
+                result += line.slice(copied, span.start) + "[REDACTED]";
+                copied = Math.min(span.end, prefix, cutoff);
+            }
+            result += line.slice(copied, cutoff) + (cutoff < line.length ? "[REDACTED]" : "");
+            if (index < rawLines.length - 1)
+                result += privateNewline ? "[REDACTED]" : "\n";
+            offset = end + 1;
+        }
+        if (secretPattern)
+            result = result.replace(secretPattern, "[REDACTED]");
+        return result.replace(/(?:\[REDACTED\]){2,}/g, "[REDACTED]").slice(0, limit);
+    };
+    const privilegedCauseCode = (cause) => {
+        const candidate = cause && typeof cause === "object" ? cause.code : undefined;
+        if (typeof candidate !== "string" || candidate.length > 65536)
+            return "UNKNOWN_ERROR";
+        // Redaction must see the original bytes before audit-code normalization changes them.
+        const redacted = safeText(candidate, 65536);
+        if (redacted !== candidate)
+            return "UNKNOWN_ERROR";
+        const normalized = safePrivilegedAuditErrorCode({ code: redacted }, "errored");
+        return safeText(normalized, 64) === normalized ? normalized : "UNKNOWN_ERROR";
+    };
     const send = async (url, body, headers) => {
         const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped.signal, AbortSignal.timeout(2000)]) });
         // Provider bodies/headers never flow back to the browser or logs.
@@ -139,23 +232,62 @@ export function createRuntimeObservability(config = {}, env = {}) {
             return;
         void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => { });
     };
-    const captureError = (error, surface, address, acquire) => {
+    const captureError = (error, surface, address, acquire, context = {}) => {
         try {
             if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData
                 || expectedDiagnosticErrorCodes.includes(error?.code)
                 || Math.random() >= (errors.sampleRate ?? 1))
                 return;
-            const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line) => {
-                const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
-                return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
-            }).reverse() : [];
+            const values = [], seen = new Set();
+            let current = error, frameBudget = 20, textBudget = 2048;
+            const privileged = error?.code === "PRIVILEGED_RUN_FAILED" || error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+            for (let depth = 0; depth < 4 && !seen.has(current); depth++) {
+                seen.add(current);
+                const currentPrivileged = current?.code === "PRIVILEGED_RUN_FAILED" || current?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+                const fallback = surface === "client" && depth === 0 && !current?.stack && current?.location;
+                const parsed = exceptionFrames(current?.stack, surface === "client" ? "sporades://embedded/module" : "sporades://capsule/server.mjs");
+                if (fallback && typeof fallback.filename === "string" && fallback.filename && fallback.filename.length <= 4096) {
+                    const filename = /^(data|blob):/i.test(fallback.filename) ? "sporades://embedded/module" : fallback.filename.split(/[?#]/, 1)[0];
+                    parsed.push({ filename, function: "<anonymous>",
+                        ...(Number.isInteger(fallback.lineno) && fallback.lineno > 0 ? { lineno: fallback.lineno } : {}),
+                        ...(Number.isInteger(fallback.colno) && fallback.colno > 0 ? { colno: fallback.colno } : {}),
+                    });
+                }
+                const frames = (frameBudget ? parsed.slice(-frameBudget) : [])
+                    .map(frame => ({ ...frame, filename: safeText(frame.filename, 512), function: safeText(frame.function, 128) }));
+                frameBudget -= frames.length;
+                const message = current?.message ?? (typeof current === "object" && current !== null ? "Non-Error exception" : String(current));
+                const value = safeText(message, textBudget);
+                textBudget -= value.length;
+                const errorCode = typeof current?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(current.code) ? safeText(current.code, 64) : undefined;
+                values.unshift({
+                    type: safeText(current?.name ?? (typeof current === "object" ? "Error" : "NonError"), 64), value, stacktrace: { frames },
+                    mechanism: { type: "generic", data: {
+                            stack_source: frames.length ? fallback ? "error_event" : "original" : "absent",
+                            ...(errorCode ? { error_code: errorCode } : {}),
+                            ...(currentPrivileged ? { cause_code: safeText(privilegedCauseCode(current.cause), 64) } : {}),
+                        } },
+                });
+                // Privileged causes are opaque: only explicit, redacted audit codes may be exported.
+                if (currentPrivileged || !current || (typeof current !== "object" && typeof current !== "function") || current.cause === undefined)
+                    break;
+                current = current.cause;
+            }
+            const code = typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : undefined;
             const event = {
                 ...eventBase(surface === "client" ? "javascript" : "node"), level: "error",
-                tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
-                exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
+                tags: { capsule: safeText(config.name ?? "capsule", 128), surface,
+                    ...(surface !== "client" && typeof context.handler === "string" ? { handler: safeText(context.handler, 128) } : {}),
+                    ...(code ? { error_code: safeText(code, 64) } : {}),
+                    ...(privileged ? { cause_code: safeText(privilegedCauseCode(error.cause), 64) }
+                        : typeof error?.cause?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.cause.code) ? { cause_code: safeText(error.cause.code, 64) } : {}),
+                },
+                exception: { values },
                 ...(address ? { user: { ip_address: address } } : {}),
             };
+            event.tags.correlation_id = event.event_id;
             deliver(event, acquire);
+            return event.event_id;
         }
         catch { /* Error reporting must never replace the original failure. */ }
     };
@@ -163,8 +295,8 @@ export function createRuntimeObservability(config = {}, env = {}) {
         enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
         clientErrors: !!(sentryUrl && errors.client),
         analytics: !!analyticsUrl,
-        capture(error, surface, address) {
-            captureError(error, surface, address, acquireServerDelivery);
+        capture(error, surface, address, context = {}) {
+            return captureError(error, surface, address, acquireServerDelivery, context);
         },
         /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
         captureCspViolation(violation) {
@@ -185,7 +317,17 @@ export function createRuntimeObservability(config = {}, env = {}) {
             if (input.type === "error") {
                 if (!sentryUrl || !errors.client || typeof input.message !== "string" || (input.stack !== undefined && typeof input.stack !== "string"))
                     throw new Error();
-                captureError({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request), acquirePublicDelivery);
+                // Public DTOs cannot supply handler, codes, release, surface or correlation IDs.
+                const clientError = { name: typeof input.name === "string" ? input.name : "Error", message: input.message, stack: input.stack, location: input.location };
+                let target = clientError;
+                if (Array.isArray(input.causes))
+                    for (const cause of input.causes.slice(0, 3)) {
+                        if (!cause || typeof cause.message !== "string")
+                            break;
+                        target.cause = { name: typeof cause.name === "string" ? cause.name : "Error", message: cause.message, stack: typeof cause.stack === "string" ? cause.stack : undefined };
+                        target = target.cause;
+                    }
+                captureError(clientError, "client", trustedClientAddress(database, request), acquirePublicDelivery);
                 return;
             }
             if (!analyticsUrl || input.type !== "pageview")

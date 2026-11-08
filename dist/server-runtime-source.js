@@ -3716,7 +3716,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
         : new Function(`return (${endpoint.handlerSource});`)();
     validateEndpointSessionDeclaration({ ...endpoint, handler });
     if (endpoint.options?.session === "none") {
-        return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+        return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath, endpoint.name);
     }
     const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
     // Admission intentionally precedes multipart body consumption. Ordinary endpoint bodies retain
@@ -3942,7 +3942,7 @@ export async function runEndpoint(database, endpoint, requestUrl, request, reque
         return sealCommittedAttachmentResult(result);
     }
     catch (error) {
-        database.observability?.capture(error, "endpoint");
+        database.observability?.capture(error, "endpoint", undefined, { handler: endpoint.name });
         if (outerCommitted)
             throw error;
         if (endpointRequest.multipart) {
@@ -4259,7 +4259,7 @@ function endpointRequestHead(database, requestUrl, request, requestPath = reques
     };
 }
 // Construct this context independently: no identity, holder, transaction or middleware ever exists.
-async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath) {
+async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath, handlerName) {
     try {
         const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
         const signal = request.__sporadesEndpointSignal ?? request.signal;
@@ -4290,7 +4290,7 @@ async function runSessionlessEndpoint(database, handler, requestUrl, request, re
         return result;
     }
     catch (error) {
-        database.observability?.capture(error, "endpoint");
+        database.observability?.capture(error, "endpoint", undefined, { handler: handlerName });
         throw error;
     }
 }
@@ -5594,7 +5594,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             sendUnhandledMessageError(client, rawMessage, error);
         });
     }
-    function sendUnhandledMessageError(client, rawMessage, error) {
+    function sendUnhandledMessageError(client, rawMessage, error, eventId) {
         let id = null;
         try {
             id = JSON.parse(rawMessage)?.id ?? null;
@@ -5606,6 +5606,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
             id,
             type: "error",
             error: {
+                ...(eventId ? { eventId } : {}),
                 message: error?.message || "WebSocket message failed.",
                 hint: error?.hint ?? "Retry the request. If this keeps happening, restart the Sporades session.",
             },
@@ -5917,7 +5918,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 cancelQueryRefresh(previous);
             client.subscriptions.set(message.id, subscription);
             database.__notifyJobStateQueries = refreshQueries;
-            void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+            void runSubscriptionQueries(client, subscription, (error, eventId) => sendUnhandledMessageError(client, rawMessage, error, eventId), operation);
             return;
         }
         if (message.type === "query.unsubscribe") {
@@ -6485,12 +6486,14 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         return operation.run(async () => {
             const generation = (subscription.generation ?? 0) + 1;
             subscription.generation = generation;
+            let eventId;
             try {
                 const database = getDatabase();
                 const readTables = new Set();
                 const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
                     sessionToken: client.session.token,
                     clientAddress: client.clientAddress,
+                    onDiagnostic: (id) => { eventId = id; },
                 }));
                 // A failed run may not have read what a successful one would, so it re-runs on every refresh.
                 if (subscription.generation === generation)
@@ -6517,7 +6520,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     return;
                 subscription.readTables = null;
                 try {
-                    onError(error);
+                    onError(error, eventId);
                 }
                 catch { /* A closed transport already owns cleanup. */ }
             }
@@ -6545,7 +6548,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                         running.dirty.add(table);
                 }
                 else if (!scoped || liveQueryNeedsRefresh(subscription.readTables, dirty)) {
-                    void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error));
+                    void runSubscriptionQueries(client, subscription, (error, eventId) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error, eventId));
                 }
             }
         }
@@ -6920,13 +6923,14 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
                 context = await applyContextMiddleware(database, context, "query");
             }
             catch (error) {
-                database.observability?.capture(error, "query");
+                const eventId = database.observability?.capture(error, "query", undefined, { handler: customHandler?.name });
                 if (error?.sporadesAuthDenialLogData) {
                     emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
                 }
                 return {
                     rows: null,
                     error: {
+                        ...(eventId ? { eventId } : {}),
                         ...(error?.code ? { code: error.code } : {}),
                         message: error.message,
                         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
@@ -6966,7 +6970,11 @@ export async function runQuery(database, auth, queryName, rawArgs = [], options 
         })();
     }
     catch (error) {
-        database.observability?.capture(error, "query");
+        const eventId = database.observability?.capture(error, "query", undefined, { handler: customHandler?.name });
+        try {
+            options.onDiagnostic?.(eventId);
+        }
+        catch { /* Diagnostics cannot replace the original failure. */ }
         primaryError = error;
         throw error;
     }
@@ -7013,13 +7021,14 @@ async function runCustomQuery(database, context, queryName, args, resolvedHandle
         return { data, error: null };
     }
     catch (error) {
-        database.observability?.capture(error, "query");
+        const eventId = database.observability?.capture(error, "query", undefined, { handler: handler.name });
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
         return {
             data: null,
             error: {
+                ...(eventId ? { eventId } : {}),
                 ...(error?.code ? { code: error.code } : {}),
                 message: error?.message || "Query handler failed.",
                 hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
@@ -7274,9 +7283,9 @@ export async function runMutation(database, auth, mutationName, args, options = 
         return committed;
     }
     catch (error) {
-        database.observability?.capture(error, "mutation");
+        const eventId = database.observability?.capture(error, "mutation", undefined, { handler: database.mutations.find((candidate) => candidate.name === mutationName)?.name });
         if (outerCommitted)
-            return createHookErrorResult(error);
+            return createHookErrorResult(error, eventId);
         dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
@@ -7290,7 +7299,7 @@ export async function runMutation(database, auth, mutationName, args, options = 
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
-        return createHookErrorResult(error);
+        return createHookErrorResult(error, eventId);
     }
 }
 async function runCustomMutation(database, context, mutationName, args, resolvedHandler = null) {
@@ -7382,6 +7391,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
         return response;
     }
     catch (error) {
+        const eventId = database.observability?.capture(error, "message", undefined, { handler: handler.name });
         dropPendingCurrentUserFileByteDeletes(context);
         dropPendingJobCancellationAborts(context);
         dropAccessKeyLifecycleAuditEvents(context);
@@ -7393,6 +7403,7 @@ export async function runAppMessage(database, auth, messageName, data, options =
         return {
             data: null,
             error: {
+                ...(eventId ? { eventId } : {}),
                 ...(error?.code ? { code: error.code } : {}),
                 message: error?.message || "App message handler failed.",
                 hint: error?.hint ?? "Check the Capsule message handler and retry the app message.",
@@ -8313,7 +8324,7 @@ export async function runCurrentUserJobWorker(database) {
                     }
                 }
                 if (handlerStarted)
-                    database.observability?.capture(error, "job");
+                    database.observability?.capture(error, "job", undefined, { handler: row.handler });
                 const handlerFailure = safeJobFailure(error);
                 const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
                 const failedAt = database.clock.now().toISOString();
@@ -8378,10 +8389,11 @@ export async function runCurrentUserJobWorker(database) {
             scheduleCurrentUserJobWorker(database);
     }
 }
-function createHookErrorResult(error) {
+function createHookErrorResult(error, eventId) {
     return {
         ok: false,
         error: {
+            ...(eventId ? { eventId } : {}),
             ...(error?.code ? { code: error.code } : {}),
             message: error?.message || "Mutation hook failed.",
             hint: error?.hint ?? "Check the Capsule mutation hooks and retry the mutation.",

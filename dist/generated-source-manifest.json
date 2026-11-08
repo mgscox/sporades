@@ -85,6 +85,7 @@
       "src/endpoint-error.ts",
       "src/endpoint-file-response.ts",
       "src/endpoint-session.ts",
+      "src/exception-stack.ts",
       "src/file-ingress-refusal.ts",
       "src/file-ingress-runtime.ts",
       "src/file-policy.ts",
@@ -164,7 +165,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "8df410dea3c6b2ab567b7e9c3cc3b8349f67bf25eccdbbbd9cdef62fbdef2708"
+    "digest": "967f9512f7ebb3ffca86dc68ffed23525ce0dcc8aacdb1dff771741cd88960cd"
   },
   "outputs": {
     "files": [
@@ -474,6 +475,10 @@
       "dist/endpoint-session.d.ts.map",
       "dist/endpoint-session.js",
       "dist/endpoint-session.js.map",
+      "dist/exception-stack.d.ts",
+      "dist/exception-stack.d.ts.map",
+      "dist/exception-stack.js",
+      "dist/exception-stack.js.map",
       "dist/file-ingress-refusal.d.ts",
       "dist/file-ingress-refusal.d.ts.map",
       "dist/file-ingress-refusal.js",
@@ -728,6 +733,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "26d0128e67a9e27605e29fa0a62d398dff80ce8878f5cc2d7cc49182777d9fef"
+    "digest": "a36fe5051034b79756c32cec658642283a62655fb830c4e9696722fcdf961655"
   }
 }

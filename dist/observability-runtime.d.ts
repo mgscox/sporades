@@ -6,7 +6,9 @@ export declare function createRuntimeObservability(config?: RecordValue, env?: R
     enabled: boolean;
     clientErrors: boolean;
     analytics: boolean;
-    capture(error: any, surface: string, address?: string | null): void;
+    capture(error: any, surface: string, address?: string | null, context?: {
+        handler?: string;
+    }): string | undefined;
     /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
     captureCspViolation(violation: CspViolation): void;
     close(): void;

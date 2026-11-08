@@ -29257,117 +29257,31 @@ function validatePublicTreeFileSet(files) {
 import { inspect } from "node:util";
 var hidden = { toJSON: { value: () => void 0 }, [inspect.custom]: { value: () => "[Capsule services]" } };
 
-// src/runtime-log-policy.ts
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
-}
-function structuredCredentialEnd(text2, start) {
-  const closers = [];
-  let quote = "", quoteSlashes = 0;
-  for (let index = start; index < text2.length; index++) {
-    const char = text2[index];
-    if (char === "\\") {
-      let end = index;
-      while (text2[end] === "\\") end++;
-      const slashes = end - index;
-      if (quoteSlashes) {
-        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text2[end] === quote) {
-          quote = "";
-          quoteSlashes = 0;
-        }
-      } else if (!quote && /["'`]/.test(text2[end] ?? "")) {
-        quote = text2[end];
-        quoteSlashes = slashes;
-      }
-      index = quote && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
-      continue;
-    }
-    if (quote) {
-      if (!quoteSlashes && char === quote) quote = "";
-    } else if (char === '"' || char === "'" || char === "`") quote = char;
-    else if (char === "[") closers.push("]");
-    else if (char === "{") closers.push("}");
-    else if (char === "]" || char === "}") {
-      if (closers.pop() !== char) return text2.length;
-      if (!closers.length) return index + 1;
-    }
-  }
-  return text2.length;
-}
-function stripDiagnosticUrlSuffixes(text2) {
-  let safe = "", copied = 0, scanned = 0;
-  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
-  for (const match of text2.matchAll(starts)) {
-    if (match.index < scanned) continue;
-    let end = match.index + match[0].length;
-    while (end < text2.length && !/[\s?#<>"`]/.test(text2[end]) && !(text2[end] === "%" && /^%(?:3f|23)/i.test(text2.slice(end, end + 3)))) end++;
-    scanned = end;
-    if (!/^(?:[?#]|%3f|%23)/i.test(text2.slice(end, end + 3))) continue;
-    safe += text2.slice(copied, end);
-    while (end < text2.length && text2[end] !== "\r" && text2[end] !== "\n") end++;
-    copied = scanned = end;
-  }
-  return safe + text2.slice(copied);
-}
-function redactDiagnosticText(value, serverEnv = {}) {
-  let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
-  for (const secret of Object.values(serverEnv)) {
-    if (typeof secret !== "string" || !secret.length) continue;
-    safe = safe.split(secret).join("[REDACTED]");
-    const stripped = stripDiagnosticUrlSuffixes(secret).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
-    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
-  }
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
-  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
-  let redacted = "", cursor = 0;
-  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
-    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
-    const start = match.index + match[0].length;
-    const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
-    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
-    cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
-  }
-  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  return safe;
-}
-
-// src/resource-runtime.ts
-var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
-  sqlite: "supported",
-  postgres: "supported",
-  libsql: "unsupported"
-});
-var resourceAbort = Symbol("resourceAbort");
-function resourceError(code) {
-  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
-    code,
-    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
-  });
-}
-var unsupportedResources = Object.freeze({
-  async run() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  },
-  async status() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  }
-});
-
-// src/live-query-invalidation.ts
-var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
-var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
-var liveQueryReads = new AsyncLocalStorage();
-var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
-var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
-var writeTablePattern = new RegExp(
-  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
-  "i"
-);
-
 // src/runtime-request-context.ts
-import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage2();
-var runtimeJobScope = new AsyncLocalStorage2();
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+var runtimeJobScope = new AsyncLocalStorage();
+
+// src/file-policy.ts
+var signatures = [
+  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
+  ["image/jpeg", [255, 216, 255], 0],
+  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
+  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
+  ["image/bmp", [66, 77], 0],
+  ["application/pdf", [37, 80, 68, 70, 45], 0],
+  ["application/gzip", [31, 139], 0],
+  ["application/zip", [80, 75, 3, 4], 0],
+  ["application/zip", [80, 75, 5, 6], 0],
+  ["application/zip", [80, 75, 7, 8], 0]
+];
+var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
+
+// src/promise-coordinator.ts
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 
 // src/html.ts
 function escapeHtml(value) {
@@ -30444,122 +30358,6 @@ var VOID_ELEMENTS = /* @__PURE__ */ new Set([
   TAG_NAMES.TRACK,
   TAG_NAMES.WBR
 ]);
-
-// src/file-policy.ts
-var signatures = [
-  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
-  ["image/jpeg", [255, 216, 255], 0],
-  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
-  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
-  ["image/bmp", [66, 77], 0],
-  ["application/pdf", [37, 80, 68, 70, 45], 0],
-  ["application/gzip", [31, 139], 0],
-  ["application/zip", [80, 75, 3, 4], 0],
-  ["application/zip", [80, 75, 5, 6], 0],
-  ["application/zip", [80, 75, 7, 8], 0]
-];
-var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
-
-// src/team-billing-management.ts
-var CLAIM_TTL_MS = 5 * 60 * 1e3;
-
-// src/team-billing-convergence.ts
-var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
-
-// src/team-billing-runtime.ts
-var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
-var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
-
-// src/team-billing-erasure.ts
-var CLAIM_TTL_MS2 = 5 * 6e4;
-
-// src/jobs-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
-var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
-var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
-var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
-var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
-var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
-var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
-
-// src/promise-coordinator.ts
-var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
-
-// src/acl-runtime.ts
-var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
-function createPrivilegedAuditLogInput(details = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data2 = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
-  };
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data2.operation}`),
-    data: data2,
-    request: details.request ?? null,
-    release,
-    correlation
-  };
-}
-function normalizePrivilegedAuditActorKind(value) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
-  if (source === null || source === void 0 || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-function normalizePrivilegedAuditCorrelation(value) {
-  if (value === null || value === void 0) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-function auditString(value, fallback) {
-  const text2 = value === null || value === void 0 ? "" : String(value);
-  return text2.trim() ? text2 : fallback;
-}
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-
-// src/file-storage-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
@@ -46258,7 +46056,7 @@ var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/auth-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
@@ -46268,6 +46066,208 @@ var registrationDeniedRollbackMarker = Symbol("sporades.registrationDeniedRollba
 var invalidRegistrationAdmission = Symbol("sporades.invalidRegistrationAdmission");
 var OAUTH_REGISTRATION_KEY_GRACE_MS = 10 * 60 * 1e3;
 var oauthRegistrationUnsealFailed = Symbol("sporades.oauthRegistrationUnsealFailed");
+
+// src/team-billing-management.ts
+var CLAIM_TTL_MS = 5 * 60 * 1e3;
+
+// src/team-billing-convergence.ts
+var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
+
+// src/team-billing-runtime.ts
+var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
+var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
+
+// src/team-billing-erasure.ts
+var CLAIM_TTL_MS2 = 5 * 6e4;
+
+// src/jobs-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
+var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
+
+// src/resource-runtime.ts
+var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
+  sqlite: "supported",
+  postgres: "supported",
+  libsql: "unsupported"
+});
+var resourceAbort = Symbol("resourceAbort");
+function resourceError(code) {
+  return Object.assign(new Error(code === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code,
+    ...code === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+
+// src/runtime-log-policy.ts
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function structuredCredentialEnd(text2, start) {
+  const closers = [];
+  let quote = "", quoteSlashes = 0;
+  for (let index = start; index < text2.length; index++) {
+    const char = text2[index];
+    if (char === "\\") {
+      let end = index;
+      while (text2[end] === "\\") end++;
+      const slashes = end - index;
+      if (quoteSlashes) {
+        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text2[end] === quote) {
+          quote = "";
+          quoteSlashes = 0;
+        }
+      } else if (!quote && /["'`]/.test(text2[end] ?? "")) {
+        quote = text2[end];
+        quoteSlashes = slashes;
+      }
+      index = quote && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
+      continue;
+    }
+    if (quote) {
+      if (!quoteSlashes && char === quote) quote = "";
+    } else if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "[") closers.push("]");
+    else if (char === "{") closers.push("}");
+    else if (char === "]" || char === "}") {
+      if (closers.pop() !== char) return text2.length;
+      if (!closers.length) return index + 1;
+    }
+  }
+  return text2.length;
+}
+function stripDiagnosticUrlSuffixes(text2) {
+  let safe = "", copied = 0, scanned = 0;
+  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
+  for (const match of text2.matchAll(starts)) {
+    if (match.index < scanned) continue;
+    let end = match.index + match[0].length;
+    while (end < text2.length && !/[\s?#<>"`]/.test(text2[end]) && !(text2[end] === "%" && /^%(?:3f|23)/i.test(text2.slice(end, end + 3)))) end++;
+    scanned = end;
+    if (!/^(?:[?#]|%3f|%23)/i.test(text2.slice(end, end + 3))) continue;
+    safe += text2.slice(copied, end);
+    while (end < text2.length && text2[end] !== "\r" && text2[end] !== "\n") end++;
+    copied = scanned = end;
+  }
+  return safe + text2.slice(copied);
+}
+function redactDiagnosticText(value, serverEnv = {}) {
+  let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret !== "string" || !secret.length) continue;
+    safe = safe.split(secret).join("[REDACTED]");
+    const stripped = stripDiagnosticUrlSuffixes(secret).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
+  let redacted = "", cursor = 0;
+  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
+    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
+    const start = match.index + match[0].length;
+    const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
+    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
+    cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
+  }
+  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
+  return safe;
+}
+
+// src/acl-runtime.ts
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data2 = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data2.operation}`),
+    data: data2,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "errored") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
+  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "errored") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text2 = value === null || value === void 0 ? "" : String(value);
+  return text2.trim() ? text2 : fallback;
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage: AsyncLocalStorage2 } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var liveQueryReads = new AsyncLocalStorage2();
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
 
 // src/database-telemetry.ts
 import { AsyncLocalStorage as AsyncLocalStorage3 } from "node:async_hooks";

@@ -91207,6 +91207,1900 @@ async function removeCapsuleServiceState(projectDir, name2) {
   }
 }
 
+// src/exception-stack.ts
+function exceptionFrames(input, embeddedSource = "sporades://embedded/module") {
+  if (typeof input !== "string") return [];
+  const stack = input.slice(0, 1024 * 1024);
+  const frames = [];
+  let offset2 = 0;
+  for (let count = 0; count < 100 && offset2 < stack.length && frames.length < 20; count++) {
+    let end = stack.indexOf("\n", offset2);
+    if (end < 0) {
+      if (input.length > stack.length) break;
+      end = stack.length;
+    }
+    let line = stack.slice(offset2, end).trim();
+    offset2 = end + 1;
+    const v8 = line.startsWith("at ");
+    if (v8) line = line.slice(3);
+    if (v8 && line.endsWith(")")) line = line.slice(0, -1);
+    const coordinates = /:(\d{1,10}):(\d{1,10})$/.exec(line);
+    if (!coordinates) continue;
+    let location = line.slice(0, coordinates.index), fn2 = "<anonymous>";
+    if (v8) {
+      const opening = location.indexOf(" (");
+      if (opening >= 0) {
+        fn2 = location.slice(0, opening);
+        location = location.slice(opening + 2);
+      }
+    } else {
+      const at2 = location.indexOf("@");
+      if (at2 < 0) continue;
+      fn2 = location.slice(0, at2) || fn2;
+      location = location.slice(at2 + 1);
+    }
+    if (/(?:data|blob):/i.test(location)) location = embeddedSource;
+    location = location.split(/[?#]/, 1)[0];
+    if (!location || location.length > 4096 || fn2.length > 1024 || /data:|blob:|base64,/i.test(fn2)) continue;
+    const lineno = Number(coordinates[1]), colno = Number(coordinates[2]);
+    if (lineno < 1 || colno < 1) continue;
+    frames.push({ filename: location, function: fn2, lineno, colno });
+  }
+  return frames.reverse();
+}
+
+// src/public-origin.ts
+function bindAppContext(context2, app) {
+  Object.defineProperty(context2, "app", { value: app, enumerable: true, writable: false, configurable: false });
+  return context2;
+}
+function normalizePublicOrigin(value) {
+  if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) || /[\\\s]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash || value.includes("?") || value.includes("#")) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+function resolvePublicOrigin(config) {
+  const session = config?.__sporadesSession;
+  const dev = session === "dev" || session === "public-dev";
+  const configured = dev ? config?.__sporadesDevOrigin : session === "hosted" ? config?.__sporadesPublicOrigin : config?.deploy?.publicOrigin ?? config?.__sporadesPublicOrigin;
+  const port = dev ? config?.dev?.port ?? config?.deploy?.port ?? 4e3 : config?.deploy?.port ?? (session ? 4e3 : config?.dev?.port ?? 4e3);
+  return normalizePublicOrigin(configured) ?? `http://localhost:${port}`;
+}
+function isLocalPublicOrigin(origin) {
+  const hostname = new URL(origin).hostname.toLowerCase();
+  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" || hostname === "0.0.0.0" || /^127\./.test(hostname) || hostname === "[::]";
+}
+
+// src/runtime-request-context.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+var runtimeRequestScope = new AsyncLocalStorage();
+function traceRuntimeOperation(operation, callback, outcome) {
+  const run2 = runtimeRequestScope.getStore()?.operation;
+  return run2 ? run2(operation, callback, outcome) : callback();
+}
+function withoutRuntimeRequestIdentity(callback) {
+  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
+}
+var runtimeJobScope = new AsyncLocalStorage();
+function captureJobTraceContext() {
+  try {
+    const job = runtimeJobScope.getStore();
+    const request = runtimeRequestScope.getStore();
+    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
+    const context2 = span?.spanContext();
+    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
+    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
+  } catch {
+    return null;
+  }
+}
+
+// src/file-policy.ts
+function resolveFileAllowedMimeTypes(files) {
+  const types2 = files?.allowedMimeTypes;
+  if (types2 === void 0) return null;
+  if (!Array.isArray(types2) || types2.some((type) => typeof type !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type))) {
+    throw Object.assign(new Error("Invalid File MIME allowlist."), {
+      code: "INVALID_FILE_CONFIG",
+      hint: "Set files.allowedMimeTypes to an array of lowercase exact MIME types; [] denies all uploads."
+    });
+  }
+  return new Set(types2);
+}
+function normalizeFileMimeType(type) {
+  return String(type ?? "application/octet-stream").split(";", 1)[0].trim().toLowerCase();
+}
+var signatures = [
+  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
+  ["image/jpeg", [255, 216, 255], 0],
+  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
+  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
+  ["image/bmp", [66, 77], 0],
+  ["application/pdf", [37, 80, 68, 70, 45], 0],
+  ["application/gzip", [31, 139], 0],
+  ["application/zip", [80, 75, 3, 4], 0],
+  ["application/zip", [80, 75, 5, 6], 0],
+  ["application/zip", [80, 75, 7, 8], 0]
+];
+var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
+function matches(bytes, signature, offset2 = 0) {
+  return bytes.length >= offset2 + signature.length && signature.every((byte, index) => bytes[offset2 + index] === byte);
+}
+function detectedMimeType(bytes) {
+  for (const [type, signature, offset2] of signatures) if (matches(bytes, signature, offset2)) return type;
+  if (matches(bytes, [82, 73, 70, 70]) && matches(bytes, [87, 69, 66, 80], 8)) return "image/webp";
+  if (matches(bytes, [102, 116, 121, 112], 4) && (matches(bytes, [97, 118, 105, 102], 8) || matches(bytes, [97, 118, 105, 115], 8))) return "image/avif";
+  return null;
+}
+function assertAllowedFileMimeType(allowed, rawType, bytes) {
+  if (!allowed) return;
+  const type = normalizeFileMimeType(rawType);
+  if (!allowed.has(type)) throw Object.assign(new Error("File MIME type is not allowed."), {
+    code: "FILE_MIME_TYPE_NOT_ALLOWED",
+    hint: "Choose a type permitted by files.allowedMimeTypes."
+  });
+  if (!bytes) return;
+  const detected = detectedMimeType(bytes);
+  let valid = !signedTypes.has(type) || detected === type;
+  if (type === "text/plain") {
+    valid = detected === null;
+    try {
+      const text3 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      valid = valid && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text3);
+    } catch {
+      valid = false;
+    }
+  }
+  if (!valid) throw Object.assign(new Error("File bytes do not match the declared MIME type."), {
+    code: "FILE_MIME_TYPE_MISMATCH",
+    hint: "Supply bytes matching the declared MIME type."
+  });
+}
+
+// src/maybe-promise.ts
+function isPromiseLike(value) {
+  return value && typeof value === "object" && typeof value.then === "function";
+}
+function thenIfPromise(value, onResolved) {
+  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
+}
+function chainMaybePromise(steps) {
+  let pending = null;
+  for (const step of steps) {
+    if (pending) {
+      pending = pending.then(step);
+      continue;
+    }
+    const result = step();
+    if (isPromiseLike(result)) {
+      pending = result;
+    }
+  }
+  return pending ?? void 0;
+}
+
+// src/promise-coordinator.ts
+var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
+var observerRetainers = /* @__PURE__ */ new Map();
+var promiseParents = /* @__PURE__ */ new WeakMap();
+var promiseSettlementCauses = /* @__PURE__ */ new WeakMap();
+var promiseCombinatorInputs = /* @__PURE__ */ new WeakMap();
+var settledPromises = /* @__PURE__ */ new WeakSet();
+var promiseHookStack = [];
+var promiseHookStop;
+var compositionRootCandidates = [];
+var thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
+var promiseCombinatorKinds = /* @__PURE__ */ new WeakMap();
+var promiseCombinatorNames = /* @__PURE__ */ new Set(["all", "allSettled", "any", "race"]);
+var compositionRootClearQueued = false;
+function promiseCombinatorOnStack() {
+  const prepareStackTrace = Error.prepareStackTrace;
+  let callSites;
+  Error.prepareStackTrace = (_error, sites) => sites;
+  try {
+    callSites = new Error().stack;
+  } finally {
+    Error.prepareStackTrace = prepareStackTrace;
+  }
+  if (!Array.isArray(callSites)) return void 0;
+  for (const site of callSites) {
+    if (site.isAsync?.()) continue;
+    const name2 = site.getFunctionName();
+    const type = site.getTypeName();
+    if (name2 && promiseCombinatorNames.has(name2) && (type === "Promise" || type === "Function")) return name2;
+  }
+  return void 0;
+}
+function retainCompositionRootCandidate(promise) {
+  compositionRootCandidates.push(promise);
+  if (compositionRootClearQueued) return;
+  compositionRootClearQueued = true;
+  queueMicrotask(() => {
+    compositionRootCandidates = [];
+    compositionRootClearQueued = false;
+  });
+}
+function installPromiseHook() {
+  if (promiseHookStop || !nodePromiseHooks?.createHook) return;
+  promiseHookStop = nodePromiseHooks.createHook({
+    init(promise, parent) {
+      if (parent) promiseParents.set(promise, parent);
+      else retainCompositionRootCandidate(promise);
+      const combinator = parent ? promiseCombinatorOnStack() : void 0;
+      if (parent && combinator) {
+        const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
+        if (root) {
+          promiseCombinatorKinds.set(root, combinator);
+          const inputs = promiseCombinatorInputs.get(root) ?? /* @__PURE__ */ new Set();
+          inputs.add(parent);
+          promiseCombinatorInputs.set(root, inputs);
+        }
+      }
+      for (const observer of observerRetainers.keys()) observer.init?.(promise, parent);
+    },
+    before(promise) {
+      promiseHookStack.push(promise);
+      for (const observer of observerRetainers.keys()) observer.before?.(promise);
+    },
+    after(promise) {
+      for (const observer of observerRetainers.keys()) observer.after?.(promise);
+      promiseHookStack.pop();
+    },
+    settled(promise) {
+      settledPromises.add(promise);
+      const cause = promiseHookStack.at(-1);
+      if (cause && cause !== promise) promiseSettlementCauses.set(promise, cause);
+      for (const observer of observerRetainers.keys()) observer.settled?.(promise);
+    }
+  });
+}
+function retainPromiseObserver(observer) {
+  observerRetainers.set(observer, (observerRetainers.get(observer) ?? 0) + 1);
+  installPromiseHook();
+}
+function releasePromiseObserver(observer) {
+  const retained = observerRetainers.get(observer) ?? 0;
+  if (retained <= 1) observerRetainers.delete(observer);
+  else observerRetainers.set(observer, retained - 1);
+  if (observerRetainers.size !== 0) return;
+  promiseHookStop?.();
+  promiseHookStop = void 0;
+  promiseHookStack = [];
+  compositionRootCandidates = [];
+  thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
+  settledPromises = /* @__PURE__ */ new WeakSet();
+  compositionRootClearQueued = false;
+}
+function activePromise() {
+  return promiseHookStack.at(-1);
+}
+function promiseSettlementCause(promise) {
+  return promiseSettlementCauses.get(promise);
+}
+function promiseDescendsFrom(promise, ancestor) {
+  const visited = /* @__PURE__ */ new Set();
+  for (let current2 = promise; current2 && !visited.has(current2); current2 = promiseParents.get(current2)) {
+    if (current2 === ancestor) return true;
+    visited.add(current2);
+  }
+  return false;
+}
+function promiseDependsOn(promise, dependency) {
+  const pending = promise ? [promise] : [];
+  const visited = /* @__PURE__ */ new Set();
+  while (pending.length > 0) {
+    const current2 = pending.pop();
+    if (current2 === dependency) return true;
+    if (visited.has(current2)) continue;
+    visited.add(current2);
+    const parent = promiseParents.get(current2);
+    if (parent) pending.push(parent);
+    if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current2) ?? "")) {
+      pending.push(...promiseCombinatorInputs.get(current2) ?? []);
+    }
+  }
+  return false;
+}
+function promiseCompositionRootCandidate() {
+  const wrapper = compositionRootCandidates.at(-1);
+  if (!wrapper) return void 0;
+  thenableWrapperRoots.add(wrapper);
+  const combinator = promiseCombinatorOnStack();
+  if (!combinator) return void 0;
+  for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
+    const candidate = compositionRootCandidates[index];
+    if (!thenableWrapperRoots.has(candidate)) {
+      promiseCombinatorKinds.set(candidate, combinator);
+      return candidate;
+    }
+  }
+  promiseCombinatorKinds.set(wrapper, combinator);
+  return wrapper;
+}
+function promiseCombinatorKind(promise) {
+  return promiseCombinatorKinds.get(promise);
+}
+function enclosingPromiseCombinatorRoot() {
+  if (!promiseCombinatorOnStack()) return void 0;
+  for (let index = compositionRootCandidates.length - 1; index >= 0; index -= 1) {
+    const candidate = compositionRootCandidates[index];
+    if (!settledPromises.has(candidate)) return candidate;
+  }
+  return void 0;
+}
+
+// src/file-storage-runtime.ts
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
+async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
+  const path26 = await import("node:path");
+  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+    return createS3CompatibleFileStorageAdapter({
+      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
+      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
+      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
+      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
+      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
+      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule"
+    });
+  }
+  return createLocalFileStorageAdapter({
+    storagePath: config.files?.storagePath ?? path26.join(path26.dirname(databasePath), "files")
+  });
+}
+function createLocalFileStorageAdapter({ storagePath }) {
+  if (typeof storagePath !== "string" || storagePath.length === 0) {
+    throw new Error("Local file storage requires a storagePath.");
+  }
+  return {
+    engine: "local",
+    storagePath,
+    async writeFileVersion({ fileId, version: version3, bytes }) {
+      const { mkdir: mkdir13, writeFile: writeFile11 } = await import("node:fs/promises");
+      await mkdir13(localFileStoragePath(storagePath, fileId), { recursive: true });
+      await writeFile11(localFileVersionPath(storagePath, fileId, version3), bytes);
+    },
+    async readFileVersion({ fileId, version: version3 }) {
+      const { readFile: readFile17 } = await import("node:fs/promises");
+      return await readFile17(localFileVersionPath(storagePath, fileId, version3));
+    },
+    async openFileVersionStream({ fileId, version: version3 }) {
+      const { createReadStream: createReadStream2 } = await import("node:fs");
+      const stream = createReadStream2(localFileVersionPath(storagePath, fileId, version3));
+      await new Promise((resolve2, reject) => {
+        const cleanup = () => {
+          stream.removeListener("open", opened);
+          stream.removeListener("error", failed);
+        };
+        const opened = () => {
+          cleanup();
+          resolve2();
+        };
+        const failed = (error) => {
+          cleanup();
+          stream.destroy();
+          reject(error);
+        };
+        stream.once("open", opened);
+        stream.once("error", failed);
+      });
+      return stream;
+    },
+    async deleteFileVersion({ fileId, version: version3 }) {
+      const { rm: rm13 } = await import("node:fs/promises");
+      await rm13(localFileVersionPath(storagePath, fileId, version3), { force: true });
+    },
+    async checkHealth() {
+      const { mkdir: mkdir13, rm: rm13, writeFile: writeFile11 } = await import("node:fs/promises");
+      const path26 = await import("node:path");
+      const probeDirectory = path26.join(storagePath, ".sporades-health");
+      const probeFile = path26.join(probeDirectory, `${nodeCryptoModule.randomUUID()}.tmp`);
+      try {
+        await mkdir13(probeDirectory, { recursive: true });
+        await writeFile11(probeFile, "");
+        await rm13(probeFile, { force: true });
+        return { ok: true };
+      } catch {
+        await rm13(probeFile, { force: true }).catch(() => {
+        });
+        return { ok: false };
+      }
+    },
+    close() {
+    }
+  };
+}
+function localFileStoragePath(storagePath, fileId) {
+  return `${storagePath}/${fileId}`;
+}
+function localFileVersionPath(storagePath, fileId, version3) {
+  return `${localFileStoragePath(storagePath, fileId)}/${version3}`;
+}
+function createS3CompatibleFileStorageAdapter({
+  endpoint,
+  bucket,
+  region,
+  accessKey,
+  secretKey,
+  namespace
+}) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("S3-compatible file storage requires an endpoint.");
+  }
+  if (typeof bucket !== "string" || bucket.length === 0) {
+    throw new Error("S3-compatible file storage requires a bucket.");
+  }
+  if (typeof region !== "string" || region.length === 0) {
+    throw new Error("S3-compatible file storage requires a region.");
+  }
+  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
+    throw new Error("S3-compatible file storage requires access credentials.");
+  }
+  const isolatedNamespace = s3StorageNamespace(namespace);
+  const config = { endpoint, bucket, region, accessKey, secretKey };
+  let bucketReady = false;
+  const ensureBucket = async () => {
+    if (bucketReady) {
+      return;
+    }
+    const head = await s3Request(config, { method: "HEAD", key: null });
+    if (head.statusCode === 404) {
+      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
+      if (created.statusCode < 200 || created.statusCode >= 300) {
+        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
+      }
+    } else if (head.statusCode < 200 || head.statusCode >= 300) {
+      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
+    }
+    bucketReady = true;
+  };
+  return {
+    engine: "s3-compatible",
+    endpoint,
+    bucket,
+    region,
+    namespace: isolatedNamespace,
+    objectKeyPrefix: `${isolatedNamespace}/files`,
+    async writeFileVersion({ fileId, version: version3, bytes }) {
+      await ensureBucket();
+      const result = await s3Request(config, {
+        method: "PUT",
+        key: s3ObjectKey(isolatedNamespace, fileId, version3),
+        body: bytes
+      });
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async readFileVersion({ fileId, version: version3 }) {
+      const result = await s3Request(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
+      });
+      if (result.statusCode === 404) {
+        throw s3ObjectNotFoundError();
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
+      }
+      return result.body;
+    },
+    async openFileVersionStream({ fileId, version: version3 }) {
+      const response = await s3RequestStream(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
+      });
+      if (response.statusCode === 404) {
+        response.resume();
+        throw s3ObjectNotFoundError();
+      }
+      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+        response.resume();
+        throw new Error(`S3-compatible file read failed with HTTP ${response.statusCode ?? 0}.`);
+      }
+      return response;
+    },
+    async deleteFileVersion({ fileId, version: version3 }) {
+      const result = await s3Request(config, {
+        method: "DELETE",
+        key: s3ObjectKey(isolatedNamespace, fileId, version3)
+      });
+      if (result.statusCode === 404) {
+        return;
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async checkHealth() {
+      try {
+        await ensureBucket();
+        return { ok: true, adapter: "s3-compatible" };
+      } catch {
+        return { ok: false, adapter: "s3-compatible" };
+      }
+    },
+    close() {
+    }
+  };
+}
+function s3ObjectKey(namespace, fileId, version3) {
+  return `${namespace}/files/${fileId}/${version3}`;
+}
+async function s3Request(config, { method, key = null, body = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = s3RequestBodyBuffer(body);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({
+    "host": endpoint.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate
+  });
+  headers.authorization = s3Signature({
+    method,
+    pathname,
+    query: "",
+    headers,
+    payloadHash,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+    region: config.region,
+    date,
+    amzDate
+  });
+  return await new Promise((resolve2, reject) => {
+    const request = transport.request(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || void 0,
+        method,
+        path: `${pathname}${endpoint.search}`,
+        headers: {
+          ...headers,
+          "content-length": payload.length
+        }
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          resolve2({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks)
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+    if (payload.length > 0) {
+      request.write(payload);
+    }
+    request.end();
+  });
+}
+async function s3RequestStream(config, { method, key = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = Buffer.alloc(0);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({ "host": endpoint.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate });
+  headers.authorization = s3Signature({ method, pathname, query: "", headers, payloadHash, accessKey: config.accessKey, secretKey: config.secretKey, region: config.region, date, amzDate });
+  return await new Promise((resolve2, reject) => {
+    const request = transport.request({ protocol: endpoint.protocol, hostname: endpoint.hostname, port: endpoint.port || void 0, method, path: `${pathname}${endpoint.search}`, headers: { ...headers, "content-length": 0 } }, resolve2);
+    request.on("error", reject);
+    request.end();
+  });
+}
+function s3RequestBodyBuffer(body) {
+  if (body === null || body === void 0) {
+    return Buffer.alloc(0);
+  }
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+  return Buffer.from(String(body));
+}
+function s3SignedHeaders(headers) {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name2, value]) => [name2.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+function s3Signature({
+  method,
+  pathname,
+  query,
+  headers,
+  payloadHash,
+  accessKey,
+  secretKey,
+  region,
+  date,
+  amzDate
+}) {
+  const signedHeaders = Object.keys(headers).join(";");
+  const canonicalHeaders = Object.entries(headers).map(([name2, value]) => `${name2}:${value}
+`).join("");
+  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const credentialScope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
+  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
+  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+}
+function s3SigningKey(secretKey, date, region) {
+  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
+  const dateRegionKey = s3Hmac(dateKey, region);
+  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
+  return s3Hmac(dateRegionServiceKey, "aws4_request");
+}
+function s3CanonicalPath(basePath, bucket, key) {
+  const base = String(basePath ?? "").split("/").filter(Boolean);
+  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
+  return `/${parts.join("/")}`;
+}
+function s3EncodedPathSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3StorageNamespace(namespace) {
+  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
+    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
+  }
+  return `capsules/${namespace}`;
+}
+function s3AmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+function s3Hmac(key, data2) {
+  return nodeCryptoModule.createHmac("sha256", key).update(data2).digest();
+}
+function s3Sha256Hex(data2) {
+  return nodeCryptoModule.createHash("sha256").update(data2).digest("hex");
+}
+function s3ObjectNotFoundError() {
+  const error = new Error("S3-compatible file object not found.");
+  error.code = "ENOENT";
+  return error;
+}
+async function checkRuntimeFileStorage(database) {
+  return await database.fileStorage.checkHealth();
+}
+function createFileStorageTables(sqlite) {
+  const sql2 = sqlite.dialect.sql;
+  return chainMaybePromise([
+    () => sqlite.exec(
+      sql2(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
+      )
+    ),
+    () => sqlite.exec(
+      sql2(
+        "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
+      )
+    ),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
+    () => sqlite.exec(sql2(filePathBackfillSql())),
+    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_files_created_live] ON [sporades_files] ([createdAt], [id]) WHERE [deletedAt] IS NULL AND [status] = 'uploaded'")),
+    () => sqlite.exec(sql2(activeFilePathDedupeSql())),
+    () => sqlite.exec(
+      sql2("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
+    ),
+    () => sqlite.exec(
+      sql2(
+        "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
+      )
+    ),
+    () => sqlite.exec(
+      sql2(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
+      )
+    ),
+    () => ensureFileUploadTargetColumns(sqlite),
+    () => sqlite.exec(
+      sql2(
+        "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
+      )
+    ),
+    // Runtime-private ingress receipts. The identity columns are intentionally queryable:
+    // endpoint transactions lock and classify a lease without scanning JSON payloads.
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
+    () => ensureFileIngressColumns(sqlite),
+    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
+    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])"))
+  ]);
+}
+async function readRequestBytes(request, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+function contentTypeForFile(type) {
+  if (typeof type !== "string") {
+    return "application/octet-stream";
+  }
+  const normalized = type.split(";")[0].trim().toLowerCase();
+  const safeInlineTypes = /* @__PURE__ */ new Set([
+    "text/plain",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp"
+  ]);
+  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
+}
+async function createPendingFileUpload(database, auth, message) {
+  return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), (result) => result.ok ? "success" : "denied");
+}
+async function createPendingFileUploadOperation(database, auth, message) {
+  const input = message.file ?? {};
+  const size = Number(input.size ?? 0);
+  if (!Number.isFinite(size) || size < 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
+    };
+  }
+  if (size > database.fileMaxSizeBytes) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
+      )
+    };
+  }
+  try {
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type);
+  } catch (error) {
+    return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } };
+  }
+  return await withFileUploadPathLock("capsule", async () => {
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
+    const replacing = message.replace === true;
+    const replaceReference = message.fileReference ?? message.fileId;
+    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    if (!resolvedReplacement.ok) {
+      return resolvedReplacement;
+    }
+    const existingByReference = resolvedReplacement.row;
+    if (replacing && !existingByReference) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    let normalizedPath;
+    try {
+      const effectivePath = input.path ?? existingByReference?.path;
+      normalizedPath = effectivePath == null ? null : normalizeAbsoluteFilePath(effectivePath);
+    } catch (error) {
+      return {
+        ok: false,
+        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+      };
+    }
+    const name2 = normalizeFileName(input.name, normalizedPath);
+    const targetPath = normalizedPath ?? `/default/${name2}`;
+    if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
+      sizeBytes: size,
+      mimeType: normalizeFileMimeType(input.type),
+      name: name2
+    })) {
+      return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
+    }
+    return await database.adapter.withTransaction(async (sqlite) => {
+      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+      let target;
+      try {
+        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: targetPath } : await resolveFileWriteTarget(transactionDatabase, auth.userId, targetPath, now2);
+      } catch (error) {
+        return {
+          ok: false,
+          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+        };
+      }
+      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
+      if (existingByPath?.ambiguous) {
+        return ambiguousFileReferenceError(target.path);
+      }
+      if (existingByPath && existingByPath.ownerId !== auth.userId) {
+        return {
+          ok: false,
+          error: createStructuredFileError(
+            "File path already exists.",
+            "Choose another absolute File path or ask the owning user to delete the existing file first."
+          )
+        };
+      }
+      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
+      const existing = existingByReference ?? existingByPath;
+      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule.randomUUID();
+      const uploadId = nodeCryptoModule.randomUUID();
+      const version3 = nodeCryptoModule.randomUUID();
+      const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
+      await sqlite.deleteFileUploadsForPath(target.path);
+      try {
+        await sqlite.insertFileUpload({
+          id: uploadId,
+          fileId,
+          ownerId: auth.userId,
+          bucketId: target.bucket.id,
+          bucketName: target.bucket.name,
+          path: target.path,
+          name: name2,
+          type,
+          version: version3,
+          expectedSize: size,
+          createdAt: now2
+        });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        const current2 = await sqlite.selectPendingFileUploadByPath(target.path);
+        if (!current2) throw error;
+        return {
+          ok: true,
+          data: {
+            uploadUrl: `/__sporades/uploads/${current2.id}`,
+            method: "PUT",
+            headers: {},
+            file: fileMetadataFromUpload(current2)
+          },
+          error: null
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          uploadUrl: `/__sporades/uploads/${uploadId}`,
+          method: "PUT",
+          headers: {},
+          file: fileMetadataFromUpload({
+            fileId,
+            bucketName: target.bucket.name,
+            path: target.path,
+            name: name2,
+            type,
+            expectedSize: size,
+            version: version3
+          })
+        },
+        error: null
+      };
+    });
+  });
+}
+async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), (result) => result.ok ? "success" : "denied");
+}
+async function completePendingFileUploadOperation(database, uploadId, request, websocketHub = null) {
+  const upload = await database.adapter.selectFileUpload(uploadId);
+  if (!upload) {
+    return {
+      ok: false,
+      data: null,
+      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
+    };
+  }
+  const previousFile = await database.adapter.selectFileById(upload.fileId);
+  try {
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.progress",
+      fileId: upload.fileId,
+      loaded: 0,
+      total: upload.expectedSize
+    });
+    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    if (database.fileAcl?.resolve?.("upload") && bytes.length !== upload.expectedSize) {
+      throw Object.assign(new Error("File size differs from the admitted upload metadata."), {
+        code: "FILE_UPLOAD_SIZE_MISMATCH",
+        hint: "Request a fresh upload URL with the actual file size."
+      });
+    }
+    assertAllowedFileMimeType(database.fileAllowedMimeTypes, upload.type, bytes);
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
+    const completion = await database.adapter.withTransaction(async (sqlite) => {
+      const completed = await sqlite.completeFileUpload(upload, bytes.length, now2);
+      if (completed?.changes === 0) {
+        return { ok: false, superseded: true };
+      }
+      try {
+        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
+        await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
+        return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+      } catch (error) {
+        await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+        throw error;
+      }
+    });
+    if (!completion.ok && completion.superseded) {
+      return {
+        ok: false,
+        data: null,
+        error: createStructuredFileError(
+          "Upload URL was superseded.",
+          "Request a fresh upload URL before retrying this file upload."
+        )
+      };
+    }
+    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
+      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
+    }
+    const file = fileMetadataFromRow(completion.row);
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.complete",
+      file
+    });
+    return { ok: true, data: { file }, error: null };
+  } catch (error) {
+    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
+      message: error.message,
+      hint: error.hint ?? "Request a fresh upload URL and retry.",
+      ...error.code ? { code: error.code } : {}
+    };
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.failed",
+      fileId: upload.fileId,
+      error: structuredError
+    });
+    return {
+      ok: false,
+      data: null,
+      error: structuredError
+    };
+  }
+}
+async function getPrivateFileUrl(database, auth, fileReference) {
+  return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), (result) => result.ok ? "success" : "denied");
+}
+async function getPrivateFileUrlOperation(database, auth, fileReference) {
+  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
+  if (!resolved.ok) {
+    return resolved;
+  }
+  const row = resolved.row;
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+      file: fileMetadataFromRow(row)
+    },
+    error: null
+  };
+}
+async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+  return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), (result) => result.ok ? "success" : "denied");
+}
+async function createPublicFileUrlOperation(database, auth, fileReference, options = {}) {
+  const expiry = validatePublicUrlExpiry(options);
+  if (!expiry.ok) {
+    return expiry;
+  }
+  return await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    const id2 = nodeCryptoModule.randomUUID();
+    const now2 = (/* @__PURE__ */ new Date()).toISOString();
+    await sqlite.insertPublicFileUrl({
+      id: id2,
+      fileId: row.id,
+      // A File ACL permits the operation; it does not transfer the File or
+      // create an independent public capability. Keep revocation with the
+      // File owner so a collaborating Team member cannot strand a URL that
+      // the owner is unable to revoke.
+      ownerId: row.ownerId,
+      version: row.version,
+      expiresAt: expiry.expiresAt,
+      createdAt: now2
+    });
+    return {
+      ok: true,
+      data: {
+        publicUrl: {
+          id: id2,
+          fileId: row.id,
+          url: `/__sporades/files/public/${id2}?v=${encodeURIComponent(row.version)}`,
+          expiresAt: expiry.expiresAt,
+          revokedAt: null
+        }
+      },
+      error: null
+    };
+  });
+}
+async function revokePublicFileUrl(database, auth, publicUrlId) {
+  return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), (result) => result.ok ? "success" : "denied");
+}
+async function revokePublicFileUrlOperation(database, auth, publicUrlId) {
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now2);
+  if (result.changes === 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
+    };
+  }
+  return {
+    ok: true,
+    data: { publicUrl: { id: publicUrlId, revokedAt: now2 } },
+    error: null
+  };
+}
+var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
+var forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
+var forwardedFilePromiseNodes = /* @__PURE__ */ new WeakMap();
+var forwardedFilePromiseHookRetainers = 0;
+var forwardedFilePromiseHookStack = [];
+var forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
+var forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
+var forwardedFileCallbackOperationSets = [];
+var observingForwardedFilePromise = false;
+var forwardedFileRejectionSettlementTimeoutMs = 1e3;
+var forwardedFileActiveContinuationTimeoutMs = 2e3;
+function isNativePromiseResolverPair(onFulfilled, onRejected) {
+  return typeof onFulfilled === "function" && typeof onRejected === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
+}
+function registerForwardedFilePromiseNode(promise, operation, parent) {
+  let nodes = forwardedFilePromiseNodes.get(promise);
+  if (!nodes) {
+    nodes = /* @__PURE__ */ new Map();
+    forwardedFilePromiseNodes.set(promise, nodes);
+  }
+  let node = nodes.get(operation);
+  if (!node) {
+    node = {
+      promise,
+      operation,
+      children: /* @__PURE__ */ new Set(),
+      userChildren: /* @__PURE__ */ new Set(),
+      userContinuation: false,
+      callbackStarted: false,
+      composition: false,
+      propagatesRejection: false,
+      forwarded: false,
+      outcome: "pending"
+    };
+    nodes.set(operation, node);
+    operation.promiseNodes.add(node);
+    for (const childReference of forwardedFilePromiseChildren.get(promise) ?? []) {
+      const child = childReference.deref();
+      if (child) registerForwardedFilePromiseNode(child, operation, node);
+    }
+    observingForwardedFilePromise = true;
+    node.settlement = promise.then(
+      () => {
+        node.outcome = "fulfilled";
+      },
+      (reason) => {
+        node.outcome = "rejected";
+        node.rejectionReason = reason;
+      }
+    );
+    observingForwardedFilePromise = false;
+  }
+  if (parent && parent !== node) parent.children.add(node);
+  return node;
+}
+function getForwardedFilePromiseNode(promise, operation) {
+  return forwardedFilePromiseNodes.get(promise)?.get(operation);
+}
+var forwardedFilePromiseObserver = {
+  init(promise, parent) {
+    if (observingForwardedFilePromise) return;
+    if (!parent) {
+      forwardedFileRootPromises.add(promise);
+    }
+    if (parent) {
+      let children = forwardedFilePromiseChildren.get(parent);
+      if (!children) {
+        children = /* @__PURE__ */ new Set();
+        forwardedFilePromiseChildren.set(parent, children);
+      }
+      for (const childReference of children) {
+        if (!childReference.deref()) children.delete(childReference);
+      }
+      children.add(new WeakRef(promise));
+    }
+    const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
+    for (const parentNode of parentNodes ?? []) {
+      const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
+      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+      if (!activePromise2 || !forwardedFilePromiseNodes.has(activePromise2)) {
+        childNode.userContinuation = true;
+        parentNode.userChildren.add(childNode);
+      }
+    }
+  },
+  before(promise) {
+    for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
+      node.callbackStarted = true;
+    }
+    forwardedFilePromiseHookStack.push(promise);
+  },
+  after() {
+    forwardedFilePromiseHookStack.pop();
+  },
+  settled(promise) {
+    if (observingForwardedFilePromise) return;
+    const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+    const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
+    const activeNodes = activePromise2 ? forwardedFilePromiseNodes.get(activePromise2) : void 0;
+    const operations = callbackOperations?.length ? callbackOperations : [...new Set([...activeNodes?.values() ?? []].map((node) => node.operation))];
+    for (const operation of operations) {
+      if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
+        operation.exactForwardingPromiseObserved = true;
+      }
+      if (getForwardedFilePromiseNode(promise, operation)) continue;
+      registerForwardedFilePromiseNode(
+        promise,
+        operation,
+        activePromise2 ? getForwardedFilePromiseNode(activePromise2, operation) : void 0
+      );
+    }
+  }
+};
+function retainForwardedFilePromiseHook(state) {
+  if (state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  forwardedFilePromiseHookRetainers += 1;
+  retainPromiseObserver(forwardedFilePromiseObserver);
+}
+function releaseForwardedFilePromiseHook(state) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  forwardedFilePromiseHookRetainers -= 1;
+  releasePromiseObserver(forwardedFilePromiseObserver);
+  if (forwardedFilePromiseHookRetainers === 0) {
+    forwardedFilePromiseHookStack = [];
+    forwardedFileCallbackOperationSets.length = 0;
+    forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
+    forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
+    forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
+  }
+}
+function findDiscardedForwardedFileRejection(operation) {
+  const propagated = [...operation.promiseNodes].find((node) => node.propagatesRejection && node.userChildren.size === 0 && node.outcome === "rejected");
+  if (propagated) return propagated;
+  const userContinuation = [...operation.promiseNodes].find((node) => node.userContinuation && !node.forwarded && node.userChildren.size === 0 && node.outcome === "rejected");
+  if (userContinuation) return userContinuation;
+  let nextIndex2 = 0;
+  const indexes = /* @__PURE__ */ new Map();
+  const lowLinks = /* @__PURE__ */ new Map();
+  const stack = [];
+  const stacked = /* @__PURE__ */ new Set();
+  const components = [];
+  const visit = (node) => {
+    indexes.set(node, nextIndex2);
+    lowLinks.set(node, nextIndex2);
+    nextIndex2 += 1;
+    stack.push(node);
+    stacked.add(node);
+    for (const child of node.children) {
+      if (!indexes.has(child)) {
+        visit(child);
+        lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(child)));
+      } else if (stacked.has(child)) {
+        lowLinks.set(node, Math.min(lowLinks.get(node), indexes.get(child)));
+      }
+    }
+    if (lowLinks.get(node) !== indexes.get(node)) return;
+    const component = [];
+    let member;
+    do {
+      member = stack.pop();
+      stacked.delete(member);
+      component.push(member);
+    } while (member !== node);
+    components.push(component);
+  };
+  for (const node of operation.promiseNodes) if (!indexes.has(node)) visit(node);
+  const componentByNode = /* @__PURE__ */ new Map();
+  for (const component of components) for (const node of component) componentByNode.set(node, component);
+  const discardedComponent = components.find((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
+  return discardedComponent?.find((node) => node.outcome === "rejected");
+}
+function descendsFromFilePromiseComposition(operation, target) {
+  const pending = [...operation.promiseNodes].filter((node) => node.composition);
+  const visited = /* @__PURE__ */ new Set();
+  while (pending.length > 0) {
+    const node = pending.pop();
+    if (node === target) return true;
+    if (visited.has(node)) continue;
+    visited.add(node);
+    pending.push(...node.children);
+  }
+  return false;
+}
+async function settleForwardedFileRejectionGraph(operation) {
+  let deadline;
+  let activeContinuationDeadline;
+  const settledUserContinuations = /* @__PURE__ */ new Set();
+  while (true) {
+    const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending" && (node.userContinuation || node.composition));
+    if (pendingNodes.length === 0) return true;
+    const userContinuations = pendingNodes.filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
+    if (userContinuations.length > 0) {
+      activeContinuationDeadline ??= Date.now() + forwardedFileActiveContinuationTimeoutMs;
+      const remainingMs2 = activeContinuationDeadline - Date.now();
+      if (remainingMs2 <= 0) return false;
+      let timer2;
+      const settled2 = await Promise.race([
+        Promise.all(userContinuations.map((node) => node.settlement)).then(() => true),
+        new Promise((resolve2) => {
+          timer2 = setTimeout(() => resolve2(false), remainingMs2);
+        })
+      ]);
+      if (timer2) clearTimeout(timer2);
+      if (!settled2) return false;
+      for (const node of userContinuations) settledUserContinuations.add(node);
+      continue;
+    }
+    if (settledUserContinuations.size > 0) {
+      const continuationDescendants = /* @__PURE__ */ new Set();
+      const remaining = [...settledUserContinuations];
+      while (remaining.length > 0) {
+        const parent = remaining.pop();
+        for (const child of parent.children) {
+          if (continuationDescendants.has(child)) continue;
+          continuationDescendants.add(child);
+          remaining.push(child);
+        }
+      }
+      if (pendingNodes.every((node) => continuationDescendants.has(node))) return true;
+    }
+    deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    let timer;
+    const settled = await Promise.race([
+      Promise.all(pendingNodes.map((node) => node.settlement)).then(() => true),
+      new Promise((resolve2) => {
+        timer = setTimeout(() => resolve2(false), remainingMs);
+      })
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) return false;
+  }
+}
+function trackCurrentUserFileOperation(operation) {
+  const decorate = (promise) => {
+    Object.defineProperties(promise, {
+      then: { configurable: true, get: () => {
+        if (!observingForwardedFilePromise) {
+          const compositionRoot = operation.enclosingCompositionRoot ?? promiseCompositionRootCandidate();
+          if (compositionRoot && compositionRoot !== promise) {
+            const parentNode = getForwardedFilePromiseNode(promise, operation);
+            const aggregateNode = registerForwardedFilePromiseNode(compositionRoot, operation, parentNode);
+            aggregateNode.forwarded = true;
+            aggregateNode.composition = true;
+            operation.exactForwardingPromiseObserved = true;
+          }
+        }
+        return (onFulfilled, onRejected) => {
+          let promiseResolveForwarding = false;
+          let trackPromiseResolveForwarding = false;
+          if (typeof onRejected === "function") {
+            promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
+            if (promiseResolveForwarding) {
+              trackPromiseResolveForwarding = !observingForwardedFilePromise;
+              if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
+            }
+            if (trackPromiseResolveForwarding) {
+              let resolverOperations = forwardedFileResolverOperations.get(onRejected);
+              if (!resolverOperations) {
+                resolverOperations = /* @__PURE__ */ new Set();
+                forwardedFileResolverOperations.set(onRejected, resolverOperations);
+              }
+              resolverOperations.add(operation);
+              forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
+              const targetNode = getForwardedFilePromiseNode(promise, operation);
+              if (targetNode) targetNode.forwarded = true;
+            } else if (!promiseResolveForwarding) {
+              operation.explicitRejectionHandler = true;
+            }
+          }
+          let continuation;
+          const fulfillmentHandler = trackPromiseResolveForwarding ? (value) => {
+            const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? /* @__PURE__ */ new Set([operation]);
+            forwardedFileCallbackOperationSets.push([...resolverOperations]);
+            try {
+              return onFulfilled(value);
+            } finally {
+              forwardedFileCallbackOperationSets.pop();
+            }
+          } : onFulfilled;
+          const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
+            const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
+            forwardedFileCallbackOperationSets.push([...resolverOperations]);
+            let forwardedResult;
+            try {
+              forwardedResult = onRejected(reason);
+            } finally {
+              forwardedFileCallbackOperationSets.pop();
+            }
+            if (forwardedResult && typeof forwardedResult.then === "function") {
+              for (const resolverOperation of resolverOperations) {
+                const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
+                const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
+                continuationNode.userContinuation = true;
+                continuationNode.propagatesRejection = true;
+                continuationNode.forwarded = false;
+                parentNode2?.userChildren.add(continuationNode);
+                resolverOperation.exactForwardingPromiseObserved = true;
+              }
+            }
+            return forwardedResult;
+          } : onRejected;
+          continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
+          const parentNode = getForwardedFilePromiseNode(promise, operation);
+          if (promiseResolveForwarding) {
+            const continuationNode = getForwardedFilePromiseNode(continuation, operation);
+            if (continuationNode) {
+              continuationNode.forwarded = true;
+              continuationNode.userContinuation = false;
+              parentNode?.userChildren.delete(continuationNode);
+            }
+          } else {
+            const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+            continuationNode.userContinuation = true;
+            if (parentNode) parentNode.userChildren.add(continuationNode);
+          }
+          return decorate(continuation);
+        };
+      } },
+      catch: { configurable: true, value: (onRejected) => {
+        if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
+        const continuation = Promise.prototype.then.call(promise, void 0, onRejected);
+        const parentNode = getForwardedFilePromiseNode(promise, operation);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
+        return decorate(continuation);
+      } },
+      finally: { configurable: true, value: (onFinally) => {
+        const continuation = Promise.prototype.finally.call(promise, onFinally);
+        const parentNode = getForwardedFilePromiseNode(promise, operation);
+        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
+        continuationNode.userContinuation = true;
+        continuationNode.propagatesRejection = true;
+        if (parentNode) parentNode.userChildren.add(continuationNode);
+        return decorate(continuation);
+      } }
+    });
+    return promise;
+  };
+  return decorate(operation.promise);
+}
+function bindCurrentUserFileDeleteState(context2, sourceContext) {
+  const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
+  if (state) currentUserFileApiState.set(context2, state);
+}
+function createCurrentUserFileApi(database, contextGetter, options = {}) {
+  const state = {
+    active: true,
+    drainActive: false,
+    pendingByteDeletes: [],
+    pendingOperations: [],
+    promiseHookRetained: false
+  };
+  const initialContext = contextGetter?.();
+  const admittedAuth = initialContext?.auth ? Object.freeze({ ...initialContext.auth }) : void 0;
+  const admittedCredential = initialContext?.credential ? Object.freeze({ ...initialContext.credential }) : void 0;
+  if (initialContext) currentUserFileApiState.set(initialContext, state);
+  if (admittedCredential) retainForwardedFilePromiseHook(state);
+  return Object.freeze({
+    delete(fileReference) {
+      const enclosingCompositionRoot = enclosingPromiseCombinatorRoot();
+      const context2 = contextGetter?.();
+      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
+      const registeredDrainContinuation = state.drainActive && !state.active && activePromise2 ? [...forwardedFilePromiseNodes.get(activePromise2)?.values() ?? []].some((node) => node.operation.state === state) : false;
+      if (!state.active && !registeredDrainContinuation || !context2) {
+        return Promise.reject(createStructuredFileError(
+          "File access is no longer active.",
+          "Call ctx.files.delete(...) only while the Capsule handler is running."
+        ));
+      }
+      if (!admittedCredential || !admittedAuth) {
+        return Promise.reject(createStructuredFileError(
+          "File deletion requires a user credential.",
+          "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."
+        ));
+      }
+      retainForwardedFilePromiseHook(state);
+      const operation = deletePrivateFile(
+        database,
+        admittedAuth,
+        fileReference,
+        admittedCredential,
+        database.__transactionActive ? (file) => {
+          state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
+        } : void 0,
+        options.requireLiveActor === true
+      ).then((result) => {
+        if (!result.ok) throw result.error;
+        return result.data.file;
+      });
+      const trackedOperation = {
+        state,
+        promise: operation,
+        explicitRejectionHandler: false,
+        forwardedRejection: false,
+        exactForwardingPromiseObserved: false,
+        enclosingCompositionRoot,
+        promiseNodes: /* @__PURE__ */ new Set()
+      };
+      registerForwardedFilePromiseNode(operation, trackedOperation);
+      state.pendingOperations.push(trackedOperation);
+      return trackCurrentUserFileOperation(trackedOperation);
+    }
+  });
+}
+async function drainCurrentUserFileOperations(context2) {
+  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
+  try {
+    if (state) state.drainActive = true;
+    while (state?.pendingOperations.length) {
+      const operations = state.pendingOperations.splice(0);
+      observingForwardedFilePromise = true;
+      let outcomesPromise;
+      try {
+        outcomesPromise = Promise.allSettled(operations.map((operation) => operation.promise));
+      } finally {
+        observingForwardedFilePromise = false;
+      }
+      const outcomes = await outcomesPromise;
+      if (operations.some((operation) => operation.promiseNodes.size > 0)) {
+        await new Promise((resolve2) => setImmediate(resolve2));
+      }
+      const graphSettled = await Promise.all(operations.map((operation) => settleForwardedFileRejectionGraph(operation)));
+      const discardedRejections = operations.map((operation, index) => graphSettled[index] ? findDiscardedForwardedFileRejection(operation) : void 0);
+      const rejectedIndex = outcomes.findIndex((outcome, index) => {
+        if (outcome.status !== "rejected") return false;
+        if (!graphSettled[index]) return true;
+        const operation = operations[index];
+        const discardedForwarding = discardedRejections[index];
+        if (discardedForwarding) return true;
+        if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved && ![...operation.promiseNodes].some((node) => !node.forwarded && (node.outcome === "rejected" || node.userContinuation && node.outcome === "fulfilled"))) {
+          return true;
+        }
+        const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
+        return !operation.explicitRejectionHandler && !graphFailureWasHandled;
+      });
+      if (rejectedIndex !== -1) {
+        const discardedForwarding = discardedRejections[rejectedIndex];
+        if (discardedForwarding && !discardedForwarding.forwarded && !descendsFromFilePromiseComposition(operations[rejectedIndex], discardedForwarding)) {
+          throw discardedForwarding.rejectionReason;
+        }
+        const rejected = outcomes[rejectedIndex];
+        if (rejected.status === "rejected") throw rejected.reason;
+      }
+      if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
+        throw createStructuredFileError(
+          "File operation continuation did not settle.",
+          "Ensure File operation Promise continuations settle before the handler finishes."
+        );
+      }
+      const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
+      if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
+    }
+  } finally {
+    if (state) {
+      state.drainActive = false;
+      releaseForwardedFilePromiseHook(state);
+    }
+  }
+}
+async function commitPendingCurrentUserFileByteDeletes(context2) {
+  if (!context2) return;
+  const state = currentUserFileApiState.get(context2);
+  if (!state) return;
+  releaseForwardedFilePromiseHook(state);
+  state.active = false;
+  currentUserFileApiState.delete(context2);
+  for (const file of state.pendingByteDeletes.splice(0)) {
+    await removeFileVersionBestEffort(file.database, file.fileId, file.version);
+  }
+}
+function dropPendingCurrentUserFileByteDeletes(context2) {
+  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
+  if (!state) return;
+  state.active = false;
+  state.pendingOperations.length = 0;
+  releaseForwardedFilePromiseHook(state);
+  state.pendingByteDeletes.length = 0;
+  currentUserFileApiState.delete(context2);
+}
+function revokeCurrentUserFileApi(context2) {
+  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
+  if (state) state.active = false;
+}
+async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
+  return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), (result) => result.ok ? "success" : "denied");
+}
+async function deletePrivateFileOperation(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
+  const now2 = (/* @__PURE__ */ new Date()).toISOString();
+  const result = await runFileMetadataTransaction(database, async (sqlite) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
+    if (requireLiveActor) {
+      const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
+      if (!actor || actor.lifecycleStatus === "terminated" || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+        };
+      }
+    }
+    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
+    if (!resolved.ok) return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+    };
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
+    await sqlite.deleteFileUploadsForPath(row.path);
+    await sqlite.markFileDeleted(row.id, now2);
+    await sqlite.revokePublicFileUrlsForFile(row.id, now2);
+    return {
+      ok: true,
+      data: { file: fileMetadataFromRow({ ...row, deletedAt: now2 }) },
+      error: null,
+      deletedFile: row
+    };
+  });
+  if (!result.ok) {
+    return result;
+  }
+  if (deferByteRemoval) {
+    deferByteRemoval({ fileId: result.deletedFile.id, version: result.deletedFile.version });
+  } else {
+    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
+  }
+  return {
+    ok: true,
+    data: result.data,
+    error: null
+  };
+}
+async function runFileMetadataTransaction(database, fn2) {
+  if (database.__transactionActive) {
+    return await fn2(database.adapter);
+  }
+  return await database.adapter.withTransaction(fn2);
+}
+function validatePublicUrlExpiry(options) {
+  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
+  if (choices.length !== 1) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "Public file URLs require exactly one expiry choice.",
+        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
+      )
+    };
+  }
+  if (options.noExpiry === true) {
+    return { ok: true, expiresAt: null };
+  }
+  if (options.ttlSeconds !== void 0) {
+    const ttlSeconds = Number(options.ttlSeconds);
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      return {
+        ok: false,
+        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
+      };
+    }
+    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
+  }
+  const expiresAt = new Date(options.expires);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
+    };
+  }
+  return { ok: true, expiresAt: expiresAt.toISOString() };
+}
+async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
+  return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), (result) => result ? "success" : "denied");
+}
+async function fileRowForActorOperation(database, auth, fileReference, credential = { kind: "session" }) {
+  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
+  return resolved.ok ? resolved.row : null;
+}
+function fileMetadataFromRow(row) {
+  return {
+    id: row.id,
+    bucket: row.bucketName,
+    size: Number(row.size),
+    type: row.type,
+    name: row.name,
+    path: row.path,
+    version: row.version
+  };
+}
+function fileMetadataFromUpload(upload) {
+  return {
+    id: upload.fileId,
+    bucket: upload.bucketName,
+    size: Number(upload.expectedSize),
+    type: upload.type,
+    name: upload.name,
+    path: upload.path,
+    version: upload.version
+  };
+}
+async function withFileUploadPathLock(path26, fn2) {
+  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
+  const key = String(path26);
+  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current2 = new Promise((resolve2) => {
+    release = resolve2;
+  });
+  const next = previous.then(() => current2, () => current2);
+  fileUploadPathLocks.set(key, next);
+  try {
+    await previous.catch(() => {
+    });
+    return await fn2();
+  } finally {
+    release?.();
+    if (fileUploadPathLocks.get(key) === next) {
+      fileUploadPathLocks.delete(key);
+    }
+  }
+}
+async function resolveFileWriteTarget(database, ownerId, path26, now2) {
+  const firstSegment = path26.split("/").filter(Boolean)[0] ?? "default";
+  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
+  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
+  return { bucket, path: path26 };
+}
+async function ensureFileBucket(database, ownerId, name2, now2) {
+  const existing = await database.adapter.findFileBucket(ownerId, name2);
+  if (existing) return existing;
+  const bucket = { id: nodeCryptoModule.randomUUID(), ownerId, name: name2, createdAt: now2 };
+  try {
+    await database.adapter.createFileBucket(bucket);
+    return bucket;
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const raced = await database.adapter.findFileBucket(ownerId, name2);
+    if (raced) return raced;
+    throw error;
+  }
+}
+function normalizeAbsoluteFilePath(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw.startsWith("/")) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
+  }
+  const segments = raw.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
+  }
+  return `/${segments.join("/")}`;
+}
+function normalizeFileName(name2, filePath) {
+  const candidate = String(name2 ?? "").trim();
+  if (candidate) return candidate;
+  const pathName = filePath?.split("/").filter(Boolean).at(-1);
+  return pathName || "upload";
+}
+function isAbsoluteFilePath(value) {
+  return typeof value === "string" && value.startsWith("/");
+}
+async function resolveLiveFileReference(database, ownerId, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path26;
+    try {
+      path26 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path26);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
+  }
+  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
+}
+async function resolveAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
+  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  if (resolved.row.ownerId === auth?.userId) return resolved;
+  const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
+  return { ok: true, row: allowed ? resolved.row : null };
+}
+async function resolveLockedAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
+  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
+  if (!resolved.ok || !resolved.row) return resolved;
+  const row = await database.adapter.lockFileById(resolved.row.id);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  if (isAbsoluteFilePath(String(reference ?? ""))) {
+    let normalizedPath;
+    try {
+      normalizedPath = normalizeAbsoluteFilePath(String(reference));
+    } catch {
+      return { ok: true, row: null };
+    }
+    if (row.path !== normalizedPath) return { ok: true, row: null };
+  }
+  if (row.ownerId === auth?.userId) return { ok: true, row };
+  const allowed = await applyFileAcl(database, operation, row, auth, credential);
+  return { ok: true, row: allowed ? row : null };
+}
+async function resolvePrivilegedLiveFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path26;
+    try {
+      path26 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path26);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved };
+  }
+  const row = await database.adapter.selectFileById(value);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  return { ok: true, row };
+}
+function singleLiveFileRowByPath(database, path26) {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path26), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function singleActiveFileRowByPath(database, path26) {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path26), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
+}
+function ambiguousFileReferenceError(reference) {
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "File reference is ambiguous.",
+      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
+    )
+  };
+}
+function structuredFileException(message, hint) {
+  const error = new Error(message);
+  error.hint = hint;
+  return error;
+}
+function isUniqueConstraintError(error) {
+  const text3 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text3);
+}
+function filePathBackfillSql() {
+  return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
+}
+function activeFilePathDedupeSql() {
+  return "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (SELECT MAX([id]) FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') GROUP BY [path])";
+}
+function ensureFileUploadTargetColumns(sqlite) {
+  const addedColumns = [
+    ["bucketId", "TEXT"],
+    ["bucketName", "TEXT"],
+    ["path", "TEXT"],
+    ["name", "TEXT"],
+    ["type", "TEXT"]
+  ];
+  const statements = [
+    "UPDATE [sporades_file_uploads] SET [bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) WHERE [path] IS NULL OR [path] = ''",
+    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path])",
+    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
+    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])"
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name2, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name2, type)),
+    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
+  ]);
+}
+function ensureFileIngressColumns(sqlite) {
+  const addedColumns = [
+    ["leaseId", "TEXT"],
+    ["state", "TEXT"],
+    ["actorId", "TEXT"],
+    ["authorityKind", "TEXT"],
+    ["authorityId", "TEXT"],
+    ["ownerId", "TEXT"],
+    ["principalNamespace", "TEXT"],
+    ["principalKeyDigest", "TEXT"],
+    ["endpointMethod", "TEXT"],
+    ["endpointPath", "TEXT"],
+    ["requestKey", "TEXT"],
+    ["partKey", "TEXT"],
+    ["expiresAt", "TEXT"],
+    ["sweepToken", "TEXT"]
+  ];
+  return chainMaybePromise([
+    ...addedColumns.map(([name2, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name2, type)),
+    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL OR [authorityKind] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
+      let row;
+      try {
+        row = JSON.parse(stored.payload);
+      } catch {
+        return void 0;
+      }
+      const normalized = { ...row, authorityKind: row.authorityKind ?? "actor", authorityId: row.authorityId ?? `actor:${row.actorId}`, ownerId: row.ownerId ?? row.actorId };
+      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=? WHERE [key]=?")).run(normalized.leaseId ?? null, normalized.state ?? null, normalized.actorId ?? null, normalized.authorityKind, normalized.authorityId, normalized.ownerId, normalized.principalNamespace ?? null, normalized.principalKeyDigest ?? null, normalized.endpointMethod ?? null, normalized.endpointPath ?? null, normalized.requestKey ?? null, normalized.partKey ?? null, normalized.expiresAt ?? null, normalized.sweepToken ?? null, JSON.stringify(normalized), stored.key);
+    }))),
+    () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])"))
+  ]);
+}
+function createStructuredFileError(message, hint) {
+  return { message, hint };
+}
+async function removeFileVersionBestEffort(database, fileId, version3) {
+  await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version: version3 })).catch(() => {
+  });
+}
+
 // src/runtime-errors.ts
 function commandError(message, hint, code2 = null) {
   const error = new Error(message);
@@ -91247,150 +93141,6 @@ var expectedDiagnosticErrorCodes = [
   "JOB_CANCELLED",
   "RESOURCE_CANCELLED"
 ];
-
-// src/templates/observability-loader.ts
-function collectionLoaderSource(errors, analytics) {
-  return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics, expectedErrorCodes: expectedDiagnosticErrorCodes })});`;
-}
-function collectionLoader(options) {
-  const browser = globalThis.window;
-  if (!browser || browser.__sporadesCollectionInstalled) return;
-  browser.__sporadesCollectionInstalled = true;
-  const clean = (value) => {
-    try {
-      if (!value) return "";
-      const url = new browser.URL(value, browser.location.origin);
-      return url.origin + url.pathname;
-    } catch {
-      return "";
-    }
-  };
-  const send2 = (event) => {
-    try {
-      browser.fetch("/__sporades/collect", { method: "POST", credentials: "omit", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify(event) }).catch(() => {
-      });
-    } catch {
-    }
-  };
-  let count = 0, start = Date.now();
-  const error = (value) => {
-    try {
-      if (options.expectedErrorCodes.includes(value?.code)) return;
-      if (Date.now() - start > 6e4) {
-        start = Date.now();
-        count = 0;
-      }
-      if (++count > 20) return;
-      send2({ type: "error", message: String(value?.message ?? value ?? "Client error").slice(0, 2048), stack: typeof value?.stack === "string" ? value.stack.slice(0, 8192) : void 0 });
-    } catch {
-    }
-  };
-  if (options.errors) {
-    browser.addEventListener("error", (event) => error(event.error ?? event.message));
-    browser.addEventListener("unhandledrejection", (event) => error(event.reason));
-    browser.addEventListener("sporades:error", (event) => error(event.detail));
-  }
-  if (options.analytics) {
-    let last = "";
-    const pageview = () => {
-      if (last === browser.location.href) return;
-      last = browser.location.href;
-      send2({ type: "pageview", url: clean(browser.location.href), referrer: clean(browser.document.referrer) });
-    };
-    for (const name2 of ["pushState", "replaceState"]) {
-      const original = browser.history[name2];
-      browser.history[name2] = function(...args) {
-        const result = original.apply(this, args);
-        pageview();
-        return result;
-      };
-    }
-    browser.addEventListener("popstate", pageview);
-    browser.addEventListener("hashchange", pageview);
-    pageview();
-  }
-}
-
-// src/observability-runtime.ts
-import { randomUUID } from "node:crypto";
-
-// src/runtime-log-policy.ts
-function logIndexLimit(config = {}) {
-  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
-  return Number.isInteger(configured) && configured > 0 ? configured : 500;
-}
-function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
-}
-function structuredCredentialEnd(text3, start) {
-  const closers = [];
-  let quote2 = "", quoteSlashes = 0;
-  for (let index = start; index < text3.length; index++) {
-    const char = text3[index];
-    if (char === "\\") {
-      let end = index;
-      while (text3[end] === "\\") end++;
-      const slashes = end - index;
-      if (quoteSlashes) {
-        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text3[end] === quote2) {
-          quote2 = "";
-          quoteSlashes = 0;
-        }
-      } else if (!quote2 && /["'`]/.test(text3[end] ?? "")) {
-        quote2 = text3[end];
-        quoteSlashes = slashes;
-      }
-      index = quote2 && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
-      continue;
-    }
-    if (quote2) {
-      if (!quoteSlashes && char === quote2) quote2 = "";
-    } else if (char === '"' || char === "'" || char === "`") quote2 = char;
-    else if (char === "[") closers.push("]");
-    else if (char === "{") closers.push("}");
-    else if (char === "]" || char === "}") {
-      if (closers.pop() !== char) return text3.length;
-      if (!closers.length) return index + 1;
-    }
-  }
-  return text3.length;
-}
-function stripDiagnosticUrlSuffixes(text3) {
-  let safe = "", copied = 0, scanned = 0;
-  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
-  for (const match of text3.matchAll(starts)) {
-    if (match.index < scanned) continue;
-    let end = match.index + match[0].length;
-    while (end < text3.length && !/[\s?#<>"`]/.test(text3[end]) && !(text3[end] === "%" && /^%(?:3f|23)/i.test(text3.slice(end, end + 3)))) end++;
-    scanned = end;
-    if (!/^(?:[?#]|%3f|%23)/i.test(text3.slice(end, end + 3))) continue;
-    safe += text3.slice(copied, end);
-    while (end < text3.length && text3[end] !== "\r" && text3[end] !== "\n") end++;
-    copied = scanned = end;
-  }
-  return safe + text3.slice(copied);
-}
-function redactDiagnosticText(value, serverEnv = {}) {
-  let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
-  for (const secret of Object.values(serverEnv)) {
-    if (typeof secret !== "string" || !secret.length) continue;
-    safe = safe.split(secret).join("[REDACTED]");
-    const stripped = stripDiagnosticUrlSuffixes(secret).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
-    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
-  }
-  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
-  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
-  let redacted = "", cursor = 0;
-  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
-    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
-    const start = match.index + match[0].length;
-    const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
-    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
-    cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
-  }
-  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
-  return safe;
-}
 
 // src/client-address.ts
 import { isIP } from "node:net";
@@ -91485,1479 +93235,6 @@ function trustedClientAddress(database, request) {
   const token = singleHeader(request, CLIENT_ADDRESS_TOKEN_HEADER);
   if (!token || !/^[a-f0-9]{64}$/.test(token) || !timingSafeEqual(Buffer.from(token, "hex"), Buffer.from(clientAddressBoundaryToken(database.runtimeProbeToken), "hex"))) return null;
   return canonicalClientAddress(singleHeader(request, ACCESS_KEY_CLIENT_ADDRESS_HEADER));
-}
-
-// src/http-security-config.ts
-var CSP_REPORT_PATH = "/__sporades/csp-report";
-function validateHttpHardening(security = {}, observability) {
-  const fail7 = (hint) => {
-    throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
-  };
-  const csp = security.csp ?? {};
-  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
-    fail7("Set security.csp.nonce to a boolean.");
-  }
-  if (csp.nonce === true) {
-    for (const name2 of ["script-src", "script-src-elem"]) {
-      const value = csp.directives?.[name2];
-      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
-        fail7("Set CSP script directives to a string or an array of strings.");
-      }
-    }
-  }
-  if (csp.reportTo === "observability") {
-    if (!observability?.errors) fail7('Configure observability.errors before setting security.csp.reportTo to "observability".');
-  } else if (csp.reportTo !== void 0) {
-    const value = csp.reportTo;
-    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
-    if (valid) {
-      try {
-        const url = new URL(value, "https://sporades.invalid");
-        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
-      } catch {
-        valid = false;
-      }
-    }
-    if (!valid) fail7('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
-  }
-  const hsts = security.hsts;
-  if (hsts !== void 0) {
-    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
-      fail7("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
-    }
-  }
-}
-function hstsHeader(hsts) {
-  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
-}
-function cspReportDirectives(csp) {
-  if (csp.reportTo === "observability") return { "report-uri": [CSP_REPORT_PATH] };
-  return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
-}
-
-// src/observability-runtime.ts
-function validateObservabilityConfig(config) {
-  const fail7 = () => {
-    const error = new Error("Invalid observability or analytics configuration.");
-    Object.assign(error, { code: "INVALID_OBSERVABILITY_CONFIG" });
-    throw error;
-  };
-  const object2 = (value, keys) => {
-    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) fail7();
-  };
-  const envName2 = (value) => typeof value === "string" && /^[A-Z_][A-Z0-9_]*$/i.test(value);
-  if (config.observability !== void 0) {
-    object2(config.observability, ["errors"]);
-    if (config.observability.errors !== void 0) {
-      const errors = config.observability.errors;
-      object2(errors, ["protocol", "dsnEnv", "environment", "sampleRate", "client"]);
-      if (errors.protocol !== "sentry" || !envName2(errors.dsnEnv) || errors.client !== void 0 && typeof errors.client !== "boolean" || errors.environment !== void 0 && (typeof errors.environment !== "string" || !/^[\w.-]{1,64}$/.test(errors.environment)) || errors.sampleRate !== void 0 && (typeof errors.sampleRate !== "number" || !Number.isFinite(errors.sampleRate) || errors.sampleRate < 0 || errors.sampleRate > 1)) fail7();
-    }
-  }
-  if (config.analytics !== void 0) {
-    const analytics = config.analytics;
-    object2(analytics, ["provider", "endpointEnv", "websiteIdEnv", "redactQuery"]);
-    if (!["umami", "plausible"].includes(analytics.provider) || !envName2(analytics.endpointEnv) || !envName2(analytics.websiteIdEnv) || analytics.redactQuery !== void 0 && analytics.redactQuery !== true) fail7();
-  }
-}
-function providerUrl(value) {
-  try {
-    if (typeof value !== "string" || value.length > 2048) throw new Error();
-    const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
-    return url;
-  } catch {
-    throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
-  }
-}
-function pageUrl(value, origin) {
-  if (typeof value !== "string" || value.length > 4096) throw new Error();
-  const url = new URL(value, origin);
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error();
-  url.search = "";
-  url.hash = "";
-  return url;
-}
-function createRuntimeObservability(config = {}, env = {}) {
-  validateObservabilityConfig(config);
-  const analytics = config.analytics;
-  const analyticsUrl = analytics && env[analytics.endpointEnv] && env[analytics.websiteIdEnv] ? providerUrl(env[analytics.endpointEnv]) : null;
-  const website = analyticsUrl ? env[analytics.websiteIdEnv] : null;
-  if (website && (typeof website !== "string" || website.length > 255 || /[\s?#\/]/.test(website))) throw new Error("Invalid collection provider configuration.");
-  const errors = config.observability?.errors;
-  let sentryUrl = null;
-  let dsn = null;
-  let sentryKey = null;
-  if (errors && env[errors.dsnEnv]) {
-    try {
-      const parsed = new URL(env[errors.dsnEnv]);
-      const key = parsed.username;
-      if (!key || !/^[a-zA-Z0-9_-]+$/.test(key) || parsed.password || parsed.search || parsed.hash) throw new Error();
-      sentryKey = key;
-      parsed.username = "";
-      const segments = parsed.pathname.split("/").filter(Boolean);
-      const project = segments.pop();
-      if (!project || !/^\d+$/.test(project)) throw new Error();
-      sentryUrl = providerUrl(parsed.href);
-      sentryUrl.pathname = `/${[...segments, "api", project, "envelope", ""].join("/")}`;
-      dsn = String(env[errors.dsnEnv]);
-    } catch {
-      throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
-    }
-  }
-  const stopped2 = new AbortController();
-  const pending = /* @__PURE__ */ new Set();
-  const epoch = performance.now();
-  const budget = (maxActive, maxCount) => {
-    let active = 0, count = 0, window2 = 0;
-    return () => {
-      const currentWindow = Math.floor((performance.now() - epoch) / 6e4);
-      if (currentWindow !== window2) {
-        count = 0;
-        window2 = currentWindow;
-      }
-      if (stopped2.signal.aborted || active >= maxActive || count >= maxCount) return null;
-      active++;
-      count++;
-      let released = false;
-      return () => {
-        if (!released) {
-          released = true;
-          active--;
-        }
-      };
-    };
-  };
-  const acquireIngress = budget(8, 120);
-  const acquirePublicDelivery = budget(4, 60);
-  const acquireServerDelivery = budget(4, 60);
-  const safeText = (value, limit) => redactDiagnosticText(typeof value === "string" ? value : "Error", env).slice(0, limit);
-  const send2 = async (url, body, headers) => {
-    const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
-    await response.body?.cancel();
-  };
-  const transmit = (acquire, url, body, headers) => {
-    const release = acquire();
-    if (!release) return Promise.resolve();
-    const task = send2(url, body, headers).finally(() => {
-      release();
-      pending.delete(task);
-    });
-    pending.add(task);
-    return task;
-  };
-  const eventBase = (platform) => ({
-    event_id: randomUUID().replaceAll("-", ""),
-    timestamp: Date.now() / 1e3,
-    platform,
-    environment: errors.environment,
-    release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0
-  });
-  const deliver = (event, acquire) => {
-    const payload = JSON.stringify(event);
-    const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
-${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
-${payload}
-`;
-    if (!sentryUrl) return;
-    void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
-    });
-  };
-  const captureError = (error, surface, address, acquire) => {
-    try {
-      if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData || expectedDiagnosticErrorCodes.includes(error?.code) || Math.random() >= (errors.sampleRate ?? 1)) return;
-      const frames = typeof error?.stack === "string" ? error.stack.slice(0, 8192).split("\n").slice(1, 21).flatMap((line) => {
-        const match = line.match(/^\s*at\s+(?:(.*?)\s+\()?(.+?):(\d+):(\d+)\)?$/);
-        return match ? [{ filename: safeText(match[2], 512), function: safeText(match[1] || "<anonymous>", 128), lineno: Number(match[3]), colno: Number(match[4]) }] : [];
-      }).reverse() : [];
-      const event = {
-        ...eventBase(surface === "client" ? "javascript" : "node"),
-        level: "error",
-        tags: { capsule: safeText(config.name ?? "capsule", 128), surface },
-        exception: { values: [{ type: "Error", value: safeText(error?.message ?? error, 2048), stacktrace: { frames } }] },
-        ...address ? { user: { ip_address: address } } : {}
-      };
-      deliver(event, acquire);
-    } catch {
-    }
-  };
-  return {
-    enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
-    clientErrors: !!(sentryUrl && errors.client),
-    analytics: !!analyticsUrl,
-    capture(error, surface, address) {
-      captureError(error, surface, address, acquireServerDelivery);
-    },
-    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
-    captureCspViolation(violation) {
-      try {
-        if (!sentryUrl || Math.random() >= (errors.sampleRate ?? 1)) return;
-        deliver({
-          ...eventBase("javascript"),
-          level: "warning",
-          logger: "csp",
-          message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
-          tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...violation.disposition ? { csp_disposition: violation.disposition } : {} }
-        }, acquirePublicDelivery);
-      } catch {
-      }
-    },
-    close() {
-      stopped2.abort();
-    },
-    async flush() {
-      await Promise.allSettled([...pending]);
-    },
-    async collect(input, origin, request, database) {
-      if (input.type === "error") {
-        if (!sentryUrl || !errors.client || typeof input.message !== "string" || input.stack !== void 0 && typeof input.stack !== "string") throw new Error();
-        captureError({ message: input.message, stack: input.stack }, "client", trustedClientAddress(database, request), acquirePublicDelivery);
-        return;
-      }
-      if (!analyticsUrl || input.type !== "pageview") throw new Error();
-      const url = pageUrl(input.url, origin);
-      if (url.origin !== origin) throw new Error();
-      const referrer = input.referrer ? pageUrl(input.referrer, origin).href : "";
-      const address = trustedClientAddress(database, request);
-      const headers = { "content-type": "application/json", "user-agent": safeText(request.headers["user-agent"] ?? "Sporades", 512) };
-      if (address) headers["x-forwarded-for"] = address;
-      const body = analytics.provider === "umami" ? { type: "event", payload: { website, hostname: url.hostname, url: url.pathname, referrer } } : { name: "pageview", domain: website, url: url.href, referrer };
-      await transmit(acquirePublicDelivery, analyticsUrl, JSON.stringify(body), headers);
-    },
-    acquireIngress
-  };
-}
-async function routeCollection(database, request, response) {
-  const pathname = request.url?.split("?")[0];
-  if (pathname === CSP_REPORT_PATH && database.securityPolicy?.csp?.reportTo === "observability" && database.observability) {
-    await routeCspReport(database, request, response);
-    return true;
-  }
-  if (!database.observability?.enabled) return false;
-  if (pathname === "/__sporades/observe.js" && request.method === "GET") {
-    response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
-    response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
-    return true;
-  }
-  if (pathname !== "/__sporades/collect") return false;
-  const reply = (code2) => {
-    response.writeHead(code2, { "cache-control": "no-store" });
-    response.end();
-  };
-  const origin = request.headers.origin;
-  try {
-    if (request.method !== "POST" || typeof origin !== "string" || new URL(origin).origin !== origin || !["http:", "https:"].includes(new URL(origin).protocol) || new URL(origin).host !== request.headers.host || request.headers["sec-fetch-site"] === "cross-site" || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
-      reply(403);
-      return true;
-    }
-    const allowed = database.securityPolicy?.cors?.publicOrigin;
-    if (allowed && ![allowed, ...database.securityPolicy.cors.publicAliases ?? []].includes(origin)) {
-      reply(403);
-      return true;
-    }
-  } catch {
-    reply(403);
-    return true;
-  }
-  const release = database.observability.acquireIngress();
-  if (!release) {
-    reply(429);
-    return true;
-  }
-  let timer;
-  try {
-    const body = await Promise.race([
-      (async () => {
-        const chunks = [];
-        let size = 0;
-        for await (const chunk of request) {
-          size += Buffer.byteLength(chunk);
-          if (size > 16384) throw new Error();
-          chunks.push(Buffer.from(chunk));
-        }
-        return Buffer.concat(chunks).toString("utf8");
-      })(),
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error());
-          request.destroy();
-        }, 2e3);
-      })
-    ]);
-    clearTimeout(timer);
-    const input = JSON.parse(body);
-    if (!input || Array.isArray(input) || typeof input !== "object") throw new Error();
-    await database.observability.collect(input, origin, request, database);
-    reply(204);
-  } catch {
-    if (!response.destroyed) reply(400);
-  } finally {
-    clearTimeout(timer);
-    release();
-  }
-  return true;
-}
-var CSP_REPORT_TYPES = ["application/csp-report", "application/reports+json", "application/json"];
-var CSP_BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "self", "trusted-types-policy", "trusted-types-sink"];
-var CSP_REPORTS_PER_REQUEST = 5;
-function cspViolation(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
-  const report = input;
-  const raw = report["effective-directive"] ?? report.effectiveDirective ?? report["violated-directive"];
-  const directive = typeof raw === "string" ? raw.trim().split(/\s+/)[0] : "";
-  if (!/^[a-z][a-z-]{0,63}$/.test(directive)) return null;
-  const value = report["blocked-uri"] ?? report.blockedURL;
-  let blocked = "unknown";
-  if (typeof value === "string" && CSP_BLOCKED_KEYWORDS.includes(value)) blocked = value;
-  else if (typeof value === "string" && value.length <= 8192) {
-    try {
-      const url = new URL(value);
-      blocked = /^(https?|wss?):$/.test(url.protocol) ? url.origin : /^[a-z][a-z0-9+.-]{0,31}:$/.test(url.protocol) ? url.protocol : "unknown";
-    } catch {
-    }
-  }
-  const disposition = report.disposition === "enforce" || report.disposition === "report" ? report.disposition : void 0;
-  return { directive, blocked, ...disposition ? { disposition } : {} };
-}
-function cspViolations(input) {
-  if (Array.isArray(input)) {
-    return input.slice(0, 100).filter((entry) => entry && typeof entry === "object" && entry.type === "csp-violation").slice(0, CSP_REPORTS_PER_REQUEST).map((entry) => cspViolation(entry.body)).filter((entry) => entry !== null);
-  }
-  const report = input && typeof input === "object" ? cspViolation(input["csp-report"]) : null;
-  return report ? [report] : [];
-}
-async function routeCspReport(database, request, response) {
-  const reply = (code2) => {
-    if (!response.headersSent) {
-      response.writeHead(code2, { "cache-control": "no-store" });
-      response.end();
-    }
-  };
-  if (request.method !== "POST") return reply(405);
-  const origin = request.headers.origin;
-  try {
-    if (request.headers["sec-fetch-site"] === "cross-site" || origin !== void 0 && (typeof origin !== "string" || new URL(origin).host !== request.headers.host)) return reply(403);
-  } catch {
-    return reply(403);
-  }
-  const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
-  if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
-  const release = database.observability.acquireIngress();
-  if (!release) return reply(429);
-  let timer;
-  try {
-    const body = await Promise.race([
-      (async () => {
-        const chunks = [];
-        let size = 0;
-        for await (const chunk of request) {
-          size += Buffer.byteLength(chunk);
-          if (size > 16384) throw Object.assign(new Error(), { status: 413 });
-          chunks.push(Buffer.from(chunk));
-        }
-        return Buffer.concat(chunks).toString("utf8");
-      })(),
-      new Promise((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error());
-          request.destroy();
-        }, 2e3);
-      })
-    ]);
-    const violations = cspViolations(JSON.parse(body));
-    if (!violations.length) throw new Error();
-    for (const violation of violations) database.observability.captureCspViolation(violation);
-    reply(204);
-  } catch (error) {
-    if (!response.destroyed) reply(error?.status === 413 ? 413 : 400);
-  } finally {
-    clearTimeout(timer);
-    release();
-  }
-}
-
-// src/mcp-runtime.ts
-import { createHash as createHash12, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
-
-// src/resource-runtime.ts
-import { createHash as createHash4 } from "node:crypto";
-
-// src/notification-intent-runtime.ts
-import { createHash as createHash3, createHmac, randomBytes as randomBytes4, randomUUID as randomUUID2, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
-var NOTIFICATION_RESERVATION_MS = 3e4;
-var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
-var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
-var NOTIFICATION_SMTP_ROUNDTRIP_MARGIN = 12;
-var notificationIntentSchemas = [
-  {
-    table: "sporades_notification_intents",
-    columns: ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"],
-    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
-    indexes: [],
-    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
-  },
-  {
-    table: "sporades_notification_recipients",
-    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"],
-    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient"],
-    indexes: [
-      { name: "sporades_notification_recipients_due", columns: ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
-      { name: "sporades_notification_recipients_reservations", columns: ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] }
-    ],
-    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])"
-  },
-  {
-    table: "sporades_notification_attempts",
-    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
-    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
-    indexes: [],
-    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])"
-  },
-  {
-    table: "sporades_notification_attempt_keys",
-    columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
-    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
-    indexes: [],
-    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
-  }
-];
-var sql = (adapter, statement) => adapter.dialect.sql(statement);
-async function ensureNotificationIntentStorage(adapter) {
-  if (adapter.engine === "postgres") {
-    const bootstrap = adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
-    if (typeof bootstrap !== "function") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_ADAPTER_UNSUPPORTED" });
-    await bootstrap();
-    return;
-  }
-  for (const schema of notificationIntentSchemas) {
-    await adapter.exec(sql(adapter, `CREATE TABLE IF NOT EXISTS [${schema.table}] (${schema.definition})`));
-    for (const index of schema.indexes) {
-      await adapter.exec(sql(adapter, `CREATE INDEX IF NOT EXISTS [${index.name}] ON [${schema.table}] (${index.columns.map((column) => `[${column}]`).join(", ")})`));
-    }
-  }
-}
-async function notificationIntentStorageExists(adapter) {
-  if (adapter.engine === "postgres") {
-    const row2 = await adapter.prepare("SELECT to_regclass('sporades_notification_intents') AS present").get();
-    return Boolean(row2?.present);
-  }
-  const row = await adapter.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='table' AND name='sporades_notification_intents'").get();
-  return Number(row?.n ?? 0) === 1;
-}
-function exactPlainObject(input, allowed) {
-  return input && Object.getPrototypeOf(input) === Object.prototype && Object.getOwnPropertySymbols(input).length === 0 && Object.values(Object.getOwnPropertyDescriptors(input)).every((descriptor) => Object.hasOwn(descriptor, "value")) && Object.keys(input).sort().join(",") === allowed.sort().join(",");
-}
-async function stageNotificationIntent(adapter, database, identity, input, canonicalJson) {
-  const invalid4 = () => {
-    throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_INVALID_INPUT" });
-  };
-  if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
-  const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
-  if (!exactPlainObject(input, allowed)) invalid4();
-  if (typeof input.id !== "string" || input.id.length === 0 || input.id.includes("\0") || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid4();
-  if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string")) invalid4();
-  if (typeof input.subject !== "string" || typeof input.text !== "string" || input.html !== void 0 && typeof input.html !== "string") invalid4();
-  if (input.text.length === 0 && (input.html === void 0 || input.html.length === 0)) invalid4();
-  let normalized;
-  try {
-    normalized = database.mail.validateIntent(input);
-  } catch (error) {
-    if (error?.code === "MAIL_DISABLED" || error?.code === "MAIL_CREDENTIAL_MISSING") {
-      throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
-    }
-    invalid4();
-  }
-  if (normalized.to.length !== input.to.length) invalid4();
-  const recipients = normalized.to.map((entry) => entry.email);
-  if (new Set(recipients).size !== recipients.length) invalid4();
-  const payload = {
-    id: input.id,
-    to: recipients,
-    subject: normalized.subject,
-    text: input.text,
-    ...input.html === void 0 ? {} : { html: input.html }
-  };
-  const payloadJson = canonicalJson(payload);
-  if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
-  const payloadDigest = createHash3("sha256").update(payloadJson).digest("hex");
-  const key = [identity.table, identity.id, identity.operationId, input.id];
-  const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
-  if (existing) {
-    const digest3 = existing.payloadDigest ?? existing.payloaddigest;
-    if (digest3 !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
-    return { id: input.id, state: "staged" };
-  }
-  const acceptedAt = database.clock.now().toISOString();
-  const messageId = `<${randomUUID2()}@sporades.local>`;
-  const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
-  if (inserted.changes === 0) {
-    const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
-    const digest3 = raced?.payloadDigest ?? raced?.payloaddigest;
-    if (digest3 !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
-    return { id: input.id, state: "staged" };
-  }
-  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes4(32).toString("hex"));
-  for (const recipient of payload.to) {
-    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")).run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
-  }
-  return { id: input.id, state: "staged" };
-}
-async function readNotificationIntentStatuses(adapter, identity, intentIds) {
-  const intents = [];
-  for (const intentId of intentIds) {
-    const recipients = await adapter.prepare(sql(adapter, "SELECT [recipient],[state],[attemptCount],[nextAttemptAt],[lastOutcomeCategory] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? ORDER BY [recipient]")).all(identity.table, identity.id, identity.operationId, intentId);
-    const publicRecipients = recipients.map((row) => ({
-      recipient: row.recipient,
-      state: row.state,
-      attemptCount: Number(row.attemptCount ?? row.attemptcount ?? 0),
-      nextAttemptAt: (row.nextAttemptAt ?? row.nextattemptat) || null,
-      lastOutcomeCategory: (row.lastOutcomeCategory ?? row.lastoutcomecategory) || null
-    }));
-    const pending = publicRecipients.some((row) => ["accepted", "submitting", "unknown", "retry-wait"].includes(row.state));
-    const allAcknowledged = publicRecipients.length > 0 && publicRecipients.every((row) => row.state === "acknowledged");
-    intents.push({ id: intentId, state: pending ? "pending" : allAcknowledged ? "acknowledged" : "rejected", recipients: publicRecipients });
-  }
-  return intents;
-}
-function notificationRetryDelay(attemptNumber) {
-  return Math.min(3e4 * 2 ** Math.min(Math.max(1, attemptNumber) - 1, 7), NOTIFICATION_MAX_BACKOFF_MS);
-}
-var recipientKey = (row) => [
-  row.resourceTable ?? row.resourcetable,
-  row.resourceId ?? row.resourceid,
-  row.operationId ?? row.operationid,
-  row.intentId ?? row.intentid,
-  row.recipient
-];
-function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID2()) {
-  const authenticator = createHmac("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
-  return `${nonce}.${authenticator}`;
-}
-function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
-  const token = String(reservation.token ?? "");
-  const separator = token.indexOf(".");
-  if (separator < 1 || token.indexOf(".", separator + 1) !== -1) return false;
-  const nonce = token.slice(0, separator);
-  const actual = token.slice(separator + 1);
-  if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
-  const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
-  return timingSafeEqual2(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
-}
-async function notificationAttemptKey(adapter, key) {
-  const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
-  let row = await select();
-  if (!row) {
-    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes4(32).toString("hex"));
-    row = await select();
-  }
-  const attemptKey = row?.attemptKey ?? row?.attemptkey;
-  if (typeof attemptKey !== "string" || !/^[0-9a-f]{64}$/.test(attemptKey)) throw new Error("notification attempt key missing");
-  return attemptKey;
-}
-async function recoverExpiredReservations(database, now2) {
-  await database.adapter.withTransaction(async (tx) => {
-    const expired = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state]='submitting' AND [currentAttemptDeadline]<>'' AND [currentAttemptDeadline]<=? ORDER BY [currentAttemptDeadline]")).all(now2.toISOString());
-    for (const row of expired) {
-      const key = recipientKey(row);
-      const token = row.currentAttemptToken ?? row.currentattempttoken;
-      const attempt = Number(row.attemptCount ?? row.attemptcount);
-      const next = new Date(now2.getTime() + notificationRetryDelay(attempt)).toISOString();
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]='unknown' WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=? AND [outcomeCategory]='submitting'")).run(now2.toISOString(), ...key, token);
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='retry-wait',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(next, now2.toISOString(), ...key, token);
-    }
-  });
-}
-function notificationReservationWindowMs(database) {
-  const connectionTimeoutMs = Number(database.mail?.connectionTimeoutMs) || 0;
-  const socketTimeoutMs = Number(database.mail?.socketTimeoutMs) || 0;
-  return Math.max(NOTIFICATION_RESERVATION_MS, connectionTimeoutMs + socketTimeoutMs * NOTIFICATION_SMTP_ROUNDTRIP_MARGIN);
-}
-async function reserveDueRecipient(database, now2) {
-  return database.adapter.withTransaction(async (tx) => {
-    const row = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=? ORDER BY [nextAttemptAt],[resourceTable],[resourceId],[operationId],[intentId],[recipient] LIMIT 1")).get(now2.toISOString());
-    if (!row) return null;
-    const key = recipientKey(row);
-    const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
-    const deadline = new Date(now2.getTime() + notificationReservationWindowMs(database)).toISOString();
-    const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
-    if (!intent) throw new Error("notification intent missing");
-    const messageId = intent.messageId ?? intent.messageid;
-    const attemptKey = await notificationAttemptKey(tx, key);
-    const token = notificationAttemptToken(attemptKey, key, sequence, messageId);
-    const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?")).run(String(sequence), token, deadline, now2.toISOString(), ...key, now2.toISOString());
-    if (Number(changed?.changes ?? 0) !== 1) return null;
-    await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)")).run(...key, token, String(sequence), now2.toISOString(), deadline, "", "submitting");
-    await tx.prepare(sql(tx, "DELETE FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [completedAt]<>'' AND [attemptToken]<>?")).run(...key, token);
-    return {
-      key,
-      token,
-      sequence,
-      deadline,
-      recipient: row.recipient,
-      payload: JSON.parse(intent.payloadJson ?? intent.payloadjson),
-      messageId
-    };
-  });
-}
-async function reservationIsCurrent(database, reservation) {
-  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [state],[currentAttemptToken] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=?")).get(...reservation.key);
-  return row?.state === "submitting" && (row.currentAttemptToken ?? row.currentattempttoken) === reservation.token;
-}
-async function settleAttempt(database, reservation, outcome) {
-  const now2 = database.clock.now();
-  await database.adapter.withTransaction(async (tx) => {
-    if (outcome === "acknowledged") {
-      const intent = await tx.prepare(sql(tx, "SELECT [messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...reservation.key.slice(0, 4));
-      const messageId = intent?.messageId ?? intent?.messageid;
-      const attemptKey = await notificationAttemptKey(tx, reservation.key);
-      if (typeof messageId !== "string" || typeof attemptKey !== "string" || !notificationAttemptTokenIsValid(attemptKey, reservation, messageId)) return;
-    }
-    const unfinishedOnly = outcome === "acknowledged" ? "" : " AND [outcomeCategory]='submitting'";
-    await tx.prepare(sql(tx, `UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?${unfinishedOnly}`)).run(now2.toISOString(), outcome, ...reservation.key, reservation.token);
-    if (outcome === "acknowledged") {
-      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND CAST([attemptCount] AS INTEGER)>=?")).run(now2.toISOString(), ...reservation.key, reservation.sequence);
-      return;
-    }
-    const state = outcome === "rejected" ? "rejected" : "retry-wait";
-    const next = outcome === "unknown" ? new Date(now2.getTime() + notificationRetryDelay(reservation.sequence)).toISOString() : "";
-    await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]=?,[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]=?,[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(state, next, outcome, now2.toISOString(), ...reservation.key, reservation.token);
-  });
-}
-async function runNotificationIntentDeliveryPass(database) {
-  await recoverExpiredReservations(database, database.clock.now());
-  const reservation = await reserveDueRecipient(database, database.clock.now());
-  if (!reservation) return false;
-  await database.notificationIntentFault?.("after-reservation", reservation);
-  if (!await reservationIsCurrent(database, reservation)) return true;
-  await database.notificationIntentFault?.("before-submit", reservation);
-  if (database.__notificationIntentShutdownAborting) return true;
-  try {
-    await database.mail.sendIntent(
-      { ...reservation.payload, to: [reservation.recipient] },
-      reservation.messageId,
-      (event) => database.log?.emit(event)
-    );
-    await database.notificationIntentFault?.("after-submit", reservation);
-    await settleAttempt(database, reservation, "acknowledged");
-  } catch (error) {
-    if (error?.notificationIntentCrash === true) throw error;
-    if (database.__notificationIntentShutdownAborting) return true;
-    const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
-    await settleAttempt(database, reservation, outcome);
-  }
-  return true;
-}
-async function nextWakeAt(database) {
-  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [nextAttemptAt],[currentAttemptDeadline] FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown','submitting') ORDER BY CASE WHEN [state]='submitting' THEN [currentAttemptDeadline] ELSE [nextAttemptAt] END LIMIT 1")).get();
-  return row ? (row.currentAttemptDeadline ?? row.currentattemptdeadline) || (row.nextAttemptAt ?? row.nextattemptat) : null;
-}
-function startNotificationIntentWorker(database) {
-  database.__notificationIntentShutdownAborting = false;
-  database.__notificationIntentStopped = false;
-  const scheduleRecoveryScan = () => {
-    if (database.__notificationIntentStopped || database.__notificationIntentTimer) return;
-    const timer = setTimeout(() => {
-      database.__notificationIntentTimer = null;
-      void run2().catch(() => {
-      });
-    }, NOTIFICATION_RECOVERY_SCAN_MS);
-    timer.unref?.();
-    database.__notificationIntentTimer = timer;
-    database.__notificationIntentNativeTimer = true;
-  };
-  const run2 = async () => {
-    if (database.__notificationIntentStopped || database.__notificationIntentWorkerPromise) return;
-    const work = (async () => {
-      try {
-        if (database.__notificationIntentStorageVerified !== true) {
-          await ensureNotificationIntentStorage(database.adapter);
-          database.__notificationIntentStorageVerified = true;
-        }
-        while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {
-        }
-        if (database.__notificationIntentStopped) return;
-        const wakeAt = await nextWakeAt(database);
-        if (database.__notificationIntentStopped) return;
-        const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
-        if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
-        else {
-          database.__notificationIntentTimer = database.clock.setTimer(() => {
-            database.__notificationIntentTimer = null;
-            void run2().catch(() => {
-            });
-          }, delay);
-          database.__notificationIntentNativeTimer = false;
-        }
-      } catch (error) {
-        scheduleRecoveryScan();
-        throw error;
-      }
-    })();
-    database.__notificationIntentWorkerPromise = work;
-    try {
-      await work;
-    } finally {
-      if (database.__notificationIntentWorkerPromise === work) database.__notificationIntentWorkerPromise = null;
-    }
-  };
-  return run2();
-}
-function stopNotificationIntentWorker(database) {
-  database.__notificationIntentStopped = true;
-  if (database.__notificationIntentTimer) {
-    if (database.__notificationIntentNativeTimer) clearTimeout(database.__notificationIntentTimer);
-    else database.clock.clearTimer(database.__notificationIntentTimer);
-  }
-  database.__notificationIntentTimer = null;
-  database.__notificationIntentNativeTimer = false;
-  return database.__notificationIntentWorkerPromise;
-}
-
-// src/resource-runtime.ts
-var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
-  sqlite: "supported",
-  postgres: "supported",
-  libsql: "unsupported"
-});
-function resourceAdapterSupported(adapter) {
-  return RESOURCE_ADAPTER_SUPPORT[adapter.engine] === "supported";
-}
-var resourceAbort = Symbol("resourceAbort");
-function resourceAbortError() {
-  return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
-}
-function isResourceAbortError(error) {
-  return error?.[resourceAbort] === true;
-}
-function resourceError(code2) {
-  return Object.assign(new Error(code2 === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
-    code: code2,
-    ...code2 === "RESOURCE_BUSY" ? { retryable: true } : {}
-  });
-}
-async function acquirePostgresResourceBootstrapLock(adapter) {
-  if (adapter.engine !== "postgres") return;
-  try {
-    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]")).get("sporades.resource.bootstrap.v1");
-    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
-    if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
-  } catch (error) {
-    if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
-    throw error;
-  }
-}
-function resourceCanonicalJson(value) {
-  const ancestors = /* @__PURE__ */ new Set();
-  const visit = (input, depth2) => {
-    if (depth2 > 64) throw resourceError("RESOURCE_INVALID_INPUT");
-    if (input === null || typeof input === "boolean" || typeof input === "string") return input;
-    if (typeof input === "number" && Number.isFinite(input)) return input === 0 ? 0 : input;
-    if (typeof input !== "object" || ancestors.has(input)) throw resourceError("RESOURCE_INVALID_INPUT");
-    const prototype = Object.getPrototypeOf(input);
-    if (!Array.isArray(input) && prototype !== Object.prototype && prototype !== null) throw resourceError("RESOURCE_INVALID_INPUT");
-    if (Object.getOwnPropertySymbols(input).length) throw resourceError("RESOURCE_INVALID_INPUT");
-    ancestors.add(input);
-    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
-    const keys = Array.isArray(input) ? Array.from({ length: input.length }, (_2, i) => String(i)) : Object.keys(input).sort();
-    if (Array.isArray(input) && Object.keys(input).length !== input.length) throw resourceError("RESOURCE_INVALID_INPUT");
-    for (const key of keys) {
-      const descriptor = Object.getOwnPropertyDescriptor(input, key);
-      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw resourceError("RESOURCE_INVALID_INPUT");
-      output[key] = visit(descriptor.value, depth2 + 1);
-    }
-    ancestors.delete(input);
-    return output;
-  };
-  const json2 = JSON.stringify(visit(value, 0));
-  if (Buffer.byteLength(json2, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
-  return json2;
-}
-function boundedIdentity(value) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
-  return value;
-}
-function optionsSnapshot(options, status) {
-  if (!options || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length || Object.values(Object.getOwnPropertyDescriptors(options)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options).sort().join(",") !== (status ? "operationId,resource" : "input,operationId,resource") || !options.resource || Object.getPrototypeOf(options.resource) !== Object.prototype || Object.getOwnPropertySymbols(options.resource).length || Object.values(Object.getOwnPropertyDescriptors(options.resource)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options.resource).sort().join(",") !== "id,table") throw resourceError("RESOURCE_INVALID_INPUT");
-  const table = boundedIdentity(options.resource.table);
-  const id2 = boundedIdentity(options.resource.id);
-  const operationId = boundedIdentity(options.operationId);
-  return { table, id: id2, operationId, digest: status ? null : createHash4("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
-}
-function resourceReceiptRow(adapter, row) {
-  if (!row || adapter.engine !== "postgres") return row;
-  return {
-    ...row,
-    inputDigest: row.inputDigest ?? row.inputdigest,
-    actorDigest: row.actorDigest ?? row.actordigest,
-    resultJson: row.resultJson ?? row.resultjson,
-    intentIdsJson: row.intentIdsJson ?? row.intentidsjson
-  };
-}
-async function upgradeFoldedResourceColumns(adapter, table, columns) {
-  if (adapter.engine !== "postgres") return;
-  const readColumns = async () => new Set((await adapter.prepare(adapter.dialect.sql(
-    "SELECT [column_name] FROM [information_schema].[columns] WHERE [table_schema]=current_schema() AND [table_name]=?"
-  )).all(table)).map((row) => row.column_name));
-  let existing = await readColumns();
-  if (!columns.some((column) => existing.has(column.toLowerCase()) && !existing.has(column))) return;
-  await adapter.exec("SAVEPOINT sporades_resource_schema_upgrade");
-  try {
-    await adapter.exec(`LOCK TABLE ${adapter.dialect.quoteIdentifier(table)} IN ACCESS EXCLUSIVE MODE`);
-    existing = await readColumns();
-    for (const column of columns) {
-      const folded = column.toLowerCase();
-      if (existing.has(folded) && !existing.has(column)) {
-        await adapter.exec(`ALTER TABLE ${adapter.dialect.quoteIdentifier(table)} RENAME COLUMN ${adapter.dialect.quoteIdentifier(folded)} TO ${adapter.dialect.quoteIdentifier(column)}`);
-        existing.delete(folded);
-        existing.add(column);
-      }
-    }
-    await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
-  } catch (error) {
-    try {
-      await adapter.exec("ROLLBACK TO SAVEPOINT sporades_resource_schema_upgrade");
-      await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
-    } catch {
-    }
-    if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
-    throw error;
-  }
-}
-var unsupportedResources = Object.freeze({
-  async run() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  },
-  async status() {
-    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-  }
-});
-function bindOuterResources(database, context2, hooks) {
-  let invocationActive = true;
-  let used = false;
-  let scopeActive = false;
-  let admission = false;
-  let touched = false;
-  let terminalError;
-  let outerDeadline = 0;
-  let watchdog;
-  let rejectOuterAbort = () => {
-  };
-  const outerAborted = new Promise((_2, reject) => {
-    rejectOuterAbort = reject;
-  });
-  void outerAborted.catch(() => {
-  });
-  const parentDb = context2.db;
-  const parentJobs = context2.jobs;
-  const pending = /* @__PURE__ */ new Set();
-  const executions = /* @__PURE__ */ new Set();
-  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
-  const normalizeDatabaseOperationError = (error, definiteStorageOperation = false) => {
-    if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) return normalizeStorageError(error);
-    if (error?.code === "55P03" || error?.code === "57014") return resourceError("RESOURCE_BUSY");
-    const normalized = normalizeStorageError(error);
-    if (normalized !== error) return normalized;
-    if (database.adapter.engine === "postgres" && (definiteStorageOperation || typeof error?.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"].includes(error.code)) || error?.message === "database is not open")) return resourceError("RESOURCE_STORAGE_ERROR");
-    return error;
-  };
-  const track = (operation) => {
-    let value;
-    try {
-      value = operation();
-    } catch (error) {
-      terminalError ??= normalizeDatabaseOperationError(error);
-      throw error;
-    }
-    if (!value || typeof value.then !== "function") return value;
-    const promise = Promise.resolve(value).catch((error) => {
-      const normalized = normalizeDatabaseOperationError(error);
-      terminalError ??= normalized;
-      throw normalized;
-    });
-    pending.add(promise);
-    void promise.catch(() => {
-    });
-    return promise;
-  };
-  const trackExecution = (operation, poison = true) => {
-    let value;
-    try {
-      value = operation();
-    } catch (error) {
-      if (poison) terminalError ??= error;
-      throw error;
-    }
-    const promise = Promise.resolve(value);
-    executions.add(promise);
-    void promise.catch(() => {
-    });
-    return promise;
-  };
-  const actorDigest = resourceActorDigest(context2, false);
-  const guardCapability = (name2, value) => wrapCapability(value, (path26) => {
-    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-    if (!["where", "orderBy", "limit"].includes(path26.at(-1))) touched = true;
-  });
-  for (const name2 of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
-    if (!context2[name2]) continue;
-    context2[name2] = guardCapability(name2, context2[name2]);
-  }
-  const execute = async (options, callback, status) => {
-    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!resourceAdapterSupported(database.adapter) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-    const identity = optionsSnapshot(options, status);
-    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
-    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
-    used = true;
-    scopeActive = true;
-    admission = true;
-    hooks.resourceEntered?.();
-    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
-    const deadline = hooks.startedAt + 3e4;
-    outerDeadline = deadline;
-    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
-    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
-    checks.push(() => {
-      if (terminalError) throw terminalError;
-      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    });
-    const controller = new AbortController();
-    const revoke = (error) => {
-      terminalError ??= error;
-      scopeActive = false;
-      admission = false;
-      controller.abort(terminalError);
-      rejectOuterAbort(terminalError);
-    };
-    const expire = () => {
-      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
-      terminalError ??= error;
-      const cancel = database.adapter[Symbol.for("sporades.database.resourceCancelActiveQuery")];
-      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
-      });
-      revoke(error);
-    };
-    const assertLive = (requireAdmission = false) => {
-      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-      if (terminalError) throw terminalError;
-      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    };
-    watchdog ??= database.clock.setTimer(expire, Math.max(0, deadline - database.clock.now().getTime()));
-    let acquired = false;
-    try {
-      assertLive(true);
-      try {
-        if (database.adapter.engine === "postgres") {
-          await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
-          const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
-          if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-          if (database.adapter[Symbol.for("sporades.database.resourceSchemaPublished")] !== true) {
-            await bootstrap(controller.signal);
-          }
-          const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
-          if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-          await Reflect.apply(consume, database.adapter, []);
-          await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
-          const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
-          if (!resourceLock) throw resourceError("RESOURCE_STORAGE_ERROR");
-          const anchor = await database.adapter.prepare(
-            `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`
-          ).get(identity.id);
-          if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
-        } else {
-          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
-          await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
-          await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
-        }
-      } catch (error) {
-        if (terminalError) throw terminalError;
-        const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014" ? resourceError("RESOURCE_BUSY") : resourceError("RESOURCE_STORAGE_ERROR");
-        if (database.adapter.engine === "postgres") terminalError ??= normalized;
-        throw normalized;
-      }
-      acquired = true;
-      assertLive(true);
-      try {
-        await hooks.authorize(context2, parentDb, identity);
-      } catch (error) {
-        throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
-      }
-      if (database.adapter.engine === "postgres") {
-        await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
-      }
-      assertLive(true);
-      let receipt2;
-      try {
-        if (database.adapter.engine !== "postgres") {
-          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-          await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
-          await ensureNotificationIntentStorage(database.adapter);
-        }
-        receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
-      } catch (error) {
-        throw normalizeDatabaseOperationError(error, true);
-      }
-      if (receipt2) {
-        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-        if (!status) return JSON.parse(receipt2.resultJson);
-        const intentIds2 = JSON.parse(receipt2.intentIdsJson);
-        return {
-          state: "committed",
-          result: JSON.parse(receipt2.resultJson),
-          intentIds: intentIds2,
-          ...intentIds2.length ? { intents: await readNotificationIntentStatuses(database.adapter, identity, intentIds2) } : {}
-        };
-      }
-      if (status) return { state: "absent" };
-      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
-      const logs = [];
-      const intentIds = [];
-      const scope = Object.freeze({
-        app: database.app,
-        db: scopeDb,
-        jobs: Object.freeze({ enqueue: (...args) => track(() => {
-          assertLive(true);
-          return parentJobs.enqueue(...args);
-        }) }),
-        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
-          assertLive(true);
-          if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
-          logs.push(level);
-        }]))),
-        signal: controller.signal,
-        notifications: Object.freeze({ accept: (input) => {
-          assertLive(true);
-          return track(async () => {
-            const staged = await stageNotificationIntent(database.adapter, database, identity, input, resourceCanonicalJson);
-            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
-            return staged;
-          });
-        } })
-      });
-      let result;
-      try {
-        result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
-      } catch (error) {
-        terminalError ??= error;
-        throw error;
-      }
-      if (terminalError) throw terminalError;
-      admission = false;
-      let resultJson;
-      try {
-        resultJson = resourceCanonicalJson(result);
-        await Promise.all([...pending]);
-        if (terminalError) throw terminalError;
-        await hooks.drain(context2);
-        await hooks.stageLogs?.(logs);
-      } catch (error) {
-        terminalError ??= error;
-        throw error;
-      }
-      assertLive();
-      try {
-        intentIds.sort();
-        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
-      } catch (error) {
-        throw normalizeDatabaseOperationError(error, true);
-      }
-      assertLive();
-      return JSON.parse(resultJson);
-    } catch (error) {
-      const normalized = normalizeStorageError(error);
-      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
-      throw normalized;
-    } finally {
-      scopeActive = false;
-      admission = false;
-      if (!controller.signal.aborted) controller.abort();
-    }
-  };
-  context2.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
-  const release = () => {
-    invocationActive = false;
-    if (watchdog !== void 0) database.clock.clearTimer(watchdog);
-  };
-  release.assertOuterLive = () => {
-    if (terminalError) throw terminalError;
-    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-  };
-  release.aborted = () => outerAborted;
-  release.drain = async () => {
-    await Promise.allSettled([...executions]);
-    if (terminalError) throw terminalError;
-  };
-  release.race = (operation) => Promise.race([operation, outerAborted]);
-  release.guardCapability = guardCapability;
-  return release;
-}
-function wrapCapability(value, before, path26 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
-  if (!value || typeof value !== "object") return value;
-  if (cache.has(value)) return cache.get(value);
-  const functions = /* @__PURE__ */ new Map();
-  const proxy = new Proxy({}, {
-    ownKeys: () => Reflect.ownKeys(value),
-    set: (_target, key, member) => Reflect.set(value, key, member),
-    has: (_target, key) => Reflect.has(value, key),
-    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
-    get(_target, key) {
-      const member = Reflect.get(value, key);
-      if (typeof key !== "string") return member;
-      if (typeof member === "function") {
-        if (functions.has(key)) return functions.get(key);
-        const wrapped = (...args) => {
-          const next = [...path26, key];
-          before(next);
-          const invoke = () => Reflect.apply(member, value, args);
-          const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
-          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path26, cache, afterCall) : result;
-        };
-        functions.set(key, wrapped);
-        return wrapped;
-      }
-      return wrapCapability(member, before, [...path26, key], cache, afterCall);
-    }
-  });
-  cache.set(value, proxy);
-  return proxy;
-}
-function resourceActorDigest(context2, privileged) {
-  const { clientAddress: _requestAddress, ...auth } = context2.auth;
-  return createHash4("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
-}
-function bindJobResources(database, context2, claim, hooks) {
-  let invocationActive = true;
-  let used = false;
-  let scopeRunning = false;
-  let touched = false;
-  const privileged = hooks.privileged === true;
-  const actorDigest = resourceActorDigest(context2, privileged);
-  for (const name2 of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
-    if (!context2[name2]) continue;
-    context2[name2] = wrapCapability(context2[name2], (path26) => {
-      if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
-      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path26.at(-1))) touched = true;
-    });
-  }
-  const execute = async (options, callback, status) => {
-    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
-    if (!resourceAdapterSupported(database.adapter) || database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
-    const identity = optionsSnapshot(options, status);
-    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
-    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
-    used = true;
-    scopeRunning = true;
-    let scopeContext;
-    let engineCommitted = false;
-    let active = true;
-    let admission = true;
-    let terminalError;
-    const controller = new AbortController();
-    const deadline = Date.parse(claim.leaseExpiresAt);
-    const pending = /* @__PURE__ */ new Set();
-    const logs = [];
-    let resourceAdapter;
-    let rejectAbort = () => {
-    };
-    const aborted = new Promise((_2, reject) => {
-      rejectAbort = reject;
-    });
-    void aborted.catch(() => {
-    });
-    const revoke = (error) => {
-      terminalError ??= error;
-      active = false;
-      admission = false;
-      controller.abort(terminalError);
-      rejectAbort(terminalError);
-    };
-    const assertLive = (admit = false) => {
-      if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
-      if (terminalError) throw terminalError;
-      if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
-      if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-    };
-    const abort = () => revoke(resourceAbortError());
-    context2.signal?.addEventListener("abort", abort, { once: true });
-    const watchdog = database.clock.setTimer(() => {
-      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
-      terminalError ??= error;
-      const cancel = resourceAdapter?.[Symbol.for("sporades.database.resourceCancelActiveQuery")];
-      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
-      });
-      revoke(error);
-    }, Math.max(0, deadline - database.clock.now().getTime()));
-    const checkClaim = async (adapter, entry = false) => {
-      assertLive(entry);
-      const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
-      if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-      if (row.cancelRequestedAt) throw resourceAbortError();
-      assertLive(entry);
-    };
-    const track = (operation) => {
-      assertLive(true);
-      const promise = Promise.resolve().then(() => {
-        assertLive();
-        return operation();
-      });
-      pending.add(promise);
-      void promise.catch((error) => {
-        terminalError ??= error;
-      });
-      return promise;
-    };
-    try {
-      assertLive(true);
-      const result = await database.adapter.withResourceTransaction(async (adapter) => {
-        resourceAdapter = adapter;
-        const guarded = Object.create(adapter);
-        guarded.prepare = (sql2) => {
-          assertLive();
-          const statement = adapter.prepare(sql2);
-          return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
-            assertLive();
-            return statement[method](...args);
-          }]));
-        };
-        guarded.exec = (sql2) => {
-          assertLive();
-          return adapter.exec(sql2);
-        };
-        await checkClaim(guarded, true);
-        scopeContext = hooks.createContext(guarded, controller.signal, privileged);
-        await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
-        if (database.adapter.engine === "postgres") await guarded.exec("SET LOCAL lock_timeout = DEFAULT");
-        assertLive(true);
-        if (database.adapter.engine !== "postgres") {
-          await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
-          await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
-          await ensureNotificationIntentStorage(guarded);
-        }
-        const receipt2 = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
-        if (receipt2) {
-          if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
-          await checkClaim(guarded);
-          if (!status) return JSON.parse(receipt2.resultJson);
-          const intentIds2 = JSON.parse(receipt2.intentIdsJson);
-          return {
-            state: "committed",
-            result: JSON.parse(receipt2.resultJson),
-            intentIds: intentIds2,
-            ...intentIds2.length ? { intents: await readNotificationIntentStatuses(guarded, identity, intentIds2) } : {}
-          };
-        }
-        if (status) {
-          await checkClaim(guarded);
-          return { state: "absent" };
-        }
-        const db = Object.fromEntries(Object.entries(scopeContext.db).map(([name2, table]) => {
-          const wrapTable = (api) => Object.fromEntries(Object.keys(api).map((method) => [method, (...args) => {
-            assertLive(true);
-            if (["where", "orderBy", "limit"].includes(method)) return wrapTable(api[method](...args));
-            return track(() => api[method](...args));
-          }]));
-          return [name2, wrapTable(table)];
-        }));
-        const intentIds = [];
-        const scope = Object.freeze({
-          app: database.app,
-          db: Object.freeze(db),
-          signal: controller.signal,
-          jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
-          log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
-            assertLive(true);
-            if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
-            logs.push(level);
-          }]))),
-          notifications: Object.freeze({ accept: (input) => track(async () => {
-            const staged = await stageNotificationIntent(guarded, database, identity, input, resourceCanonicalJson);
-            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
-            return staged;
-          }) })
-        });
-        const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
-        admission = false;
-        await Promise.race([Promise.all([...pending]), aborted]);
-        await Promise.race([hooks.drain(scopeContext), aborted]);
-        const resultJson = resourceCanonicalJson(value);
-        await hooks.stageLogs(scopeContext, logs);
-        await checkClaim(guarded);
-        intentIds.sort();
-        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
-        await checkClaim(guarded);
-        active = false;
-        return JSON.parse(resultJson);
-      }, database.adapter.engine === "postgres" ? async (adapter) => {
-        if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
-        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-        const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT")).get(claim.id);
-        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-        if (row.cancelRequestedAt) throw resourceAbortError();
-      } : (adapter) => {
-        if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
-        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
-        const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
-        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
-        if (row.cancelRequestedAt) throw resourceAbortError();
-      }, { table: identity.table, id: identity.id }, controller.signal, database.adapter.engine === "postgres");
-      engineCommitted = true;
-      active = false;
-      await hooks.committed(scopeContext, logs);
-      if (database.adapter.engine === "postgres") {
-        const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
-          // A plain MVCC read could take its snapshot while the cancellation
-          // updater is still queued on the resource transaction's former row
-          // lock. The locking read follows PostgreSQL's row-lock wait order and
-          // rechecks the updated tuple before this worker may publish success.
-          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE"
-        )).get(claim.id, claim.claimToken);
-        if (cancellation?.cancelRequestedAt) throw resourceAbortError();
-      }
-      return result;
-    } catch (error) {
-      active = false;
-      if (engineCommitted) {
-        if (isResourceAbortError(error)) throw error;
-        throw resourceError("RESOURCE_STORAGE_ERROR");
-      }
-      hooks.rolledBack(scopeContext);
-      throw error;
-    } finally {
-      scopeRunning = false;
-      active = false;
-      admission = false;
-      if (!controller.signal.aborted) controller.abort();
-      resourceAdapter = void 0;
-      database.clock.clearTimer(watchdog);
-      context2.signal?.removeEventListener("abort", abort);
-      hooks.release(scopeContext);
-    }
-  };
-  context2.resources = Object.freeze({
-    run: (options, callback) => execute(options, callback, false),
-    status: (options) => execute(options, void 0, true)
-  });
-  return () => {
-    invocationActive = false;
-  };
-}
-
-// src/live-query-invalidation.ts
-var { AsyncLocalStorage } = process.getBuiltinModule("node:async_hooks");
-var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
-var LIVE_QUERY_ANY_TABLE = "*";
-var liveQueryReads = new AsyncLocalStorage();
-var dirtyTables = /* @__PURE__ */ new Set();
-var writeGeneration = 0;
-function recordTableWrite(table, tables) {
-  tables.add(table);
-  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
-}
-function liveQueryWriteGeneration() {
-  return writeGeneration;
-}
-var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
-var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
-var writeTablePattern = new RegExp(
-  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
-  "i"
-);
-var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
-function trackLiveQueryReads(tables, run2) {
-  return liveQueryReads.run(tables, run2);
-}
-function recordLiveQueryStatementRead(sql2) {
-  const tables = liveQueryReads.getStore();
-  if (!tables) return;
-  let identified = false;
-  for (const match of String(sql2).matchAll(readTablePattern)) {
-    tables.add(match[1] ?? match[2]);
-    identified = true;
-  }
-  if (!identified) tables.add(LIVE_QUERY_ANY_TABLE);
-}
-function recordLiveQueryTableRead(table) {
-  liveQueryReads.getStore()?.add(table);
-}
-function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
-  const text3 = String(sql2);
-  const terminator = text3.indexOf(";");
-  if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
-    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
-    return;
-  }
-  if (nonWritingStatementPattern.test(text3)) return;
-  const match = writeTablePattern.exec(text3);
-  if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
-  recordTableWrite(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE, tables);
-}
-function publishLiveQueryDirtyTables(tables) {
-  for (const table of tables) recordTableWrite(table, dirtyTables);
-}
-function takeLiveQueryDirtyTables() {
-  const taken = dirtyTables;
-  dirtyTables = /* @__PURE__ */ new Set();
-  return taken;
-}
-function liveQueryNeedsRefresh(readTables, dirty) {
-  if (!readTables || dirty.has(LIVE_QUERY_ANY_TABLE)) return true;
-  for (const table of readTables) if (dirty.has(table)) return true;
-  return false;
-}
-
-// src/database-runtime.ts
-import { randomUUID as randomUUID10 } from "node:crypto";
-
-// src/public-origin.ts
-function bindAppContext(context2, app) {
-  Object.defineProperty(context2, "app", { value: app, enumerable: true, writable: false, configurable: false });
-  return context2;
-}
-function normalizePublicOrigin(value) {
-  if (typeof value !== "string" || value.length > 2048 || !/^https?:\/\//i.test(value) || /[\\\s]/.test(value)) return null;
-  try {
-    const url = new URL(value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash || value.includes("?") || value.includes("#")) return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
-}
-function resolvePublicOrigin(config) {
-  const session = config?.__sporadesSession;
-  const dev = session === "dev" || session === "public-dev";
-  const configured = dev ? config?.__sporadesDevOrigin : session === "hosted" ? config?.__sporadesPublicOrigin : config?.deploy?.publicOrigin ?? config?.__sporadesPublicOrigin;
-  const port = dev ? config?.dev?.port ?? config?.deploy?.port ?? 4e3 : config?.deploy?.port ?? (session ? 4e3 : config?.dev?.port ?? 4e3);
-  return normalizePublicOrigin(configured) ?? `http://localhost:${port}`;
-}
-function isLocalPublicOrigin(origin) {
-  const hostname = new URL(origin).hostname.toLowerCase();
-  return hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "[::1]" || hostname === "0.0.0.0" || /^127\./.test(hostname) || hostname === "[::]";
-}
-
-// src/runtime-request-context.ts
-import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
-var runtimeRequestScope = new AsyncLocalStorage2();
-function traceRuntimeOperation(operation, callback, outcome) {
-  const run2 = runtimeRequestScope.getStore()?.operation;
-  return run2 ? run2(operation, callback, outcome) : callback();
-}
-function withoutRuntimeRequestIdentity(callback) {
-  return runtimeRequestScope.exit(() => runtimeJobScope.exit(callback));
-}
-var runtimeJobScope = new AsyncLocalStorage2();
-function captureJobTraceContext() {
-  try {
-    const job = runtimeJobScope.getStore();
-    const request = runtimeRequestScope.getStore();
-    const span = job?.isOpen() ? job.span : request?.isOpen?.() ? request.span : void 0;
-    const context2 = span?.spanContext();
-    if (!context2 || !/^[0-9a-f]{32}$/.test(context2.traceId) || /^0+$/.test(context2.traceId) || !/^[0-9a-f]{16}$/.test(context2.spanId) || /^0+$/.test(context2.spanId)) return null;
-    return `00-${context2.traceId}-${context2.spanId}-${context2.traceFlags & 1 ? "01" : "00"}`;
-  } catch {
-    return null;
-  }
 }
 
 // src/html.ts
@@ -93090,29 +93367,7 @@ function createPreferencesError(message, hint, code2) {
 }
 
 // src/teams-runtime.ts
-import { createHash as createHash5, createHmac as createHmac2, randomBytes as randomBytes5, randomUUID as randomUUID3, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
-
-// src/maybe-promise.ts
-function isPromiseLike(value) {
-  return value && typeof value === "object" && typeof value.then === "function";
-}
-function thenIfPromise(value, onResolved) {
-  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
-}
-function chainMaybePromise(steps) {
-  let pending = null;
-  for (const step of steps) {
-    if (pending) {
-      pending = pending.then(step);
-      continue;
-    }
-    const result = step();
-    if (isPromiseLike(result)) {
-      pending = result;
-    }
-  }
-  return pending ?? void 0;
-}
+import { createHash as createHash3, createHmac, randomBytes as randomBytes4, randomUUID, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 
 // src/auth-admission.ts
 var AUTH_REQUIREMENTS = Symbol.for("sporades.auth.requirements");
@@ -94392,9 +94647,9 @@ async function createTeamJoinLink(database, auth, teamId, email, options = {}, e
       await claimTeamJoinLinkCreationSlot(tx, teamId, auth.userId, nowIso2);
       await claimTeamJoinLinkCapacity(tx, teamId, nowIso2);
       const secret = await teamJoinSigningSecret(tx, nowIso2);
-      const id2 = randomUUID3();
-      const selector = randomBytes5(16).toString("base64url");
-      const verifier = randomBytes5(32).toString("base64url");
+      const id2 = randomUUID();
+      const selector = randomBytes4(16).toString("base64url");
+      const verifier = randomBytes4(32).toString("base64url");
       const expiresAt = new Date(now2.getTime() + ttlSeconds * 1e3).toISOString();
       const signature = teamJoinSignature(secret, id2, selector, verifier, expiresAt);
       await tx.prepare(tx.dialect.sql(
@@ -94467,8 +94722,8 @@ async function inspectTeamJoinLinkWithActivity(database, code2, assertActive = v
       const actualVerifier = Buffer.from(hashTeamJoinVerifier(parsed.verifier), "base64url");
       const expectedSignature = Buffer.from(candidate && secretRow ? teamJoinSignature(String(secretRow.secret), String(candidate.id), parsed.selector, parsed.verifier, String(candidate.expiresAt)) : teamJoinSignature("absent", "absent", parsed.selector, parsed.verifier, "absent"), "base64url");
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       return Boolean(candidate && verifierMatches && signatureMatches && !candidate.consumedAt && !candidate.revokedAt && Date.parse(candidate.expiresAt) > (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime());
     };
     if (!usable(row)) return { team: null, expiresAt: null, usable: false };
@@ -94565,8 +94820,8 @@ async function validateTeamJoinLink(database, auth, code2) {
     "base64url"
   );
   const actualSignature = Buffer.from(parsed.signature, "base64url");
-  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
+  const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+  const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
   const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).getTime();
   const expiresAt = Date.parse(row?.expiresAt ?? "");
   if (!row || !verifierMatches || !signatureMatches || row.consumedAt || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= now2) return { valid: false };
@@ -94607,8 +94862,8 @@ async function joinCurrentUserTeam(database, auth, code2, eventContext) {
         "base64url"
       );
       const actualSignature = Buffer.from(parsed.signature, "base64url");
-      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual3(actualVerifier, expectedVerifier);
-      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual3(actualSignature, expectedSignature);
+      const verifierMatches = actualVerifier.length === expectedVerifier.length && timingSafeEqual2(actualVerifier, expectedVerifier);
+      const signatureMatches = actualSignature.length === expectedSignature.length && timingSafeEqual2(actualSignature, expectedSignature);
       const now2 = (database.clock?.now?.() ?? /* @__PURE__ */ new Date()).toISOString();
       const expiresAt = Date.parse(row?.expiresAt ?? "");
       if (!row || !verifierMatches || !signatureMatches || row.revokedAt || !Number.isFinite(expiresAt) || expiresAt <= Date.parse(now2)) throw invalidTeamJoinLink();
@@ -94737,15 +94992,15 @@ function parseTeamJoinCode(code2) {
   return { selector, verifier, signature };
 }
 function hashTeamJoinVerifier(verifier) {
-  return createHash5("sha256").update(verifier).digest("base64url");
+  return createHash3("sha256").update(verifier).digest("base64url");
 }
 function teamJoinSignature(secret, id2, selector, verifier, expiresAt) {
-  return createHmac2("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
+  return createHmac("sha256", secret).update(`v1.${id2}.${selector}.${verifier}.${expiresAt}`).digest("base64url");
 }
 async function teamJoinSigningSecret(tx, createdAt) {
   const existing = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   if (existing?.secret) return String(existing.secret);
-  const secret = randomBytes5(32).toString("base64url");
+  const secret = randomBytes4(32).toString("base64url");
   await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_join_link_secrets] ([id], [secret], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([id]) DO NOTHING")).run(TEAM_JOIN_LINK_SECRET_ID, secret, createdAt);
   const claimed = await tx.prepare(tx.dialect.sql("SELECT [secret] FROM [sporades_team_join_link_secrets] WHERE [id] = ?")).get(TEAM_JOIN_LINK_SECRET_ID);
   return String(claimed?.secret ?? secret);
@@ -94978,7 +95233,7 @@ async function createAdditionalTeam(database, auth, name2, eventContext) {
       );
     }
     await enforceCreateAdmission(database, tx, auth, normalizedName, eventContext);
-    const id2 = randomUUID3();
+    const id2 = randomUUID();
     const now2 = (/* @__PURE__ */ new Date()).toISOString();
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, ?, ?, ?)"
@@ -95299,7 +95554,7 @@ async function bootstrapInitialTeamForLinkedUser(tx, userId) {
 }
 async function ensureInitialTeamOnAdapter(tx, userId) {
   const sql2 = tx.dialect.sql;
-  const id2 = randomUUID3();
+  const id2 = randomUUID();
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const claim = await tx.prepare(sql2(
     "INSERT INTO [sporades_team_bootstrap] ([userId], [teamId], [createdAt]) VALUES (?, ?, ?) ON CONFLICT ([userId]) DO NOTHING"
@@ -95525,7 +95780,7 @@ function endpointErrorResponseHeaders(error) {
 
 // src/http-runtime.ts
 import { ServerResponse } from "node:http";
-import { randomBytes as randomBytes6 } from "node:crypto";
+import { randomBytes as randomBytes5 } from "node:crypto";
 
 // node_modules/parse5/dist/common/unicode.js
 var UNDEFINED_CODE_POINTS = /* @__PURE__ */ new Set([
@@ -103741,9 +103996,57 @@ function parse(html2, options) {
   return Parser.parse(html2, options);
 }
 
+// src/http-security-config.ts
+var CSP_REPORT_PATH = "/__sporades/csp-report";
+function validateHttpHardening(security = {}, observability) {
+  const fail7 = (hint) => {
+    throw commandError("Invalid HTTP security configuration.", hint, "INVALID_SECURITY_CONFIG");
+  };
+  const csp = security.csp ?? {};
+  if (csp.nonce !== void 0 && typeof csp.nonce !== "boolean") {
+    fail7("Set security.csp.nonce to a boolean.");
+  }
+  if (csp.nonce === true) {
+    for (const name2 of ["script-src", "script-src-elem"]) {
+      const value = csp.directives?.[name2];
+      if (value !== void 0 && typeof value !== "string" && !(Array.isArray(value) && value.every((item) => typeof item === "string"))) {
+        fail7("Set CSP script directives to a string or an array of strings.");
+      }
+    }
+  }
+  if (csp.reportTo === "observability") {
+    if (!observability?.errors) fail7('Configure observability.errors before setting security.csp.reportTo to "observability".');
+  } else if (csp.reportTo !== void 0) {
+    const value = csp.reportTo;
+    let valid = typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[^\x21-\x7e]|[;#\\]/.test(value);
+    if (valid) {
+      try {
+        const url = new URL(value, "https://sporades.invalid");
+        valid = (value.startsWith("/") && !value.startsWith("//") || value.startsWith("https://")) && url.protocol === "https:" && !url.username && !url.password;
+      } catch {
+        valid = false;
+      }
+    }
+    if (!valid) fail7('Set security.csp.reportTo to "observability", a same-origin absolute path or an HTTPS URL without credentials, fragments, whitespace or semicolons.');
+  }
+  const hsts = security.hsts;
+  if (hsts !== void 0) {
+    if (!hsts || typeof hsts !== "object" || Array.isArray(hsts) || !Number.isSafeInteger(hsts.maxAgeSeconds) || hsts.maxAgeSeconds < 0 || hsts.includeSubDomains !== void 0 && typeof hsts.includeSubDomains !== "boolean" || hsts.preload !== void 0 && typeof hsts.preload !== "boolean") {
+      fail7("Set security.hsts to an object with a non-negative safe integer maxAgeSeconds and optional boolean includeSubDomains and preload.");
+    }
+  }
+}
+function hstsHeader(hsts) {
+  return `max-age=${hsts.maxAgeSeconds}${hsts.includeSubDomains ? "; includeSubDomains" : ""}${hsts.preload ? "; preload" : ""}`;
+}
+function cspReportDirectives(csp) {
+  if (csp.reportTo === "observability") return { "report-uri": [CSP_REPORT_PATH] };
+  return csp.reportTo ? { "report-uri": [csp.reportTo] } : {};
+}
+
 // src/admission-policy.ts
 import path5 from "node:path";
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash5, randomUUID as randomUUID3 } from "node:crypto";
 
 // src/admission-rate-limit.ts
 function createAdmissionRateLimiter(options = {}) {
@@ -103839,7 +104142,7 @@ import { lstat as lstat5, open as open3, rename as rename4, rm as rm5 } from "no
 
 // src/deploy-files.ts
 import path4 from "node:path";
-import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash4, randomUUID as randomUUID2 } from "node:crypto";
 import { constants as constants2 } from "node:fs";
 import { lstat as lstat4, mkdir as mkdir3, open as open2, readFile as readFile3, readdir as readdir2, link, rename as rename3, rm as rm4, realpath } from "node:fs/promises";
 var RESERVED = [".sporades", "public", "data", "server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"];
@@ -103912,7 +104215,7 @@ async function assertDeployFile(root, relative, recoverSeed = false) {
   return current2;
 }
 function preservedDeployFilePath(root, relative) {
-  const key = createHash6("sha256").update(relative.normalize("NFC")).digest("hex");
+  const key = createHash4("sha256").update(relative.normalize("NFC")).digest("hex");
   return path4.join(root, `${key}.file`);
 }
 async function assertPreservedDeployFile(root, relative) {
@@ -104118,7 +104421,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       if (error.code !== "ENOENT") throw error;
     }
     let handle;
-    const temporary = path4.join(path4.dirname(destination), `.seed-${randomUUID4()}`);
+    const temporary = path4.join(path4.dirname(destination), `.seed-${randomUUID2()}`);
     try {
       await recordPreservedFileAttempt(journal, { temporary: path4.relative(journalRoot, temporary) });
       const contents = await readDeployFile(releaseRoot, file.path);
@@ -104127,7 +104430,7 @@ async function preparePreservedFiles(files, releaseRoot, preservedRoot, owner, c
       if (file.update === "admission") await handle.chmod(292);
       else if (owner) await owner(handle, destination, await handle.stat());
       const identity = await handle.stat();
-      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash6("sha256").update(contents).digest("hex") };
+      const seed = { root: preservedRoot2, path: file.path, storagePath: destination, dev: identity.dev, ino: identity.ino, sha256: createHash4("sha256").update(contents).digest("hex") };
       await recordPreservedFileAttempt(journal, seed);
       await link(temporary, destination);
       created.push(seed);
@@ -104148,12 +104451,12 @@ async function rollbackPreservedFiles(created, hooks = {}) {
       handle = await open2(target, constants2.O_RDONLY | constants2.O_NOFOLLOW);
       const info2 = await handle.stat();
       if (info2.dev !== seed.dev || info2.ino !== seed.ino || info2.nlink !== 1) continue;
-      if (createHash6("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
+      if (createHash4("sha256").update(await handle.readFile()).digest("hex") !== seed.sha256) continue;
       await hooks.beforeClaim?.(target);
-      const claimed = path4.join(seed.root, `.rollback-${randomUUID4()}`);
+      const claimed = path4.join(seed.root, `.rollback-${randomUUID2()}`);
       await rename3(target, claimed);
       const captured = await lstat4(claimed);
-      const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash6("sha256").update(await readFile3(claimed)).digest("hex") === seed.sha256;
+      const sameSeed = captured.isFile() && captured.dev === info2.dev && captured.ino === info2.ino && createHash4("sha256").update(await readFile3(claimed)).digest("hex") === seed.sha256;
       if (!sameSeed) {
         try {
           await link(claimed, target);
@@ -104285,7 +104588,7 @@ function parseAdmissionPolicy(bytes) {
       if (!Number.isSafeInteger(rule.action.limit) || rule.action.limit < 1 || rule.action.limit > 1e6 || !Number.isSafeInteger(rule.action.windowMs) || rule.action.windowMs < 1e3 || rule.action.windowMs > 864e5) invalid();
     } else invalid();
   }
-  return freeze({ digest: createHash7("sha256").update(bytes).digest("hex"), policy: value });
+  return freeze({ digest: createHash5("sha256").update(bytes).digest("hex"), policy: value });
 }
 function canonicalAdmissionPathname(raw) {
   if (raw === "*") return raw;
@@ -104386,7 +104689,7 @@ async function publishAdmissionPolicy(root, relative, bytes) {
   const directory = await lstat5(root);
   if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Unsafe admission storage.");
   const handle = await open3(root, constants3.O_RDONLY | constants3.O_DIRECTORY | constants3.O_NOFOLLOW);
-  const temporary = `.publish-${randomUUID5()}`;
+  const temporary = `.publish-${randomUUID3()}`;
   const anchored = process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : root;
   const target = path5.join(anchored, path5.basename(preservedDeployFilePath(root, relative)));
   let output;
@@ -104485,6274 +104788,6 @@ async function openAdmissionPolicy(root, relative, onHealth, options = {}) {
       clearInterval(timer);
       await pending;
     }
-  });
-}
-
-// src/file-policy.ts
-function resolveFileAllowedMimeTypes(files) {
-  const types2 = files?.allowedMimeTypes;
-  if (types2 === void 0) return null;
-  if (!Array.isArray(types2) || types2.some((type) => typeof type !== "string" || !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type))) {
-    throw Object.assign(new Error("Invalid File MIME allowlist."), {
-      code: "INVALID_FILE_CONFIG",
-      hint: "Set files.allowedMimeTypes to an array of lowercase exact MIME types; [] denies all uploads."
-    });
-  }
-  return new Set(types2);
-}
-function normalizeFileMimeType(type) {
-  return String(type ?? "application/octet-stream").split(";", 1)[0].trim().toLowerCase();
-}
-var signatures = [
-  ["image/png", [137, 80, 78, 71, 13, 10, 26, 10], 0],
-  ["image/jpeg", [255, 216, 255], 0],
-  ["image/gif", [71, 73, 70, 56, 55, 97], 0],
-  ["image/gif", [71, 73, 70, 56, 57, 97], 0],
-  ["image/bmp", [66, 77], 0],
-  ["application/pdf", [37, 80, 68, 70, 45], 0],
-  ["application/gzip", [31, 139], 0],
-  ["application/zip", [80, 75, 3, 4], 0],
-  ["application/zip", [80, 75, 5, 6], 0],
-  ["application/zip", [80, 75, 7, 8], 0]
-];
-var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
-function matches(bytes, signature, offset2 = 0) {
-  return bytes.length >= offset2 + signature.length && signature.every((byte, index) => bytes[offset2 + index] === byte);
-}
-function detectedMimeType(bytes) {
-  for (const [type, signature, offset2] of signatures) if (matches(bytes, signature, offset2)) return type;
-  if (matches(bytes, [82, 73, 70, 70]) && matches(bytes, [87, 69, 66, 80], 8)) return "image/webp";
-  if (matches(bytes, [102, 116, 121, 112], 4) && (matches(bytes, [97, 118, 105, 102], 8) || matches(bytes, [97, 118, 105, 115], 8))) return "image/avif";
-  return null;
-}
-function assertAllowedFileMimeType(allowed, rawType, bytes) {
-  if (!allowed) return;
-  const type = normalizeFileMimeType(rawType);
-  if (!allowed.has(type)) throw Object.assign(new Error("File MIME type is not allowed."), {
-    code: "FILE_MIME_TYPE_NOT_ALLOWED",
-    hint: "Choose a type permitted by files.allowedMimeTypes."
-  });
-  if (!bytes) return;
-  const detected = detectedMimeType(bytes);
-  let valid = !signedTypes.has(type) || detected === type;
-  if (type === "text/plain") {
-    valid = detected === null;
-    try {
-      const text3 = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      valid = valid && !/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(text3);
-    } catch {
-      valid = false;
-    }
-  }
-  if (!valid) throw Object.assign(new Error("File bytes do not match the declared MIME type."), {
-    code: "FILE_MIME_TYPE_MISMATCH",
-    hint: "Supply bytes matching the declared MIME type."
-  });
-}
-
-// src/team-billing-runtime.ts
-import { createHash as createHash10, randomUUID as randomUUID8 } from "node:crypto";
-
-// src/team-billing-subscription-semantics.ts
-function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
-  if (eventType === "customer.subscription.deleted") {
-    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
-  }
-  if (state === "cancelled") return null;
-  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
-}
-function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
-  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
-  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
-  if (state !== "active") return null;
-  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
-}
-
-// src/team-billing-quantity.ts
-function billableTeamMemberQuantity(policy, memberCount) {
-  return Math.max(memberCount, policy?.minimum ?? 1);
-}
-function teamBillingQuantityPolicyFingerprint(policy) {
-  if (policy.kind === "fixed") return `fixed:${policy.value}`;
-  return policy.minimum === void 0 ? "team-members" : `team-members:minimum:${policy.minimum}`;
-}
-
-// src/team-billing-convergence.ts
-import { createHash as createHash9, randomUUID as randomUUID7 } from "node:crypto";
-
-// src/team-billing-management.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
-var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
-var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
-var CLAIM_TTL_MS = 5 * 60 * 1e3;
-var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey) {
-  const definition = database.teamBillingDefinition;
-  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition?.catalogue?.[productKey]) throw denied();
-  let enqueued = false;
-  const result = await inTransaction(database, async (transaction) => {
-    await admitPlanTransition(database, transaction, auth, teamId, productKey);
-    await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql2 = transaction.dialect.sql;
-    const repeated = await transaction.prepare(sql2(
-      "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
-    )).get(teamId, requestId);
-    if (repeated) {
-      if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey) throw conflict();
-      return planOperationResult(teamId, requestId, productKey, repeated);
-    }
-    const subscription = await currentSubscription(transaction, teamId);
-    const currentProduct = definition.catalogue[subscription.productKey];
-    const targetProduct = definition.catalogue[productKey];
-    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
-    if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
-    const quantity = await targetQuantity(transaction, teamId, targetProduct);
-    const operationId = randomUUID6();
-    const now2 = nowIso(database);
-    const effectiveAt = nowSeconds(database);
-    const staged = await stageDesired(transaction, database, {
-      teamId,
-      kind: "plan-transition",
-      operationId,
-      targetProductKey: productKey,
-      targetQuantity: quantity,
-      effectiveAt
-    });
-    await transaction.prepare(sql2(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
-    )).run(now2, teamId);
-    await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity);
-    await enqueueIntent(database, transaction, staged);
-    enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
-  });
-  if (enqueued) scheduleAfterOwnedTransaction(database);
-  return result;
-}
-async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = nowSeconds(database)) {
-  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
-  let enqueued = false;
-  const result = await inTransaction(database, async (transaction) => {
-    try {
-      await assertTeamBillingErasureInactive(database, transaction, teamId);
-    } catch {
-      return Object.freeze({ staged: false, reason: "erasure-active" });
-    }
-    const subscription = await optionalCurrentSubscription(transaction, teamId);
-    if (!subscription) return Object.freeze({ staged: false });
-    const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-    if (product?.quantity?.kind !== "team-members") return Object.freeze({ staged: false });
-    const quantity = billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied));
-    const existing = await desiredForTeam(transaction, teamId);
-    if (existing?.kind === "plan-transition") return Object.freeze({ staged: false, reason: "plan-transition-active" });
-    if (!existing && subscription.quantity === quantity) return Object.freeze({ staged: false });
-    const staged = await stageDesired(transaction, database, {
-      teamId,
-      kind: "seat-convergence",
-      operationId: null,
-      targetProductKey: subscription.productKey,
-      targetQuantity: quantity,
-      effectiveAt
-    });
-    let generationId = staged.activeJobGenerationId ?? null;
-    if (staged.enqueue) {
-      generationId = await enqueueIntent(database, transaction, staged);
-      enqueued = true;
-    }
-    return Object.freeze({ staged: true, intentId: staged.intentId, generationId, quantity });
-  });
-  if (enqueued) scheduleAfterOwnedTransaction(database);
-  return result;
-}
-async function performTeamBillingPlanTransition(database, context2, payload) {
-  return performDesired(database, context2, payload, "plan-transition");
-}
-async function performTeamBillingSeatConvergence(database, context2, payload) {
-  return performDesired(database, context2, payload, "seat-convergence");
-}
-async function performDesired(database, _context, payload, kind) {
-  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
-  const claimToken = randomUUID6();
-  const snapshot = await inTransaction(database, async (transaction) => {
-    const desired = await desiredByIntent(transaction, payload.intentId);
-    if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
-    const subscription = await currentSubscription(transaction, desired.teamId);
-    const product = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
-    if (!product) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
-    try {
-      assertCurrentModeAndCatalogue(database, subscription, database.teamBillingDefinition?.catalogue?.[subscription.productKey]);
-    } catch {
-      return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
-    }
-    if (kind === "plan-transition") {
-      const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
-      const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey);
-      if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
-      const billableQuantity = await targetQuantity(transaction, desired.teamId, product);
-      if (billableQuantity !== Number(desired.targetQuantity)) {
-        const replacement = await stageDesired(transaction, database, {
-          teamId: desired.teamId,
-          kind,
-          operationId: desired.operationId,
-          targetProductKey: desired.targetProductKey,
-          targetQuantity: billableQuantity,
-          effectiveAt: nowSeconds(database)
-        });
-        await enqueueIntent(database, transaction, replacement);
-        return { superseded: true, dispatch: true };
-      }
-    } else {
-      const targetProductKey = subscription.productKey;
-      const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
-      if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
-      const billableQuantity = billableTeamMemberQuantity(
-        currentProduct.quantity,
-        await countAcceptedTeamMembers(transaction, desired.teamId, denied)
-      );
-      if (billableQuantity !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey) {
-        const replacement = await stageDesired(transaction, database, {
-          teamId: desired.teamId,
-          kind,
-          operationId: null,
-          targetProductKey,
-          targetQuantity: billableQuantity,
-          effectiveAt: nowSeconds(database)
-        });
-        await enqueueIntent(database, transaction, replacement);
-        return { superseded: true, dispatch: true };
-      }
-    }
-    const customer = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ? AND [mode] = ?"
-    )).get(desired.teamId, subscription.mode);
-    if (!customer?.providerCustomerId) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
-    const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
-    if (!claimed) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-    )).run(nowIso(database), desired.intentId);
-    const binding = modeBinding(database, product);
-    return {
-      desired: { ...desired },
-      provider: {
-        teamId: desired.teamId,
-        mode: subscription.mode,
-        providerCustomerId: customer.providerCustomerId,
-        providerSubscriptionId: subscription.providerSubscriptionId,
-        providerSubscriptionItemId: subscription.providerSubscriptionItemId,
-        sourcePriceId: subscription.providerPriceId,
-        targetPriceId: binding.priceId,
-        ...binding.productId ? { targetProductId: binding.productId } : {},
-        targetProductKey: desired.targetProductKey,
-        targetQuantity: Number(desired.targetQuantity),
-        effectiveAt: Number(desired.effectiveAt),
-        prorationDate: Number(desired.effectiveAt),
-        idempotencyKey: desired.idempotencyKey,
-        operationKind: desired.kind
-      }
-    };
-  });
-  if (snapshot.dispatch) database.scheduleTeamBillingJobDispatch?.();
-  if (snapshot.superseded) return { superseded: true };
-  if (snapshot.denied) throw denied();
-  try {
-    if (typeof database.updateTeamBillingSubscription !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-    const providerResult = await database.updateTeamBillingSubscription(_context, Object.freeze(snapshot.provider));
-    if (!validProviderAcknowledgement(providerResult)) throw coded(
-      "Team Billing provider returned an invalid acknowledgement.",
-      "TEAM_BILLING_PROVIDER_REJECTED"
-    );
-    if (providerResult?.outcome === "payment-action-required") {
-      await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" });
-      return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
-    }
-  } catch (error) {
-    const classified = classifyProviderError(database, error);
-    await releaseAfterFailure(database, snapshot.desired, claimToken, classified);
-    if (classified.retryable) {
-      error.retryable = true;
-      error.code ??= classified.code;
-    }
-    throw error;
-  }
-  const acknowledged = await inTransaction(database, async (transaction) => {
-    const current2 = await desiredByIntent(transaction, snapshot.desired.intentId);
-    const ownedLane = await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
-    if (!ownedLane || !current2 || current2.activeJobGenerationId !== snapshot.desired.activeJobGenerationId || current2.operationId !== snapshot.desired.operationId || current2.status !== "running") return false;
-    const updated = await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] = 'running' AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))"
-    )).run(
-      nowIso(database),
-      nowIso(database),
-      current2.intentId,
-      snapshot.desired.activeJobGenerationId,
-      snapshot.desired.operationId,
-      snapshot.desired.operationId
-    );
-    if (Number(updated?.changes ?? updated?.changesCount ?? 0) !== 1) return false;
-    if (current2.operationId) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?"
-    )).run(nowIso(database), current2.operationId);
-    return true;
-  });
-  return acknowledged ? { providerAcknowledged: true } : { superseded: true };
-}
-async function settleVerifiedTeamBillingTarget(database, accepted) {
-  if (!accepted || typeof accepted.teamId !== "string" || typeof accepted.productKey !== "string" || !Number.isSafeInteger(accepted.quantity) || typeof accepted.subscriptionId !== "string") return { settled: false };
-  let enqueued = false;
-  const result = await inTransaction(database, async (transaction) => {
-    const sql2 = transaction.dialect.sql;
-    const subscription = await transaction.prepare(sql2(
-      "SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?"
-    )).get(accepted.teamId, accepted.subscriptionId);
-    if (!subscription) return { settled: false };
-    const desired = await desiredForTeam(transaction, accepted.teamId);
-    if (!desired) return { settled: false };
-    if (desired.targetProductKey === accepted.productKey && Number(desired.targetQuantity) === accepted.quantity) {
-      const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
-      if (product?.quantity?.kind === "team-members") {
-        const billableQuantity = billableTeamMemberQuantity(
-          product.quantity,
-          await countAcceptedTeamMembers(transaction, accepted.teamId, denied)
-        );
-        if (billableQuantity !== accepted.quantity) {
-          if (desired.operationId) await transaction.prepare(sql2(
-            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
-          )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
-          const replacement = await stageDesired(transaction, database, {
-            teamId: accepted.teamId,
-            kind: "seat-convergence",
-            operationId: null,
-            targetProductKey: accepted.productKey,
-            targetQuantity: billableQuantity,
-            effectiveAt: nowSeconds(database)
-          });
-          await enqueueIntent(database, transaction, replacement);
-          enqueued = true;
-          return { settled: true, repairRequired: true };
-        }
-      }
-      await transaction.prepare(sql2("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
-      await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?"
-      )).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
-      if (desired.operationId) await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
-      )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
-      return { settled: true };
-    }
-    if (desired.status === "awaiting-observation") {
-      await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [safeFailureCode] = 'PROVIDER_DRIFT', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-      )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
-      await enqueueIntent(database, transaction, { ...desired, enqueue: true });
-      enqueued = true;
-      return { settled: false, repairRequired: true };
-    }
-    return { settled: false };
-  });
-  if (enqueued) scheduleAfterOwnedTransaction(database);
-  return result;
-}
-async function repairTeamBillingDesiredState(database) {
-  let queued = 0;
-  await inTransaction(database, async (transaction) => {
-    const subscriptions = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [teamId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]"
-    )).all();
-    for (const subscription of subscriptions) {
-      const desired = await desiredForTeam(transaction, subscription.teamId);
-      if (desired) {
-        if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity)) {
-          const product2 = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-          if (product2?.quantity?.kind === "team-members") {
-            const billableQuantity2 = billableTeamMemberQuantity(
-              product2.quantity,
-              await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
-            );
-            if (billableQuantity2 !== Number(subscription.quantity)) {
-              const replacement = await stageDesired(transaction, database, {
-                teamId: subscription.teamId,
-                kind: "seat-convergence",
-                operationId: null,
-                targetProductKey: subscription.productKey,
-                targetQuantity: billableQuantity2,
-                effectiveAt: nowSeconds(database)
-              });
-              await enqueueIntent(database, transaction, replacement);
-              queued += 1;
-              continue;
-            }
-          }
-          if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
-            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
-          )).run(nowIso(database), desired.operationId);
-          await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
-          continue;
-        }
-        await transaction.prepare(transaction.dialect.sql(
-          "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-        )).run(nowIso(database), desired.intentId);
-        await enqueueIntent(database, transaction, { ...desired, enqueue: true });
-        queued += 1;
-        continue;
-      }
-      const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-      if (product?.quantity?.kind !== "team-members") continue;
-      const billableQuantity = billableTeamMemberQuantity(
-        product.quantity,
-        await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
-      );
-      if (billableQuantity === Number(subscription.quantity)) continue;
-      const staged = await stageDesired(transaction, database, {
-        teamId: subscription.teamId,
-        kind: "seat-convergence",
-        operationId: null,
-        targetProductKey: subscription.productKey,
-        targetQuantity: billableQuantity,
-        effectiveAt: nowSeconds(database)
-      });
-      await enqueueIntent(database, transaction, staged);
-      queued += 1;
-    }
-  });
-  if (queued) scheduleAfterOwnedTransaction(database);
-  return { queued };
-}
-var repairTeamBillingDesiredStateAtStartup = repairTeamBillingDesiredState;
-async function settleExhaustedTeamBillingManagementJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
-  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { settled: false };
-  const failureCode = safeCode(safeFailureCode);
-  let replacementScheduled = false;
-  const result = await inTransaction(database, async (transaction) => {
-    const desired = await desiredByIntent(transaction, payload.intentId);
-    if (!desired || desired.activeJobGenerationId !== payload.generationId || desired.status === "awaiting-observation") return { settled: false, stale: true };
-    const lane = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
-    )).get(desired.teamId);
-    if (lane?.claimToken && typeof lane.claimExpiresAt === "string" && lane.claimExpiresAt > nowIso(database)) {
-      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, lane.claimExpiresAt);
-      replacementScheduled = true;
-      return { settled: false, busy: true, replacementScheduled: true, availableAt: lane.claimExpiresAt };
-    }
-    if (failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-      const availableAt = nowIso(database);
-      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, availableAt);
-      replacementScheduled = true;
-      return { settled: false, busy: true, replacementScheduled: true, availableAt };
-    }
-    const settled = await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'failed', [safeFailureCode] = ?, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
-    )).run(failureCode, nowIso(database), desired.intentId, payload.generationId);
-    if (Number(settled?.changes ?? settled?.changesCount ?? 0) !== 1) return { settled: false, stale: true };
-    if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(failureCode, nowIso(database), desired.operationId);
-    return { settled: true };
-  });
-  if (replacementScheduled && !database.__transactionActive) scheduleAfterOwnedTransaction(database);
-  return result;
-}
-async function stageDesired(transaction, database, input) {
-  const existing = await desiredForTeam(transaction, input.teamId);
-  const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && Number(existing.targetQuantity) === input.targetQuantity;
-  if (unchanged) {
-    const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
-    const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
-    if (enqueue) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-    )).run(transfersPlanOwnership ? input.operationId : existing.operationId, nowIso(database), existing.intentId);
-    return {
-      ...existing,
-      operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
-      status: enqueue ? "queued" : existing.status,
-      enqueue
-    };
-  }
-  const intentId = randomUUID6();
-  const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
-  const now2 = nowIso(database);
-  if (existing) {
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
-    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2, input.teamId);
-  } else {
-    await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)"
-    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2);
-  }
-  await ensureLane(transaction, input.teamId, database);
-  return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
-}
-async function enqueueIntent(database, transaction, desired, availableAt) {
-  const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
-  if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-  const generationId = randomUUID6();
-  const activated = await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
-  )).run(generationId, nowIso(database), desired.intentId);
-  if (Number(activated?.changes ?? activated?.changesCount ?? 0) !== 1) throw retryable("TEAM_BILLING_DESIRED_STATE_SUPERSEDED");
-  await callback(
-    transaction,
-    { intentId: desired.intentId, generationId },
-    `team-billing-management:${desired.intentId}:${generationId}`,
-    availableAt
-  );
-  return generationId;
-}
-async function admitPlanTransition(database, transaction, auth, teamId, productKey) {
-  if (!await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey)) throw denied();
-}
-async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey) {
-  if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true) return false;
-  await lockTeamLifecycle(transaction, teamId, denied);
-  const membership = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, auth.userId);
-  if (membership?.role !== "admin") return false;
-  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
-    operation: "plan-transition",
-    teamId,
-    teamRole: "admin",
-    productKey
-  }));
-  return decision?.allow === true;
-}
-async function actorForOperation(transaction, operationId) {
-  if (typeof operationId !== "string") return null;
-  return (await transaction.prepare(transaction.dialect.sql(
-    "SELECT [actorUserId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-transition'"
-  )).get(operationId))?.actorUserId ?? null;
-}
-async function targetQuantity(transaction, teamId, product) {
-  return product.quantity.kind === "team-members" ? billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied)) : Number(product.quantity.value);
-}
-async function currentSubscription(transaction, teamId) {
-  const rows = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]"
-  )).all(teamId);
-  if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
-  return rows[0];
-}
-async function optionalCurrentSubscription(transaction, teamId) {
-  try {
-    return await currentSubscription(transaction, teamId);
-  } catch {
-    return null;
-  }
-}
-async function desiredForTeam(transaction, teamId) {
-  return transaction.prepare(transaction.dialect.sql(
-    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
-  )).get(teamId);
-}
-async function desiredByIntent(transaction, intentId) {
-  return transaction.prepare(transaction.dialect.sql(
-    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?"
-  )).get(intentId);
-}
-async function ensureLane(transaction, teamId, database) {
-  const existing = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [teamId] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
-  )).get(teamId);
-  if (!existing) await transaction.prepare(transaction.dialect.sql(
-    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?)"
-  )).run(teamId, nowIso(database));
-}
-async function claimLane(transaction, teamId, token, database) {
-  await ensureLane(transaction, teamId, database);
-  const now2 = nowIso(database);
-  const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS).toISOString();
-  const result = await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
-  )).run(token, expiresAt, now2, teamId, now2);
-  return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
-}
-async function releaseLane(transaction, teamId, token, database) {
-  const released = await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
-  )).run(nowIso(database), teamId, token);
-  return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
-}
-async function releaseAfterFailure(database, desired, token, classified) {
-  await inTransaction(database, async (transaction) => {
-    await releaseLane(transaction, desired.teamId, token, database);
-    const current2 = await desiredByIntent(transaction, desired.intentId);
-    if (!current2) return;
-    const updated = await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ?"
-    )).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
-    if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current2.operationId) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(classified.code, nowIso(database), current2.operationId);
-  });
-}
-async function attention(transaction, database, desired, code2, deniedResult = false) {
-  const updatedAt = nowIso(database);
-  await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_desired_state] SET [status] = 'attention-required', [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ?"
-  )).run(code2, updatedAt, desired.intentId);
-  if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
-  )).run(code2, updatedAt, desired.operationId);
-  return deniedResult ? { denied: true } : { superseded: true };
-}
-function classifyProviderError(database, error) {
-  const classified = database.classifyTeamBillingProviderError?.(error);
-  return { retryable: classified?.retryable ?? error?.retryable === true, code: safeCode(classified?.code ?? error?.code ?? "PROVIDER_REJECTED") };
-}
-function modeBinding(database, product) {
-  return product.stripe[database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox"];
-}
-function assertCurrentModeAndCatalogue(database, subscription, product) {
-  const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
-  if (!product || subscription.mode !== mode || product.stripe?.[mode]?.priceId !== subscription.providerPriceId) throw attentionRequired();
-}
-function sameQuantityPolicy(left, right) {
-  return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
-}
-function intentIdempotency(database, teamId, intentId) {
-  return `sporades-team-billing-${createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
-}
-function operationIdempotency(database, operationId) {
-  return `sporades-team-billing-operation-${createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
-}
-async function inTransaction(database, callback) {
-  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
-  return database.adapter.withTransaction(callback);
-}
-function nowIso(database) {
-  return database.clock.now().toISOString();
-}
-function nowSeconds(database) {
-  return Math.floor(database.clock.now().getTime() / 1e3);
-}
-function scheduleAfterOwnedTransaction(database) {
-  database.scheduleTeamBillingJobDispatch?.();
-}
-function safeCode(value) {
-  const text3 = String(value ?? "PROVIDER_REJECTED").toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
-  return text3 || "PROVIDER_REJECTED";
-}
-function validProviderAcknowledgement(value) {
-  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "ok\0outcome" && value.ok === true && ["acknowledged", "payment-action-required"].includes(value.outcome);
-}
-function planOperationResult(teamId, requestId, productKey, operation) {
-  if (operation.status === "completed" || operation.status === "superseded") {
-    return Object.freeze({ state: operation.status, teamId, requestId, productKey });
-  }
-  if (operation.status === "failed") {
-    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required" : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode) ? "provider-state-ambiguous" : "unavailable";
-    return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
-  }
-  return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
-}
-function coded(message, code2, retry = false) {
-  return Object.assign(new Error(message), { code: code2, ...retry ? { retryable: true } : {} });
-}
-function denied() {
-  return coded("Team Billing plan transition denied.", "TEAM_BILLING_DENIED");
-}
-function conflict() {
-  return coded("The Team Billing request conflicts with an existing request.", "TEAM_BILLING_REQUEST_CONFLICT");
-}
-function transitionNotRequired() {
-  return coded("This Plan transition does not require managed quantity policy work.", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED");
-}
-function attentionRequired() {
-  return coded("Team Billing provider state requires attention.", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
-}
-function retryable(code2) {
-  return coded("Team Billing provider work should be retried.", code2, true);
-}
-
-// src/team-billing-convergence.ts
-var SUPPORTED = /* @__PURE__ */ new Set([
-  "checkout.session.completed",
-  "checkout.session.expired",
-  "customer.subscription.created",
-  "customer.subscription.updated",
-  "customer.subscription.deleted",
-  "invoice.payment_failed"
-]);
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-var EVENT_ID = /^evt_[A-Za-z0-9_]{1,240}$/;
-var CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
-var CUSTOMER_ID = /^cus_[A-Za-z0-9_]{1,120}$/;
-var SUBSCRIPTION_ID = /^sub_[A-Za-z0-9_]{1,240}$/;
-var ITEM_ID = /^si_[A-Za-z0-9_]{1,240}$/;
-var INVOICE_ID = /^in_[A-Za-z0-9_]{1,240}$/;
-var INVOICE_LINE_ID = /^il_[A-Za-z0-9_]{1,240}$/;
-var PRICE_ID = /^price_[A-Za-z0-9_]{1,249}$/;
-var PRODUCT_ID = /^prod_[A-Za-z0-9_]{1,240}$/;
-var CANONICAL_TIME = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
-var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
-var Quarantine = class extends Error {
-  teamId;
-  reason;
-  rank;
-  objectId;
-  constructor(reason, teamId = null, rank = 50, objectId = null) {
-    super(reason);
-    this.teamId = teamId;
-    this.reason = reason;
-    this.rank = rank;
-    this.objectId = objectId;
-  }
-};
-async function applyVerifiedTeamBillingObservation(database, event) {
-  if (!SUPPORTED.has(event?.type)) return Object.freeze({ applied: false, ignored: true });
-  const transaction = database?.adapter;
-  if (!transaction?.prepare || !database.teamBillingDefinition) return Object.freeze({ applied: false, ignored: true });
-  if (typeof database.teamBillingErasureObjectKey === "function" && boundedObjectId(event?.objectId)) {
-    const erased = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [objectKey] FROM [sporades_team_billing_erasure_object_tombstones] WHERE [objectKey] = ?"
-    )).get(database.teamBillingErasureObjectKey(event.objectId));
-    if (erased) return Object.freeze({ applied: false, erased: true });
-  }
-  const digest3 = safeDigest(event?.raw);
-  const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
-  const occurredAt = canonicalTimestamp(event?.occurredAt);
-  const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
-  const preliminaryTeamId = await inferTeamId(transaction, event);
-  if (eventId && digest3) {
-    const existing = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [payloadDigest], [teamId], [outcome] FROM [sporades_team_billing_observations] WHERE [providerEventId] = ?"
-    )).get(eventId);
-    if (existing) {
-      if (existing.payloadDigest !== digest3) {
-        await transaction.prepare(transaction.dialect.sql(
-          "UPDATE [sporades_team_billing_observations] SET [outcome] = 'quarantined', [safeReason] = 'provider-state-ambiguous' WHERE [providerEventId] = ?"
-        )).run(eventId);
-        return Object.freeze({ applied: false, quarantined: true });
-      }
-      return Object.freeze({ applied: false, duplicate: true });
-    }
-  }
-  try {
-    validateEnvelope2(database, event);
-    let result;
-    if (event.type.startsWith("checkout.session.")) result = await applyCheckout(database, event, expectedMode);
-    else if (event.type.startsWith("customer.subscription.")) result = await applySubscription(database, event, expectedMode);
-    else result = await applyInvoiceFailure(database, event, expectedMode);
-    const outcome = result.outcome ?? "applied";
-    await recordObservation(database, event, digest3, result.teamId, result.objectId, result.rank, outcome, null);
-    return Object.freeze({ applied: outcome === "applied" });
-  } catch (error) {
-    if (!(error instanceof Quarantine)) throw error;
-    const quarantine = error;
-    if (eventId && digest3 && occurredAt) {
-      await recordObservation(database, event, digest3, quarantine.teamId ?? preliminaryTeamId, quarantine.objectId ?? boundedObjectId(event?.objectId), quarantine.rank, "quarantined", quarantine.reason);
-    }
-    return Object.freeze({ applied: false, quarantined: true });
-  }
-}
-function validateEnvelope2(database, event) {
-  const raw = event?.raw;
-  const object2 = raw?.data?.object;
-  if (event?.provider !== "stripe" || !EVENT_ID.test(String(event.providerEventId ?? "")) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode) || !canonicalTimestamp(event.occurredAt) || !isRecord2(raw) || raw.object !== "event" || raw.id !== event.providerEventId || raw.type !== event.type || raw.livemode !== event.livemode || !Number.isInteger(raw.created) || new Date(raw.created * 1e3).toISOString() !== event.occurredAt || !isRecord2(raw.data) || !isRecord2(object2) || event.objectId !== object2.id || !boundedObjectId(object2.id)) {
-    throw new Quarantine("provider-state-ambiguous");
-  }
-}
-async function applyCheckout(database, event, mode) {
-  const tx = database.adapter;
-  const object2 = event.raw.data.object;
-  const operationId = object2.client_reference_id;
-  if (object2.object !== "checkout.session" || object2.mode !== "subscription" || object2.livemode !== event.livemode || !CHECKOUT_ID.test(String(object2.id ?? "")) || !UUID.test(String(operationId ?? "")) || object2.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
-  const operation = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
-  )).get(operationId);
-  if (!operation || operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", operation?.teamId ?? null, 50, object2.id);
-  if (operation.providerObjectId && operation.providerObjectId !== object2.id) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
-  const completed = event.type === "checkout.session.completed";
-  const customerId = completed && CUSTOMER_ID.test(String(object2.customer ?? "")) ? object2.customer : null;
-  const subscriptionId = completed && SUBSCRIPTION_ID.test(String(object2.subscription ?? "")) ? object2.subscription : null;
-  if (completed && (!customerId || !subscriptionId || object2.status !== "complete") || !completed && object2.status !== "expired") {
-    throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
-  }
-  if (operation.providerCustomerId && customerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
-  if (operation.providerSubscriptionId && subscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
-  if (customerId) await bindCustomer(tx, operation.teamId, mode, customerId, event.occurredAt);
-  let outcome = "ignored";
-  const currentRank = operation.status === "completed" ? 2 : operation.status === "expired" ? 1 : 0;
-  const nextRank = completed ? 2 : 1;
-  if (!operation.terminalObservedAt || nextRank > currentRank) {
-    await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [providerCustomerId] = COALESCE(?, [providerCustomerId]), [providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(completed ? "completed" : "expired", object2.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
-    outcome = "applied";
-  }
-  return { teamId: operation.teamId, objectId: object2.id, rank: 10, outcome };
-}
-async function applySubscription(database, event, mode) {
-  const tx = database.adapter;
-  const object2 = event.raw.data.object;
-  const subscriptionId = object2.id;
-  const customerId = object2.customer;
-  const metadataOperationId = object2.metadata?.sporades_team_billing_operation;
-  if (object2.object !== "subscription" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode) {
-    throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
-  }
-  const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
-  )).get(subscriptionId);
-  const operation = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
-  )).get(metadataOperationId) : null;
-  const teamId = existing?.teamId ?? operation?.teamId ?? null;
-  if (!teamId || existing && operation && existing.teamId !== operation.teamId || existing?.mode !== void 0 && existing.mode !== mode || operation?.mode !== void 0 && operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
-  if (operation?.providerCustomerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
-  if (operation?.providerSubscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
-  await assertCustomerAssociation(tx, teamId, mode, customerId);
-  const deleted = event.type === "customer.subscription.deleted";
-  const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId))?.count ?? 0);
-  const normalized = normalizeSubscription(database.teamBillingDefinition, object2, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
-  if (existing?.terminalLatch === 1) {
-    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
-  }
-  if (existing && !deleted && !winsRatchet(
-    normalized.periodStart,
-    event.occurredAt,
-    normalized.rank,
-    existing.currentPeriodStart,
-    existing.lastEventOccurredAt,
-    Number(existing.lastEventRank ?? 0)
-  )) {
-    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
-  }
-  await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
-  if (!existing) {
-    await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )).run(
-      randomUUID7(),
-      teamId,
-      mode,
-      subscriptionId,
-      normalized.priceId,
-      normalized.itemId,
-      normalized.productKey,
-      normalized.quantity,
-      normalized.state,
-      normalized.cancelAtPeriodEnd,
-      normalized.periodStart,
-      normalized.periodEnd,
-      event.occurredAt,
-      event.occurredAt,
-      event.occurredAt,
-      normalized.kind,
-      normalized.rank,
-      deleted ? 1 : 0
-    );
-  } else {
-    await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?"
-    )).run(
-      normalized.priceId,
-      normalized.itemId,
-      normalized.productKey,
-      normalized.quantity,
-      normalized.state,
-      normalized.cancelAtPeriodEnd,
-      normalized.periodStart,
-      normalized.periodEnd,
-      event.occurredAt,
-      event.occurredAt,
-      event.occurredAt,
-      normalized.kind,
-      normalized.rank,
-      deleted ? 1 : 0,
-      subscriptionId
-    );
-  }
-  if (operation) {
-    await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?"
-    )).run(customerId, subscriptionId, event.occurredAt, operation.id);
-  }
-  await settleVerifiedTeamBillingTarget(
-    { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
-    { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt }
-  );
-  return { teamId, objectId: subscriptionId, rank: normalized.rank };
-}
-function normalizeSubscription(definition, object2, operation, mode, eventType, teamId, desiredTeamQuantity) {
-  const items = object2.items?.data;
-  if (!isRecord2(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord2(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  const item = items[0];
-  const priceId = item.price?.id;
-  const productId = typeof item.price?.product === "string" ? item.price.product : item.price?.product?.id;
-  if (item.object !== "subscription_item" || item.subscription !== object2.id || item.price?.recurring?.usage_type !== "licensed" || !ITEM_ID.test(String(item.id ?? "")) || !PRICE_ID.test(String(priceId ?? "")) || !PRODUCT_ID.test(String(productId ?? "")) || !Number.isSafeInteger(item.quantity) || item.quantity < 1) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  const matches2 = Object.entries(definition.catalogue).filter(([, product2]) => {
-    const binding = product2.stripe?.[mode];
-    return binding?.priceId === priceId && (!binding.productId || binding.productId === productId);
-  });
-  if (matches2.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  const [productKey, product] = matches2[0];
-  if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
-    throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  }
-  if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1 || billableTeamMemberQuantity(product.quantity, desiredTeamQuantity) !== item.quantity)) {
-    throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  }
-  const periodStart = unixTimestamp(item.current_period_start);
-  const periodEnd = unixTimestamp(item.current_period_end);
-  if (!periodStart || !periodEnd || periodEnd <= periodStart) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  const cancelAtPeriodEnd = object2.cancel_at_period_end;
-  const cancelAt = object2.cancel_at;
-  if (typeof cancelAtPeriodEnd !== "boolean" || cancelAt !== void 0 && cancelAt !== null && (!Number.isSafeInteger(cancelAt) || cancelAt < 1 || cancelAt !== item.current_period_end)) {
-    throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  }
-  const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
-  const deleted = eventType === "customer.subscription.deleted";
-  let state;
-  if (deleted) {
-    if (object2.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-    state = "cancelled";
-  } else if (object2.status === "active") {
-    state = "active";
-  } else if (object2.status === "past_due" || object2.status === "unpaid") {
-    state = "past-due";
-  } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  const semantics = teamBillingSubscriptionSemantics(eventType, state, cancel);
-  if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
-  return {
-    productKey,
-    priceId,
-    itemId: item.id,
-    quantity: item.quantity,
-    periodStart,
-    periodEnd,
-    state,
-    cancelAtPeriodEnd: cancel ? 1 : 0,
-    kind: semantics.kind,
-    rank: semantics.rank
-  };
-}
-async function applyInvoiceFailure(database, event, mode) {
-  const tx = database.adapter;
-  const object2 = event.raw.data.object;
-  const subscriptionId = object2.parent?.subscription_details?.subscription;
-  const customerId = object2.customer;
-  if (object2.object !== "invoice" || !INVOICE_ID.test(String(object2.id ?? "")) || object2.parent?.type !== "subscription_details" || !isRecord2(object2.parent?.subscription_details) || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode || object2.status !== "open" || object2.paid !== false || !Number.isInteger(object2.attempt_count) || object2.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object2.id));
-  const subscription = await tx.prepare(tx.dialect.sql(
-    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
-  )).get(subscriptionId);
-  if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object2.id));
-  await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
-  const lines = object2.lines?.data;
-  if (!isRecord2(object2.lines) || object2.lines.object !== "list" || object2.lines.has_more !== false || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
-  const line = lines[0];
-  const details = line?.parent?.subscription_item_details;
-  const pricing = line?.pricing?.price_details;
-  const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
-  const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
-  if (!binding || binding.priceId !== subscription.providerPriceId || !isRecord2(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object2.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
-  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object2.id, rank: RANK["past-due"], outcome: "ignored" };
-  let outcome = "ignored";
-  if (winsRatchet(
-    subscription.currentPeriodStart,
-    event.occurredAt,
-    RANK["past-due"],
-    subscription.currentPeriodStart,
-    subscription.lastEventOccurredAt,
-    Number(subscription.lastEventRank ?? 0)
-  )) {
-    await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_subscriptions] SET [state] = 'past-due', [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'invoice-failed', [lastEventRank] = ? WHERE [providerSubscriptionId] = ?"
-    )).run(event.occurredAt, event.occurredAt, event.occurredAt, RANK["past-due"], subscriptionId);
-    outcome = "applied";
-  }
-  return { teamId: subscription.teamId, objectId: object2.id, rank: RANK["past-due"], outcome };
-}
-async function inferTeamId(tx, event) {
-  const object2 = event?.raw?.data?.object;
-  const operationId = object2?.client_reference_id ?? object2?.metadata?.sporades_team_billing_operation;
-  if (UUID.test(String(operationId ?? ""))) {
-    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operationId);
-    if (row?.teamId) return row.teamId;
-  }
-  const subscriptionId = object2?.object === "subscription" ? object2.id : object2?.parent?.subscription_details?.subscription;
-  if (SUBSCRIPTION_ID.test(String(subscriptionId ?? ""))) {
-    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
-    if (row?.teamId) return row.teamId;
-  }
-  return null;
-}
-async function assertCustomerAssociation(tx, teamId, mode, customerId) {
-  const sql2 = tx.dialect.sql;
-  const byTeam = await tx.prepare(sql2("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
-  const byProvider = await tx.prepare(sql2("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
-  if (byTeam && (byTeam.mode !== mode || byTeam.providerCustomerId !== customerId) || byProvider && (byProvider.teamId !== teamId || byProvider.mode !== mode)) throw new Quarantine("provider-state-ambiguous", teamId);
-}
-async function bindCustomer(tx, teamId, mode, customerId, now2) {
-  await assertCustomerAssociation(tx, teamId, mode, customerId);
-  await tx.prepare(tx.dialect.sql(
-    "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT ([teamId]) DO UPDATE SET [updatedAt] = excluded.[updatedAt]"
-  )).run(teamId, mode, customerId, now2, now2);
-}
-async function recordObservation(database, event, digest3, teamId, objectId, rank, outcome, safeReason) {
-  await database.adapter.prepare(database.adapter.dialect.sql(
-    "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
-  )).run(
-    randomUUID7(),
-    teamId,
-    event.livemode ? "live" : "sandbox",
-    event.providerEventId,
-    objectId,
-    digest3,
-    event.occurredAt,
-    database.clock?.now?.().toISOString?.() ?? event.occurredAt,
-    event.type,
-    rank,
-    outcome,
-    safeReason
-  );
-}
-function winsRatchet(periodStart, occurredAt, rank, previousPeriodStart, previousAt, previousRank) {
-  if (!canonicalTimestamp(previousPeriodStart)) return true;
-  if (periodStart !== previousPeriodStart) return periodStart > previousPeriodStart;
-  if (!canonicalTimestamp(previousAt)) return true;
-  return occurredAt > previousAt || occurredAt === previousAt && rank > previousRank;
-}
-function unixTimestamp(value) {
-  if (!Number.isInteger(value) || value < 1) return null;
-  const date = new Date(value * 1e3);
-  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
-}
-function canonicalTimestamp(value) {
-  if (typeof value !== "string" || !CANONICAL_TIME.test(value)) return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
-}
-function boundedObjectId(value) {
-  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(value) ? value : null;
-}
-function safeDigest(raw) {
-  try {
-    return createHash9("sha256").update(JSON.stringify(raw)).digest("hex");
-  } catch {
-    return null;
-  }
-}
-function isRecord2(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-// src/team-billing-runtime.ts
-var TEAM_BILLING_PRODUCT_MAX = 32;
-var TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
-var TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
-var TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
-var TEAM_BILLING_PORTAL_JOB = "_sporades.team-billing-portal";
-var TEAM_BILLING_PORTAL_EXPIRY_JOB = "_sporades.team-billing-portal-expiry";
-var TEAM_BILLING_PORTAL_MAX_ATTEMPTS = 4;
-var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
-var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
-var PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
-var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
-var PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
-var PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
-var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
-var FIXED_QUANTITY_MAX = 999999;
-var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function createTeamBillingTables(adapter) {
-  const sql2 = adapter.dialect.sql;
-  return chainMaybePromise([
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    )),
-    () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
-    )),
-    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
-    ...["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
-    ...["lastEventRank", "terminalLatch"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
-    ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
-    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
-    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT")
-  ]);
-}
-function normalizeTeamBillingDefinition(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout", "portal"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
-    throw invalidDeclaration();
-  }
-  const entries = Object.entries(value.catalogue);
-  if (entries.length === 0 || entries.length > TEAM_BILLING_PRODUCT_MAX) throw invalidDeclaration();
-  const prices = /* @__PURE__ */ new Set();
-  const catalogue = {};
-  for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
-    if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product) || Object.keys(product).some((key) => !["quantity", "stripe"].includes(key))) throw invalidDeclaration();
-    const quantity = normalizeQuantity(product.quantity);
-    const stripe = product.stripe;
-    if (!stripe || typeof stripe !== "object" || Array.isArray(stripe) || Object.keys(stripe).sort().join(",") !== "live,sandbox") throw invalidDeclaration();
-    const sandbox = normalizeModeBinding(stripe.sandbox);
-    const live = normalizeModeBinding(stripe.live);
-    if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId) throw invalidDeclaration();
-    prices.add(sandbox.priceId);
-    prices.add(live.priceId);
-    catalogue[productKey] = Object.freeze({
-      quantity,
-      stripe: Object.freeze({ sandbox, live })
-    });
-  }
-  const checkout = value.checkout === void 0 ? null : normalizeCheckoutDefinition(value.checkout);
-  const portal = value.portal === void 0 ? null : normalizePortalDefinition(value.portal, catalogue);
-  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout, portal });
-}
-function normalizePortalDefinition(value, catalogue) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
-  const returnPath = canonicalReturnPath(value.returnPath);
-  const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
-  if (!returnPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
-  const configurationPolicies = /* @__PURE__ */ new Map();
-  const configurationModes = /* @__PURE__ */ new Map();
-  for (const product of Object.values(catalogue)) {
-    const policy = teamBillingQuantityPolicyFingerprint(product.quantity);
-    for (const mode of ["sandbox", "live"]) {
-      const binding = product.stripe[mode];
-      if (!binding.productId || !binding.portalConfigurationId) throw invalidDeclaration();
-      const existingPolicy = configurationPolicies.get(`${mode}:${binding.portalConfigurationId}`);
-      if (existingPolicy && existingPolicy !== policy) throw invalidDeclaration();
-      configurationPolicies.set(`${mode}:${binding.portalConfigurationId}`, policy);
-      const existingMode = configurationModes.get(binding.portalConfigurationId);
-      if (existingMode && existingMode !== mode) throw invalidDeclaration();
-      configurationModes.set(binding.portalConfigurationId, mode);
-    }
-  }
-  return Object.freeze({ returnPath, continuationTtlSeconds });
-}
-function normalizeCheckoutDefinition(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["successPath", "cancelPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
-  const successPath = canonicalReturnPath(value.successPath);
-  const cancelPath = canonicalReturnPath(value.cancelPath);
-  const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
-  if (!successPath || !cancelPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
-  return Object.freeze({ successPath, cancelPath, continuationTtlSeconds });
-}
-function normalizeQuantity(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
-  if (value.kind === "team-members" && Object.keys(value).every((key) => key === "kind" || key === "minimum") && (value.minimum === void 0 || Number.isSafeInteger(value.minimum) && value.minimum >= 1 && value.minimum <= FIXED_QUANTITY_MAX)) {
-    return Object.freeze({ kind: "team-members", ...value.minimum === void 0 ? {} : { minimum: value.minimum } });
-  }
-  if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value" && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
-    return Object.freeze({ kind: "fixed", value: value.value });
-  }
-  throw invalidDeclaration();
-}
-function normalizeModeBinding(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["priceId", "productId", "portalConfigurationId"].includes(key)) || typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId) || value.productId !== void 0 && (typeof value.productId !== "string" || !PRODUCT_ID_PATTERN.test(value.productId)) || value.portalConfigurationId !== void 0 && (typeof value.portalConfigurationId !== "string" || !PORTAL_CONFIGURATION_ID_PATTERN.test(value.portalConfigurationId))) throw invalidDeclaration();
-  return Object.freeze({ priceId: value.priceId, ...value.productId ? { productId: value.productId } : {}, ...value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {} });
-}
-function invalidDeclaration() {
-  return commandError(
-    "Invalid Team Billing declaration.",
-    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.",
-    "INVALID_TEAM_BILLING_DECLARATION"
-  );
-}
-async function readCurrentUserTeamBilling(database, auth, teamId) {
-  requireAuth({ auth }, { linked: true });
-  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
-  return database.adapter.withTransaction(async (transaction) => {
-    await admitTeamBillingReader(database, transaction, auth, teamId);
-    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
-  });
-}
-async function admitTeamBillingReader(database, transaction, auth, teamId) {
-  await lockTeamLifecycle(transaction, teamId, teamBillingDenied);
-  const membership = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, auth.userId);
-  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
-  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
-    operation: "read",
-    teamId,
-    teamRole: membership.role
-  }));
-  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
-}
-async function readCapsuleTeamBillingProjection(database, transaction, auth, teamId) {
-  requireAuth({ auth }, { linked: true });
-  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
-  const membership = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, auth.userId);
-  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
-  return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
-}
-async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
-  requireAuth({ auth }, { linked: true });
-  const definition = database.teamBillingDefinition;
-  if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
-  let enqueued = false;
-  const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
-    await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql2 = transaction.dialect.sql;
-    const existing = await transaction.prepare(sql2(
-      "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
-    )).get(teamId, requestId);
-    if (existing) {
-      if (existing.productKey !== productKey) throw checkoutConflict();
-      return checkoutOperationResult(database, transaction, teamId, requestId, existing);
-    }
-    const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
-    const now2 = database.clock.now().toISOString();
-    const active = await transaction.prepare(sql2(
-      "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
-    )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
-      await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
-      )).run(now2, active.id);
-    } else if (active) {
-      throw checkoutActive();
-    }
-    const operationId = randomUUID8();
-    const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
-    const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
-    await transaction.prepare(sql2(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
-    )).run(now2, teamId);
-    await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
-    if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
-    await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
-    enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
-  });
-  if (enqueued) database.scheduleTeamBillingJobDispatch?.();
-  return result;
-}
-async function startTeamBillingPortal(database, auth, teamId, requestId) {
-  requireAuth({ auth }, { linked: true });
-  const definition = database.teamBillingDefinition;
-  if (!definition?.portal || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? ""))) throw teamBillingDenied();
-  let enqueued = false;
-  const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
-    await assertTeamBillingErasureInactive(database, transaction, teamId);
-    const sql2 = transaction.dialect.sql;
-    const existing = await transaction.prepare(sql2(
-      "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
-    )).get(teamId, requestId);
-    if (existing) {
-      if (existing.kind !== "portal") throw checkoutConflict();
-      return portalOperationResult(database, transaction, teamId, requestId, existing);
-    }
-    const desired = await portalDesiredState(database, transaction, teamId);
-    const now2 = database.clock.now().toISOString();
-    const active = await transaction.prepare(sql2(
-      "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'portal' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
-    )).get(teamId);
-    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
-      await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
-      )).run(now2, active.id);
-    } else if (active) throw checkoutActive();
-    const operationId = randomUUID8();
-    const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
-    await transaction.prepare(sql2(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
-    )).run(now2, teamId);
-    await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId], [returnPath]) VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
-    if (typeof database.enqueueTeamBillingPortalJob !== "function") throw checkoutUnavailable();
-    await database.enqueueTeamBillingPortalJob(transaction, { operationId }, `team-billing-portal:${operationId}`);
-    enqueued = true;
-    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
-  });
-  if (enqueued) database.scheduleTeamBillingJobDispatch?.();
-  return result;
-}
-async function withTeamBillingAdmissionTransaction(database, callback) {
-  for (let attempt = 0; ; attempt += 1) {
-    try {
-      return await database.adapter.withTransaction(callback);
-    } catch (error) {
-      if (!transientSqliteLock(error) || attempt >= 5) throw error;
-      await new Promise((resolve2) => setTimeout(resolve2, 5 * 2 ** attempt));
-    }
-  }
-}
-function transientSqliteLock(error) {
-  return error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
-}
-async function performTeamBillingCheckout(database, context2, payload, attempt = 1) {
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
-  if (!operationId) throw checkoutUnavailable();
-  let providerInput = null;
-  let providerLane = null;
-  try {
-    providerInput = await database.adapter.withTransaction(async (transaction) => {
-      const sql2 = transaction.dialect.sql;
-      const operation = await transaction.prepare(sql2(
-        "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
-      )).get(operationId);
-      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
-      await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
-      const actor = await transaction.prepare(sql2(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
-      )).get(operation.actorUserId);
-      if (!actor) throw teamBillingDenied();
-      const auth = {
-        userId: actor.id,
-        displayName: actor.displayName,
-        email: actor.email,
-        picture: actor.picture,
-        isAuthenticated: Boolean(actor.isAuthenticated),
-        isGuest: Boolean(actor.isGuest),
-        provider: actor.provider,
-        ...actor.userKind === "service" ? { userKind: "service" } : {}
-      };
-      await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
-      const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
-      if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
-        await transaction.prepare(sql2(
-          "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
-        )).run(database.clock.now().toISOString(), operationId);
-        return null;
-      }
-      if (!Number.isSafeInteger(operation.providerExpiresAt) || operation.providerExpiresAt <= Math.floor(database.clock.now().getTime() / 1e3)) {
-        await transaction.prepare(sql2(
-          "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? WHERE [id] = ?"
-        )).run(database.clock.now().toISOString(), operationId);
-        return null;
-      }
-      const customer = await transaction.prepare(sql2(
-        "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
-      )).get(operation.teamId);
-      if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
-      const attemptedAt = database.clock.now().toISOString();
-      const claimToken = randomUUID8();
-      const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
-      await transaction.prepare(sql2(
-        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
-      )).run(operation.teamId, attemptedAt);
-      const claimed = await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
-      )).run(claimToken, claimExpiresAt, attemptedAt, operation.teamId, attemptedAt);
-      if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw providerLaneBusy();
-      providerLane = { teamId: operation.teamId, claimToken };
-      await transaction.prepare(sql2(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
-      )).run(attemptedAt, attemptedAt, operationId);
-      return {
-        operationId,
-        teamId: operation.teamId,
-        productKey: operation.productKey,
-        mode: "subscription",
-        priceId: desired.priceId,
-        quantity: desired.quantity,
-        successPath: database.teamBillingDefinition.checkout.successPath,
-        cancelPath: database.teamBillingDefinition.checkout.cancelPath,
-        idempotencyKey: operation.idempotencyKey,
-        businessReference: operationId,
-        providerExpiresAt: operation.providerExpiresAt,
-        ...customer ? { customerId: customer.providerCustomerId } : {}
-      };
-    });
-  } catch (error) {
-    if (error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""))) {
-      error.retryable = true;
-      throw error;
-    }
-    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") throw error;
-    await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
-    const failure2 = checkoutUnavailable();
-    failure2.retryable = false;
-    throw failure2;
-  }
-  if (!providerInput) return null;
-  try {
-    if (typeof database.createStripeTeamBillingProvider !== "function") throw checkoutUnavailable();
-    const provider = database.createStripeTeamBillingProvider({
-      enabled: true,
-      config: database.paymentsConfig.stripe,
-      env: database.serverEnv,
-      signal: context2?.signal,
-      ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
-    });
-    const result = await provider.create(providerInput);
-    if (!result?.ok || !validCheckoutContinuation(result.url, result.sessionId)) throw checkoutUnavailable();
-    const now2 = database.clock.now();
-    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3).toISOString();
-    let expiryEnqueued = false;
-    const settled = await database.adapter.withTransaction(async (transaction) => {
-      const outcome = await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
-      )).run(result.sessionId, result.url, expiresAt, now2.toISOString(), operationId);
-      if (Number(outcome?.changes ?? 0) === 1) {
-        if (typeof database.enqueueTeamBillingCheckoutExpiryJob !== "function") throw checkoutUnavailable();
-        await database.enqueueTeamBillingCheckoutExpiryJob(transaction, { operationId }, `team-billing-checkout-expiry:${operationId}`, expiresAt);
-        expiryEnqueued = true;
-      }
-      return outcome;
-    });
-    if (expiryEnqueued) database.scheduleTeamBillingJobDispatch?.();
-    if (Number(settled?.changes ?? 0) !== 1) {
-      const terminal = await database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [status], [providerObjectId] FROM [sporades_team_billing_operations] WHERE [id] = ?"
-      )).get(operationId);
-      if (!["completed", "expired"].includes(terminal?.status) || terminal.providerObjectId !== result.sessionId) throw checkoutUnavailable();
-      return { observed: true };
-    }
-    return { ready: true };
-  } catch (error) {
-    const retryable3 = error?.retryable !== false;
-    const willRetry = retryable3 && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
-    await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
-    if (!willRetry) error.retryable = false;
-    throw error;
-  } finally {
-    if (providerLane) {
-      await database.adapter.prepare(database.adapter.dialect.sql(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
-      )).run(database.clock.now().toISOString(), providerLane.teamId, providerLane.claimToken);
-    }
-  }
-}
-async function performTeamBillingPortal(database, context2, payload, attempt = 1) {
-  const operationId = exactOperationId(payload);
-  if (!operationId) throw checkoutUnavailable();
-  let providerInput = null;
-  try {
-    providerInput = await database.adapter.withTransaction(async (transaction) => {
-      const operation = await readPortalOperation(transaction, operationId);
-      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
-      const desired = await reauthorizePortalOperation(database, transaction, operation);
-      if (!portalOperationMatches(operation, desired)) {
-        await supersedeBillingOperation(database, transaction, operationId);
-        return null;
-      }
-      const now2 = database.clock.now().toISOString();
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
-      )).run(now2, now2, operationId);
-      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
-    });
-  } catch (error) {
-    if (transientSqliteLock(error)) {
-      error.retryable = true;
-      throw error;
-    }
-    await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
-    const failure2 = checkoutUnavailable();
-    failure2.retryable = false;
-    throw failure2;
-  }
-  if (!providerInput) return null;
-  try {
-    if (typeof database.createStripeTeamBillingProvider !== "function") throw checkoutUnavailable();
-    const provider = database.createStripeTeamBillingProvider({
-      enabled: true,
-      config: database.paymentsConfig.stripe,
-      env: database.serverEnv,
-      signal: context2?.signal,
-      ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
-    });
-    const attestation = await provider.retrievePortalConfiguration(providerInput);
-    if (!attestation || typeof attestation !== "object" || Array.isArray(attestation) || Object.keys(attestation).join(",") !== "ok" || attestation.ok !== true) throw checkoutUnavailable();
-    let createInput = null;
-    try {
-      createInput = await database.adapter.withTransaction(async (transaction) => {
-        const operation = await readPortalOperation(transaction, operationId);
-        if (!operation || !["running", "retrying"].includes(operation.status)) return null;
-        const desired = await reauthorizePortalOperation(database, transaction, operation);
-        if (!portalOperationMatches(operation, desired)) {
-          await supersedeBillingOperation(database, transaction, operationId);
-          return null;
-        }
-        return {
-          customerId: desired.customerId,
-          configurationId: desired.configurationId,
-          returnPath: desired.returnPath,
-          idempotencyKey: operation.idempotencyKey
-        };
-      });
-    } catch (error) {
-      if (transientSqliteLock(error)) {
-        error.retryable = true;
-        throw error;
-      }
-      await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
-      const failure2 = checkoutUnavailable();
-      failure2.retryable = false;
-      throw failure2;
-    }
-    if (!createInput) return null;
-    const response = await provider.createPortal(createInput);
-    if (!response?.ok || !validPortalContinuation(response.url, response.sessionId)) throw checkoutUnavailable();
-    const now2 = database.clock.now();
-    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.portal.continuationTtlSeconds * 1e3).toISOString();
-    let expiryEnqueued = false;
-    const settled = await database.adapter.withTransaction(async (transaction) => {
-      const outcome = await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
-      )).run(response.sessionId, response.url, expiresAt, now2.toISOString(), operationId);
-      if (Number(outcome?.changes ?? 0) === 1) {
-        if (typeof database.enqueueTeamBillingPortalExpiryJob !== "function") throw checkoutUnavailable();
-        await database.enqueueTeamBillingPortalExpiryJob(transaction, { operationId }, `team-billing-portal-expiry:${operationId}`, expiresAt);
-        expiryEnqueued = true;
-      }
-      return outcome;
-    });
-    if (expiryEnqueued) database.scheduleTeamBillingJobDispatch?.();
-    if (Number(settled?.changes ?? 0) !== 1) throw checkoutUnavailable();
-    return { ready: true };
-  } catch (error) {
-    const retryable3 = error?.retryable !== false;
-    const willRetry = retryable3 && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
-    await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
-    if (!willRetry) error.retryable = false;
-    throw error;
-  }
-}
-async function expireTeamBillingCheckout(database, _context, payload) {
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
-  if (!operationId) throw checkoutUnavailable();
-  const now2 = database.clock.now().toISOString();
-  await database.adapter.prepare(database.adapter.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
-  )).run(now2, operationId, now2);
-  return null;
-}
-async function expireTeamBillingPortal(database, _context, payload) {
-  const operationId = exactOperationId(payload);
-  if (!operationId) throw checkoutUnavailable();
-  const now2 = database.clock.now().toISOString();
-  await database.adapter.prepare(database.adapter.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = 'portal' AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
-  )).run(now2, operationId, now2);
-  return null;
-}
-async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, payloadJson, now2) {
-  const kind = handler === TEAM_BILLING_CHECKOUT_JOB ? "checkout" : handler === TEAM_BILLING_PORTAL_JOB ? "portal" : null;
-  if (!kind || typeof payloadJson !== "string") return;
-  let payload;
-  try {
-    payload = JSON.parse(payloadJson);
-  } catch {
-    return;
-  }
-  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
-  if (!operationId) return;
-  await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = ? AND [status] IN ('queued', 'running', 'retrying')"
-  )).run(now2, operationId, kind);
-}
-async function admitTeamBillingActor(database, transaction, auth, input) {
-  requireAuth({ auth }, { linked: true });
-  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
-  const sql2 = transaction.dialect.sql;
-  const membership = await transaction.prepare(sql2(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(input.teamId, auth.userId);
-  if (membership?.role !== "admin") throw teamBillingDenied();
-  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
-    operation: input.operation,
-    teamId: input.teamId,
-    teamRole: "admin",
-    ...input.productKey === void 0 ? {} : { productKey: input.productKey }
-  }));
-  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
-  return Object.freeze({ admitted: true });
-}
-function teamBillingErasureKey(database, teamId) {
-  return createHash10("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
-}
-function teamBillingErasureObjectKey(database, providerObjectId) {
-  return createHash10("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
-}
-async function assertTeamBillingErasureInactive(database, transaction, teamId) {
-  const active = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [teamId] FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?"
-  )).get(teamId);
-  const erased = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
-  )).get(teamBillingErasureKey(database, teamId));
-  if (active || erased) throw teamBillingDenied();
-}
-async function safeTeamBillingProjection(transaction, definition, teamId) {
-  const sql2 = transaction.dialect.sql;
-  const desired = await transaction.prepare(sql2(
-    "SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
-  )).get(teamId);
-  if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
-    const requestedAt = canonicalTimestamp2(desired.createdAt);
-    if (!requestedAt) return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-    return Object.freeze({
-      state: "pending",
-      teamId,
-      operation: desired.kind === "plan-transition" ? "plan-transition" : "reconciliation",
-      ...typeof desired.targetProductKey === "string" && definition.catalogue[desired.targetProductKey] ? { productKey: desired.targetProductKey } : {},
-      requestedAt
-    });
-  }
-  if (desired?.kind === "seat-convergence" && ["failed", "attention-required"].includes(desired.status)) {
-    return Object.freeze({
-      state: "attention-required",
-      teamId,
-      reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous"
-    });
-  }
-  const operation = await transaction.prepare(sql2(
-    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
-  )).get(teamId);
-  if (operation) {
-    const requestedAt = canonicalTimestamp2(operation.createdAt);
-    if (!requestedAt) {
-      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-    }
-    const kind = ["checkout", "portal", "plan-transition", "erasure"].includes(operation.kind) ? operation.kind : "reconciliation";
-    return Object.freeze({
-      state: "pending",
-      teamId,
-      operation: kind,
-      ...typeof operation.productKey === "string" && definition.catalogue[operation.productKey] ? { productKey: operation.productKey } : {},
-      requestedAt
-    });
-  }
-  const currentRows = await transaction.prepare(sql2(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
-  )).all(teamId);
-  if (currentRows.length > 1) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-  }
-  const row = currentRows[0] ?? await transaction.prepare(sql2(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
-  )).get(teamId);
-  const quarantine = await transaction.prepare(sql2(
-    "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
-  )).get(teamId);
-  if (quarantine && (!row || !canonicalTimestamp2(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt || quarantine.observedAt === row.lastEventOccurredAt && Number(quarantine.eventRank ?? 0) >= Number(row.lastEventRank ?? 0))) {
-    return Object.freeze({
-      state: "attention-required",
-      teamId,
-      reason: quarantine.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
-    });
-  }
-  if (!row) return Object.freeze({ state: "inactive", teamId });
-  const product = definition.catalogue[row.productKey];
-  const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
-  const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
-  if (!product || !binding || row.providerPriceId !== binding.priceId || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind === "team-members" && quantity < (product.quantity.minimum ?? 1)) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
-  }
-  if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-  }
-  const occurredAt = canonicalTimestamp2(row.lastEventOccurredAt);
-  const semantics = teamBillingStoredSubscriptionSemantics(row.state, row.cancelAtPeriodEnd === 1);
-  if (!occurredAt || !semantics || row.lastEventKind !== semantics.kind || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
-    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-  }
-  const common = { teamId, productKey: row.productKey, quantity };
-  if (row.state === "active") {
-    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
-    if (!currentPeriodEnd) {
-      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-    }
-    return Object.freeze(row.cancelAtPeriodEnd === 1 ? { state: "cancelling", ...common, endsAt: currentPeriodEnd } : { state: "active", ...common, renewsAt: currentPeriodEnd });
-  }
-  if (row.state === "past-due") {
-    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
-    return Object.freeze(currentPeriodEnd ? { state: "past-due", ...common, currentPeriodEnd } : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-  }
-  if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
-  return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
-}
-function createPrivilegedTeamBillingApi(database, contextGetter) {
-  return Object.freeze({
-    async listQuarantines(options = {}) {
-      const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
-      assertActive();
-      if (!isRecord3(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
-      const limit = options.limit ?? 50;
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalidTeamBillingInspection();
-      if (!database.teamBillingDefinition) return Object.freeze({ quarantines: Object.freeze([]) });
-      let rows;
-      try {
-        rows = await database.adapter.prepare(database.adapter.dialect.sql(
-          "SELECT [teamId], [mode], [eventType], [observedAt], [safeReason] FROM [sporades_team_billing_observations] WHERE [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [id] DESC LIMIT ?"
-        )).all(limit);
-      } catch (error) {
-        assertActive();
-        throw error;
-      }
-      assertActive();
-      return Object.freeze({ quarantines: Object.freeze(rows.map((row) => Object.freeze({
-        teamId: typeof row.teamId === "string" ? row.teamId : null,
-        associatedTeam: typeof row.teamId === "string",
-        mode: row.mode === "live" ? "live" : "sandbox",
-        eventType: typeof row.eventType === "string" ? row.eventType : "unknown",
-        occurredAt: canonicalTimestamp2(row.observedAt),
-        reason: row.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
-      }))) });
-    }
-  });
-}
-function assertActivePrivilegedTeamBillingAccess(contextGetter) {
-  const context2 = contextGetter?.();
-  if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
-  throw commandError(
-    "Privileged Team Billing access is no longer active.",
-    "Start a new ctx.privileged.run callback before inspecting Team Billing quarantine.",
-    "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE"
-  );
-}
-function invalidTeamBillingInspection() {
-  return commandError(
-    "Invalid Team Billing inspection options.",
-    "Pass only an integer limit from 1 through 100.",
-    "INVALID_TEAM_BILLING_INSPECTION"
-  );
-}
-function isRecord3(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-function canonicalTimestamp2(value) {
-  if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
-}
-function canonicalReturnPath(value) {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) return null;
-  try {
-    const pathname = new URL(value, "https://sporades.invalid").pathname;
-    return pathname === value ? value : null;
-  } catch {
-    return null;
-  }
-}
-async function checkoutDesiredState(database, transaction, teamId, productKey) {
-  const product = database.teamBillingDefinition.catalogue[productKey];
-  const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
-  const quantity = product.quantity.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product.quantity, Number((await transaction.prepare(transaction.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId))?.count ?? 0));
-  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
-  return { mode, quantity, priceId: product.stripe[mode].priceId };
-}
-async function portalDesiredState(database, transaction, teamId) {
-  const sql2 = transaction.dialect.sql;
-  const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
-  const customer = await transaction.prepare(sql2(
-    "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
-  )).get(teamId);
-  const subscriptions = await transaction.prepare(sql2(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC"
-  )).all(teamId);
-  const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
-  const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
-  const binding = product?.stripe?.[mode];
-  const expectedQuantity = product?.quantity?.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql2(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId))?.count ?? 0));
-  if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? "")) || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state) || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity) throw checkoutUnavailable();
-  const grouped = /* @__PURE__ */ new Map();
-  for (const candidate of Object.values(database.teamBillingDefinition.catalogue)) {
-    const candidateBinding = candidate.stripe[mode];
-    if (candidateBinding.portalConfigurationId !== binding.portalConfigurationId) continue;
-    const prices = grouped.get(candidateBinding.productId) ?? /* @__PURE__ */ new Set();
-    prices.add(candidateBinding.priceId);
-    grouped.set(candidateBinding.productId, prices);
-  }
-  const expectedProducts = [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([productId, prices]) => ({ productId, priceIds: [...prices].sort() }));
-  return {
-    mode,
-    productKey: subscription.productKey,
-    quantity: subscription.quantity,
-    customerId: customer.providerCustomerId,
-    configurationId: binding.portalConfigurationId,
-    returnPath: database.teamBillingDefinition.portal.returnPath,
-    expectedProducts
-  };
-}
-async function readPortalOperation(transaction, operationId) {
-  return transaction.prepare(transaction.dialect.sql(
-    "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerCustomerId], [configurationId], [returnPath] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'portal'"
-  )).get(operationId);
-}
-async function reauthorizePortalOperation(database, transaction, operation) {
-  const actor = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
-  )).get(operation.actorUserId);
-  if (!actor) throw teamBillingDenied();
-  const auth = {
-    userId: actor.id,
-    displayName: actor.displayName,
-    email: actor.email,
-    picture: actor.picture,
-    isAuthenticated: Boolean(actor.isAuthenticated),
-    isGuest: Boolean(actor.isGuest),
-    provider: actor.provider,
-    ...actor.userKind === "service" ? { userKind: "service" } : {}
-  };
-  await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId: operation.teamId });
-  return portalDesiredState(database, transaction, operation.teamId);
-}
-function portalOperationMatches(operation, desired) {
-  return operation.mode === desired.mode && operation.productKey === desired.productKey && operation.quantity === desired.quantity && operation.providerCustomerId === desired.customerId && operation.configurationId === desired.configurationId && operation.returnPath === desired.returnPath;
-}
-async function supersedeBillingOperation(database, transaction, operationId) {
-  await transaction.prepare(transaction.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
-  )).run(database.clock.now().toISOString(), operationId);
-}
-async function checkoutOperationResult(database, transaction, teamId, requestId, operation) {
-  const common = { teamId, requestId, productKey: operation.productKey };
-  if (["queued", "running", "retrying"].includes(operation.status)) {
-    const requestedAt = canonicalTimestamp2(operation.createdAt);
-    return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
-  }
-  if (operation.status === "ready") {
-    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
-    if (expiresAt && expiresAt > database.clock.now().toISOString() && validCheckoutContinuation(operation.continuationUrl, operation.providerObjectId)) {
-      return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
-    }
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [status] = 'ready'"
-    )).run(database.clock.now().toISOString(), teamId, requestId);
-    return Object.freeze({ state: "expired", ...common });
-  }
-  if (operation.status === "expired") return Object.freeze({ state: "expired", ...common });
-  if (operation.status === "superseded") return Object.freeze({ state: "superseded", ...common });
-  if (operation.status === "completed") return Object.freeze({ state: "completed", ...common });
-  return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
-}
-function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
-  return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
-}
-function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
-  const digest3 = createHash10("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
-  return `sporades:team-${kind}:${digest3}`;
-}
-function exactOperationId(payload) {
-  return payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
-}
-function validCheckoutContinuation(urlValue, sessionIdValue) {
-  if (typeof sessionIdValue !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
-  try {
-    const url = new URL(urlValue);
-    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && (url.pathname === `/c/pay/${sessionIdValue}` || url.pathname === `/pay/${sessionIdValue}`) && !url.username && !url.password && !url.port;
-  } catch {
-    return false;
-  }
-}
-function validPortalContinuation(urlValue, sessionIdValue) {
-  if (typeof sessionIdValue !== "string" || !/^bps_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
-  try {
-    const url = new URL(urlValue);
-    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com" || url.username || url.password || url.port) return false;
-    if (/^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)) {
-      return !url.search && (!url.hash || /^#[A-Za-z0-9_-]{1,1024}$/.test(url.hash));
-    }
-    const query = [...url.searchParams];
-    return url.pathname === "/p/session" && !url.hash && query.length === 1 && query[0][0] === "secret" && /^[A-Za-z0-9_-]{32,1024}$/.test(query[0][1]);
-  } catch {
-    return false;
-  }
-}
-async function portalOperationResult(database, transaction, teamId, requestId, operation) {
-  const common = { teamId, requestId };
-  if (["queued", "running", "retrying"].includes(operation.status)) {
-    const requestedAt = canonicalTimestamp2(operation.createdAt);
-    return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
-  }
-  if (operation.status === "ready") {
-    let desired = null;
-    try {
-      desired = await portalDesiredState(database, transaction, teamId);
-    } catch (error) {
-      if (error?.code !== "TEAM_BILLING_CHECKOUT_UNAVAILABLE") throw error;
-    }
-    if (!desired || !portalOperationMatches(operation, desired)) {
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'"
-      )).run(database.clock.now().toISOString(), teamId, requestId);
-      return Object.freeze({ state: "superseded", ...common });
-    }
-    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
-    if (expiresAt && expiresAt > database.clock.now().toISOString() && validPortalContinuation(operation.continuationUrl, operation.providerObjectId)) {
-      return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
-    }
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'"
-    )).run(database.clock.now().toISOString(), teamId, requestId);
-    return Object.freeze({ state: "expired", ...common });
-  }
-  if (operation.status === "expired") return Object.freeze({ state: "expired", ...common });
-  if (operation.status === "superseded") return Object.freeze({ state: "superseded", ...common });
-  return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
-}
-async function settleCheckoutFailure(database, operationId, safeFailureCode, status = "failed") {
-  await database.adapter.prepare(database.adapter.dialect.sql(
-    "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')"
-  )).run(status, safeFailureCode, database.clock.now().toISOString(), operationId);
-}
-function checkoutConflict() {
-  return commandError("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
-}
-function checkoutActive() {
-  return commandError(
-    "A Team Checkout is already active.",
-    "Finish, abandon, or allow the current Team Checkout to expire before starting another.",
-    "TEAM_BILLING_CHECKOUT_ACTIVE"
-  );
-}
-function checkoutUnavailable() {
-  const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
-  error.retryable = false;
-  return error;
-}
-function providerLaneBusy() {
-  const error = checkoutUnavailable();
-  error.code = "TEAM_BILLING_PROVIDER_LANE_BUSY";
-  error.retryable = true;
-  return error;
-}
-function teamBillingDenied() {
-  return commandError(
-    "Team Billing is unavailable.",
-    "Sign in as the current policy-approved billing administrator for this Team and retry.",
-    "TEAM_BILLING_DENIED"
-  );
-}
-
-// src/team-billing-erasure.ts
-import { createHash as createHash11, randomUUID as randomUUID9 } from "node:crypto";
-var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
-var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
-var SUBSCRIPTION_ID2 = /^sub_[A-Za-z0-9_]{1,240}$/;
-var CUSTOMER_ID2 = /^cus_[A-Za-z0-9_]{1,120}$/;
-var CLAIM_TTL_MS2 = 5 * 6e4;
-async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
-  if (!TEAM_ID.test(String(teamId ?? "")) || !TEAM_ID.test(String(requestId ?? ""))) throw unavailable();
-  let dispatch = false;
-  const result = await database.adapter.withTransaction(async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId });
-    const key = teamBillingErasureKey(database, teamId);
-    if (await tombstone(transaction, key)) return Object.freeze({ state: "authorized", teamId, requestId });
-    const existing = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [e].[operationId], [e].[status], [o].[requestId], [o].[createdAt] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[teamId] = ?"
-    )).get(teamId);
-    if (existing) {
-      return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
-    }
-    const operationId = randomUUID9();
-    const generationId = randomUUID9();
-    const now2 = database.clock.now().toISOString();
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
-    )).run(now2, teamId);
-    await transaction.prepare(transaction.dialect.sql(
-      "DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
-    )).run(teamId);
-    await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'erasure', NULL, 'queued', NULL, ?, NULL, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, providerIdempotency(database, key), now2, now2);
-    await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_erasure_state] ([teamId], [erasureKey], [operationId], [activeJobGenerationId], [status], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?)"
-    )).run(teamId, key, operationId, generationId, now2, now2);
-    if (typeof database.enqueueTeamBillingErasureJob !== "function") throw unavailable();
-    await database.enqueueTeamBillingErasureJob(
-      transaction,
-      { operationId, generationId },
-      `team-billing-erasure:${operationId}:${generationId}`
-    );
-    dispatch = true;
-    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
-  });
-  if (dispatch) database.scheduleTeamBillingJobDispatch?.();
-  return result;
-}
-async function performTeamBillingErasure(database, context2, payload) {
-  if (!exactPayload(payload)) return { superseded: true };
-  const claimToken = randomUUID9();
-  const snapshot = await database.adapter.withTransaction(async (transaction) => {
-    const state = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
-    )).get(payload.operationId);
-    if (!state || state.activeJobGenerationId !== payload.generationId) return null;
-    const auth = await database.readTeamBillingActorAuth?.(transaction, state.actorUserId);
-    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId: state.teamId });
-    await ensureLane2(transaction, state.teamId, database);
-    const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS2).toISOString();
-    const claimed = await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
-    )).run(claimToken, expiresAt, now(database), state.teamId, now(database));
-    if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_BUSY");
-    const customer = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
-    )).get(state.teamId);
-    const subscriptions = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]"
-    )).all(state.teamId);
-    const checkouts = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]"
-    )).all(state.teamId);
-    const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
-    if (!["sandbox", "live"].includes(mode) || customer && customer.mode !== mode || subscriptions.some((row) => row.mode !== mode) || checkouts.some((row) => row.mode && row.mode !== mode)) throw unavailable();
-    const checkoutSessionIds = checkouts.map((row) => row.providerObjectId).filter(Boolean);
-    const checkoutRecoveries = checkouts.filter((row) => row.attemptedAt && !row.providerObjectId).map((row) => ({
-      operationId: row.id,
-      teamId: state.teamId,
-      productKey: row.productKey,
-      mode: "subscription",
-      priceId: row.providerPriceId,
-      quantity: Number(row.quantity),
-      successPath: database.teamBillingDefinition?.checkout?.successPath,
-      cancelPath: database.teamBillingDefinition?.checkout?.cancelPath,
-      idempotencyKey: row.idempotencyKey,
-      businessReference: row.id,
-      providerExpiresAt: Number(row.providerExpiresAt),
-      ...customer ? { customerId: customer.providerCustomerId } : {}
-    }));
-    const subscriptionIds = subscriptions.map((row) => row.providerSubscriptionId);
-    if (!checkoutSessionIds.every((id2) => CHECKOUT_ID2.test(id2)) || !subscriptionIds.every((id2) => SUBSCRIPTION_ID2.test(id2)) || customer && !CUSTOMER_ID2.test(customer.providerCustomerId)) throw unavailable();
-    await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
-    )).run(now(database), state.operationId, payload.generationId);
-    return {
-      teamId: state.teamId,
-      erasureKey: state.erasureKey,
-      operationId: state.operationId,
-      generationId: payload.generationId,
-      provider: {
-        mode,
-        ...customer ? { customerId: customer.providerCustomerId } : {},
-        checkoutSessionIds,
-        ...checkoutRecoveries.length ? { checkoutRecoveries } : {},
-        subscriptionIds,
-        idempotencyKey: providerIdempotency(database, state.erasureKey)
-      }
-    };
-  });
-  if (!snapshot) return { superseded: true };
-  try {
-    if (typeof database.quiesceTeamBillingProvider !== "function") throw retryable2("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-    const evidence = await database.quiesceTeamBillingProvider(context2, Object.freeze(snapshot.provider));
-    const canonical = validateEvidence(evidence, snapshot.provider);
-    const settled = await database.adapter.withTransaction(async (transaction) => {
-      const laneOwned = await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [updatedAt] = [updatedAt] WHERE [teamId] = ? AND [claimToken] = ?"
-      )).run(snapshot.teamId, claimToken);
-      if (Number(laneOwned?.changes ?? laneOwned?.changesCount ?? 0) !== 1) return false;
-      const current2 = await transaction.prepare(transaction.dialect.sql(
-        "SELECT [teamId], [erasureKey] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
-      )).get(snapshot.operationId, snapshot.generationId);
-      if (!current2) {
-        await transaction.prepare(transaction.dialect.sql(
-          "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
-        )).run(now(database), snapshot.teamId, claimToken);
-        return false;
-      }
-      const digest3 = createHash11("sha256").update(JSON.stringify(canonical)).digest("hex");
-      await transaction.prepare(transaction.dialect.sql(
-        "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
-      )).run(current2.erasureKey, digest3, canonical.providerObservedAt, now(database));
-      for (const entry of [
-        ...canonical.checkouts.map((item) => ({ ...item, kind: "checkout" })),
-        ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" }))
-      ]) {
-        await transaction.prepare(transaction.dialect.sql(
-          "INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"
-        )).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
-      }
-      for (const table of [
-        "sporades_team_billing_observations",
-        "sporades_team_billing_subscriptions",
-        "sporades_team_billing_customers",
-        "sporades_team_billing_desired_state",
-        "sporades_team_billing_operations"
-      ]) await transaction.prepare(transaction.dialect.sql(`DELETE FROM [${table}] WHERE [teamId] = ?`)).run(current2.teamId);
-      await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?")).run(current2.teamId);
-      const released = await transaction.prepare(transaction.dialect.sql(
-        "DELETE FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ? AND [claimToken] = ?"
-      )).run(current2.teamId, claimToken);
-      if (Number(released?.changes ?? released?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_LOST");
-      return true;
-    });
-    return settled ? { providerQuiesced: true } : { superseded: true };
-  } catch (error) {
-    await database.adapter.withTransaction(async (transaction) => {
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
-      )).run(now(database), snapshot.teamId, claimToken);
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'queued', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
-      )).run(safeCode2(error?.code), now(database), snapshot.operationId, snapshot.generationId);
-    });
-    error.retryable ??= true;
-    throw error;
-  }
-}
-async function repairTeamBillingErasureStateAtStartup(database) {
-  let queued = 0;
-  await database.adapter.withTransaction(async (transaction) => {
-    const rows = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
-    )).all();
-    for (const row of rows) {
-      const generationId = randomUUID9();
-      const changed = await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
-      )).run(generationId, now(database), row.operationId);
-      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) continue;
-      await database.enqueueTeamBillingErasureJob(
-        transaction,
-        { operationId: row.operationId, generationId },
-        `team-billing-erasure:${row.operationId}:${generationId}`
-      );
-      queued += 1;
-    }
-  });
-  if (queued) database.scheduleTeamBillingJobDispatch?.();
-  return { queued };
-}
-async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
-  if (!exactPayload(payload)) return { settled: false };
-  const failureCode = safeCode2(safeFailureCode);
-  let replacementScheduled = false;
-  const result = await inTransaction2(database, async (transaction) => {
-    const state = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [teamId], [operationId], [activeJobGenerationId], [status] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ?"
-    )).get(payload.operationId);
-    if (!state || state.activeJobGenerationId !== payload.generationId || !["queued", "running"].includes(state.status)) return { settled: false };
-    const lane = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
-    )).get(state.teamId);
-    const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now(database) ? lane.claimExpiresAt : null;
-    if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-      const generationId = randomUUID9();
-      const availableAt = liveClaimExpiry ?? now(database);
-      const changed = await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
-      )).run(generationId, now(database), payload.operationId, payload.generationId);
-      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return { settled: false };
-      await database.enqueueTeamBillingErasureJob(
-        transaction,
-        { operationId: payload.operationId, generationId },
-        `team-billing-erasure:${payload.operationId}:${generationId}`,
-        availableAt
-      );
-      replacementScheduled = true;
-      return { settled: false, busy: true, replacementScheduled: true, availableAt };
-    }
-    const settled = await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
-    )).run(failureCode, now(database), payload.operationId, payload.generationId);
-    return { settled: Number(settled?.changes ?? settled?.changesCount ?? 0) === 1 };
-  });
-  if (replacementScheduled && !database.__transactionActive) database.scheduleTeamBillingJobDispatch?.();
-  return result;
-}
-function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false, trackOperation = (operation) => operation()) {
-  const requireActiveContext = () => {
-    const context2 = contextGetter();
-    if (!context2 || !isCurrentContext(context2) || context2.signal?.aborted) {
-      throw inactiveContext();
-    }
-    return context2;
-  };
-  const requireContext = () => {
-    const context2 = requireActiveContext();
-    if (!database.__transactionActive) throw inactiveContext();
-    return context2;
-  };
-  return Object.freeze({
-    async get(teamId) {
-      requireActiveContext();
-      const result = database.__transactionActive ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId) : await database.adapter.withTransaction((transaction) => readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
-      requireActiveContext();
-      return result;
-    },
-    admitLocalErasure(teamId) {
-      return trackOperation(async () => {
-        requireContext();
-        if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
-        await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
-        requireContext();
-        if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
-        requireContext();
-        return Object.freeze({ allowed: true });
-      });
-    }
-  });
-}
-async function tombstone(transaction, key) {
-  return transaction.prepare(transaction.dialect.sql(
-    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
-  )).get(key);
-}
-async function ensureLane2(transaction, teamId, database) {
-  await transaction.prepare(transaction.dialect.sql(
-    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
-  )).run(teamId, now(database));
-}
-async function inTransaction2(database, callback) {
-  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
-  return database.adapter.withTransaction(callback);
-}
-function validateEvidence(value, expected) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0subscriptions" || value.ok !== true || value.outcome !== "quiesced" || !canonicalTimestamp3(value.providerObservedAt) || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions)) throw unavailable();
-  const checkouts = value.checkouts.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !CHECKOUT_ID2.test(entry.id) || !["complete", "expired", "safely-closed"].includes(entry.state)) throw unavailable();
-    return { id: entry.id, state: entry.state };
-  }).sort(byId);
-  const subscriptions = value.subscriptions.map((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !SUBSCRIPTION_ID2.test(entry.id) || !["cancelled", "safely-closed"].includes(entry.state)) throw unavailable();
-    return { id: entry.id, state: entry.state };
-  }).sort(byId);
-  if (new Set(checkouts.map((entry) => entry.id)).size !== checkouts.length || new Set(subscriptions.map((entry) => entry.id)).size !== subscriptions.length || checkouts.length < expected.checkoutSessionIds.length + (expected.checkoutRecoveries?.length ?? 0) || expected.checkoutSessionIds.some((id2) => !checkouts.some((entry) => entry.id === id2)) || expected.subscriptionIds.some((id2) => !subscriptions.some((entry) => entry.id === id2))) throw unavailable();
-  return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
-}
-function providerIdempotency(database, key) {
-  return `sporades-team-billing-erasure-${createHash11("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
-}
-function exactPayload(value) {
-  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
-}
-function canonicalTimestamp3(value) {
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && !Number.isNaN(Date.parse(value));
-}
-function byId(left, right) {
-  return left.id.localeCompare(right.id);
-}
-function now(database) {
-  return database.clock.now().toISOString();
-}
-function safeCode2(value) {
-  return String(value ?? "PROVIDER_UNAVAILABLE").replace(/[^A-Z0-9_]/gi, "_").toUpperCase().slice(0, 64);
-}
-function retryable2(code2) {
-  const error = unavailable();
-  error.code = code2;
-  error.retryable = true;
-  return error;
-}
-function inactiveContext() {
-  const error = unavailable();
-  error.code = "TEAM_BILLING_ERASURE_CONTEXT_INACTIVE";
-  return error;
-}
-function unavailable() {
-  const error = new Error("Team Billing erasure is unavailable.");
-  error.code = "TEAM_BILLING_ERASURE_UNAVAILABLE";
-  return error;
-}
-
-// src/jobs-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
-var RESERVED_JOB_NAME_PREFIX = "_sporades";
-var STRIPE_EVENT_JOB = "_sporades.stripe-event";
-var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
-var STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
-var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
-var STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
-var STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE = "~";
-var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
-var STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1e3;
-var STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2147483647;
-function parseStripeEventPayloadSentinelMaintenance(value) {
-  if (typeof value !== "string") return { afterId: "", recheckAt: null };
-  try {
-    const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === "object" && typeof parsed.afterId === "string") {
-      return {
-        afterId: parsed.afterId,
-        recheckAt: isCanonicalJobTimestamp(parsed.recheckAt) ? parsed.recheckAt : null
-      };
-    }
-  } catch {
-  }
-  return { afterId: value, recheckAt: null };
-}
-function serializeStripeEventPayloadSentinelMaintenance(afterId, recheckAt) {
-  return JSON.stringify({ afterId, recheckAt });
-}
-function stripeEventPayloadRetentionDeadline(settledAt) {
-  if (!isCanonicalJobTimestamp(settledAt)) return null;
-  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
-}
-function stripeEventPayloadRetentionStorageValue(settledAt) {
-  const deadline = stripeEventPayloadRetentionDeadline(settledAt);
-  if (deadline !== null) return deadline;
-  return isCanonicalJobTimestamp(settledAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
-}
-async function cleanupExpiredStripeEventPayloads(database, options = {}) {
-  const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
-  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE) {
-    throw jobError("STRIPE_EVENT_PAYLOAD_CLEANUP_INVALID", "Invalid Stripe Event payload cleanup batch.", "Use the runtime-owned bounded cleanup batch.");
-  }
-  const adapter = database.adapter;
-  const sql2 = adapter.dialect.sql;
-  const nowIso2 = database.clock.now().toISOString();
-  let assignedCount = 0;
-  let classifiedCount = 0;
-  let redactedCount = 0;
-  let remaining = batchSize;
-  let sentinelScanPending = false;
-  let sentinelRecheckAt = null;
-  const due = await adapter.prepare(sql2(
-    "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, nowIso2, remaining);
-  for (const row of due) {
-    const changed = await adapter.prepare(sql2(
-      "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso2, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso2);
-    const mutations = Number(changed?.changes ?? 0);
-    redactedCount += mutations;
-    remaining -= mutations;
-  }
-  const cursorRow = await adapter.prepare(sql2(
-    "SELECT [value] FROM [sporades] WHERE [key]=?"
-  )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
-  let observedMaintenanceValue = typeof cursorRow?.value === "string" ? cursorRow.value : serializeStripeEventPayloadSentinelMaintenance("", null);
-  let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
-  const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso2;
-  if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
-  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql2(
-    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? ORDER BY [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, sentinelMaintenance.afterId, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
-  let processedSentinelCount = 0;
-  let processedSentinelCursor = sentinelMaintenance.afterId;
-  for (const observed of sentinelCandidates.slice(0, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE)) {
-    if (remaining === 0) break;
-    processedSentinelCount += 1;
-    processedSentinelCursor = String(observed.id);
-    let row = observed;
-    let retried = false;
-    while (row && remaining > 0) {
-      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-      if (deadline === null) break;
-      const changed = await adapter.prepare(sql2(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
-      const mutations = Number(changed?.changes ?? 0);
-      if (mutations > 0) {
-        assignedCount += mutations;
-        remaining -= mutations;
-        break;
-      }
-      if (retried) break;
-      row = await adapter.prepare(sql2(
-        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).get(observed.id, STRIPE_EVENT_JOB);
-      retried = true;
-    }
-  }
-  if (remaining === 0 && processedSentinelCount === 0) {
-    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql2(
-      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
-    )).get(STRIPE_EVENT_JOB));
-  } else if (processedSentinelCount > 0) {
-    const pageHasMore = sentinelCandidates.length > processedSentinelCount;
-    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql2(
-      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
-    )).get(STRIPE_EVENT_JOB));
-    const nextCursor = pageHasMore ? processedSentinelCursor : "";
-    const nextRecheckAt = !pageHasMore && unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
-    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance(nextCursor, nextRecheckAt);
-    const advanced = await adapter.prepare(sql2(
-      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
-    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
-    if (Number(advanced?.changes ?? 0) === 0) sentinelScanPending = true;
-    else {
-      observedMaintenanceValue = nextMaintenanceValue;
-      sentinelMaintenance = { afterId: nextCursor, recheckAt: nextRecheckAt };
-      sentinelScanPending = pageHasMore;
-      sentinelRecheckAt = nextRecheckAt;
-    }
-  } else if (!recheckIsWaiting && (sentinelMaintenance.afterId !== "" || sentinelMaintenance.recheckAt !== null)) {
-    const unresolvedSentinel = Boolean(await adapter.prepare(sql2(
-      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
-    )).get(STRIPE_EVENT_JOB));
-    const nextRecheckAt = unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
-    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
-    const wrapped = await adapter.prepare(sql2(
-      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
-    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
-    if (Number(wrapped?.changes ?? 0) === 0) sentinelScanPending = true;
-    else {
-      observedMaintenanceValue = nextMaintenanceValue;
-      sentinelMaintenance = { afterId: "", recheckAt: nextRecheckAt };
-      sentinelRecheckAt = nextRecheckAt;
-    }
-  }
-  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql2(
-    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
-  )).all(STRIPE_EVENT_JOB, remaining);
-  for (const observed of unassigned) {
-    if (remaining === 0) break;
-    let row = observed;
-    let retried = false;
-    while (row && remaining > 0) {
-      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
-      const unresolvedDeadline = stripeEventPayloadRetentionStorageValue(row.completedAt);
-      const changed = deadline === null ? await adapter.prepare(sql2(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql2(
-        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
-      const mutations = Number(changed?.changes ?? 0);
-      if (mutations > 0) {
-        if (deadline === null) classifiedCount += mutations;
-        else assignedCount += mutations;
-        remaining -= mutations;
-        break;
-      }
-      if (retried) break;
-      row = await adapter.prepare(sql2(
-        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
-      )).get(observed.id, STRIPE_EVENT_JOB);
-      retried = true;
-    }
-  }
-  const moreUnassigned = await adapter.prepare(sql2(
-    "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1"
-  )).get(STRIPE_EVENT_JOB);
-  if (!sentinelScanPending && sentinelMaintenance.afterId === "" && sentinelRecheckAt === null && classifiedCount > 0) {
-    const nextRecheckAt = jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS);
-    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
-    const scheduled = await adapter.prepare(sql2(
-      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
-    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
-    if (Number(scheduled?.changes ?? 0) === 0) sentinelScanPending = true;
-    else sentinelRecheckAt = nextRecheckAt;
-  }
-  const next = await adapter.prepare(sql2(
-    "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1"
-  )).get(STRIPE_EVENT_JOB);
-  const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
-  const scheduledCleanupAt = sentinelRecheckAt !== null && nextDeadline !== null ? sentinelRecheckAt < nextDeadline ? sentinelRecheckAt : nextDeadline : sentinelRecheckAt ?? nextDeadline;
-  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso2 : scheduledCleanupAt;
-  return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
-}
-function scheduleStripeEventPayloadCleanup(database, dueAt) {
-  if (database.__jobStopped) return;
-  if (database.__stripeEventPayloadCleanupPromise) {
-    if (dueAt !== null) {
-      database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? dueAt : Math.min(database.__stripeEventPayloadCleanupRequestedAt, dueAt);
-    }
-    return;
-  }
-  if (dueAt !== null && database.__stripeEventPayloadCleanupTimer && database.__stripeEventPayloadCleanupDueAt !== null && database.__stripeEventPayloadCleanupDueAt <= dueAt) return;
-  installStripeEventPayloadCleanupTimer(database, dueAt);
-}
-function installStripeEventPayloadCleanupTimer(database, dueAt) {
-  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
-  database.__stripeEventPayloadCleanupTimer = null;
-  database.__stripeEventPayloadCleanupDueAt = dueAt;
-  if (dueAt === null) return;
-  database.__stripeEventPayloadCleanupTimer = database.clock.setTimer(async () => {
-    database.__stripeEventPayloadCleanupTimer = null;
-    database.__stripeEventPayloadCleanupDueAt = null;
-    if (!database.__jobStopped) await startStripeEventPayloadCleanup(database);
-  }, Math.min(STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS, Math.max(0, dueAt - database.clock.now().getTime())));
-}
-function startStripeEventPayloadCleanup(database) {
-  if (database.__jobStopped) return void 0;
-  if (database.__stripeEventPayloadCleanupPromise) {
-    const now2 = database.clock.now().getTime();
-    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? now2 : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now2);
-    return database.__stripeEventPayloadCleanupPromise;
-  }
-  const cleanup = runStripeEventPayloadCleanupChain(database);
-  database.__stripeEventPayloadCleanupPromise = cleanup;
-  cleanup.finally(() => {
-    if (database.__stripeEventPayloadCleanupPromise === cleanup) database.__stripeEventPayloadCleanupPromise = null;
-  }).catch(() => {
-  });
-  return cleanup;
-}
-async function runStripeEventPayloadCleanupChain(database) {
-  while (!database.__jobStopped) {
-    database.__stripeEventPayloadCleanupRequestedAt = null;
-    let nextDueAt;
-    try {
-      const result = await cleanupExpiredStripeEventPayloads(database);
-      nextDueAt = result.nextCleanupAt === null ? null : Date.parse(result.nextCleanupAt);
-    } catch (error) {
-      try {
-        await database.log.emit({
-          category: "platform",
-          event: "stripe.event_payload_cleanup.failed",
-          level: "error",
-          message: "Stripe Event payload cleanup failed",
-          data: { code: String(error?.code ?? "STRIPE_EVENT_PAYLOAD_CLEANUP_FAILED").slice(0, 80) }
-        });
-      } catch {
-      }
-      nextDueAt = database.clock.now().getTime() + STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS;
-    }
-    if (database.__jobStopped) return;
-    const requestedAt = database.__stripeEventPayloadCleanupRequestedAt;
-    database.__stripeEventPayloadCleanupRequestedAt = null;
-    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
-    const dueAt = requestedAt === null ? nextDueAt : nextDueAt === null ? requestedAt : Math.min(nextDueAt, requestedAt);
-    installStripeEventPayloadCleanupTimer(database, dueAt);
-    return;
-  }
-}
-function stopStripeEventPayloadCleanup(database) {
-  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
-  database.__stripeEventPayloadCleanupTimer = null;
-  database.__stripeEventPayloadCleanupDueAt = null;
-  database.__stripeEventPayloadCleanupRequestedAt = null;
-  return database.__stripeEventPayloadCleanupPromise ? Promise.resolve(database.__stripeEventPayloadCleanupPromise).then(() => void 0) : void 0;
-}
-function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
-  const schedules = [];
-  for (const [name2, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
-    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name2)) throw commandError(`Invalid Schedule name: ${name2}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name2}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
-    if (schedules.some((candidate) => candidate.name === name2)) throw commandError(`Duplicate Schedule declaration: ${name2}`, "Use one unique Schedule name per Capsule.");
-    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name2}`, "Reference a Job declared in the Capsule jobs map.");
-    const expression = parseScheduleExpression(definition.expression);
-    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
-    const payload = definition.payload === void 0 ? null : definition.payload;
-    let payloadFingerprint;
-    let payloadVersion;
-    if (typeof payload === "function") {
-      if (definition.payloadVersion !== void 0 && (typeof definition.payloadVersion !== "string" || definition.payloadVersion.length < 1 || definition.payloadVersion.length > 128 || definition.payloadVersion.trim() !== definition.payloadVersion)) {
-        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
-      }
-      payloadFingerprint = definition.payloadVersion === void 0 ? String(payload) : null;
-      payloadVersion = definition.payloadVersion;
-    } else {
-      if (definition.payloadVersion !== void 0) {
-        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
-      }
-      boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-      payloadFingerprint = payload;
-    }
-    const retry = normalizeJobRetry(definition.retry);
-    const missedRun = definition.missedRun ?? "skip";
-    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name2}`, "Use `skip` or `latest`.");
-    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name2}`, "Pass true or false for enabled.");
-    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
-    const enabled = definition.enabled ?? true;
-    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...payloadVersion === void 0 ? {} : { payloadVersion } });
-    schedules.push({ name: name2, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, payloadVersion: definition.payloadVersion, retry, missedRun, enabled, fingerprint });
-  }
-  return schedules;
-}
-function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
-  const scheduling = config.scheduling;
-  if (scheduling === void 0) return 3e4;
-  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
-    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
-  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
-    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
-  }
-  return seconds * 1e3;
-}
-function parseScheduleExpression(value) {
-  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
-  const parts = value.trim().split(/\s+/);
-  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
-  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
-  const fields = parts.map((part, index) => {
-    const values = /* @__PURE__ */ new Set();
-    for (const item of part.split(",")) {
-      const [base, stepText] = item.split("/");
-      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
-      const step = stepText === void 0 ? 1 : Number(stepText);
-      let start, end;
-      if (base === "*") [start, end] = ranges[index];
-      else if (/^\d+$/.test(base)) start = end = Number(base);
-      else {
-        const match = /^(\d+)-(\d+)$/.exec(base);
-        if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
-        start = Number(match[1]);
-        end = Number(match[2]);
-      }
-      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
-      for (let current2 = start; current2 <= end; current2 += step) values.add(index === 4 && current2 === 7 ? 0 : current2);
-    }
-    return values;
-  });
-  fields.restricted = parts.map((part) => part !== "*");
-  return fields;
-}
-function resolveScheduleTimezone(value) {
-  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
-  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
-  try {
-    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
-  } catch {
-    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
-  }
-}
-function scheduleWallClockParts(formatter, instant) {
-  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
-}
-function nextScheduleOccurrence(fields, after, timezone) {
-  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
-    timeZone: timezone,
-    weekday: "short",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  });
-  const candidate = new Date(after.getTime());
-  candidate.setUTCSeconds(0, 0);
-  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
-    const local = scheduleWallClockParts(formatter, candidate);
-    const dom = fields[2].has(local.day);
-    const dow = fields[4].has(local.weekday);
-    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
-    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
-    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
-      const occurrence = new Date(candidate);
-      if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
-        throw commandError(
-          "Stored Schedule state is invalid.",
-          "Repair or remove the malformed Schedule before restarting the Capsule.",
-          "SCHEDULE_STATE_INVALID"
-        );
-      }
-      return occurrence;
-    }
-  }
-  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
-}
-async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
-  const sql2 = sqlite.dialect.sql;
-  await sqlite.exec(
-    sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
-    )
-  );
-  await sqlite.exec(
-    sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"
-    )
-  );
-  await sqlite.exec(
-    sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
-    )
-  );
-  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
-  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
-  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
-  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
-  await sqlite.prepare(sql2(
-    "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING"
-  )).run();
-  const migrateLegacyScheduleIdentity = async (adapter) => {
-    const migrationSql = adapter.dialect.sql;
-    await adapter.prepare(migrationSql(
-      "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
-    )).run();
-    const lineageMigration = await adapter.prepare(migrationSql(
-      "SELECT [value] FROM [sporades] WHERE [key]='schedule-legacy-adoption-lineage-v1'"
-    )).get();
-    const initializeLegacyLineage = !lineageMigration;
-    const schedules = await adapter.prepare(migrationSql(
-      "SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC"
-    )).all();
-    const scheduleByName = /* @__PURE__ */ new Map();
-    for (const row of schedules) {
-      await adapter.prepare(migrationSql(
-        "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?"
-      )).run(row.name);
-      let generationToken = row.generationToken;
-      const wasLegacySchedule = typeof generationToken !== "string" || generationToken.length === 0;
-      if (typeof generationToken !== "string" || generationToken.length === 0) {
-        const proposed = nodeCryptoModule.randomUUID();
-        await adapter.prepare(migrationSql(
-          "UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')"
-        )).run(proposed, row.name);
-        const current2 = await adapter.prepare(migrationSql(
-          "SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?"
-        )).get(row.name);
-        generationToken = current2?.generationToken ?? proposed;
-        row.definitionFingerprint = current2?.definitionFingerprint ?? row.definitionFingerprint;
-      }
-      if (initializeLegacyLineage) {
-        await adapter.prepare(migrationSql(
-          "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, ?) ON CONFLICT ([scheduleName]) DO NOTHING"
-        )).run(row.name, row.definitionFingerprint, wasLegacySchedule ? 1 : 0);
-      }
-      const lineage = await adapter.prepare(migrationSql(
-        "SELECT [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?"
-      )).get(row.name);
-      scheduleByName.set(String(row.name), {
-        definitionFingerprint: row.definitionFingerprint,
-        generationToken,
-        legacyAdoptionOpen: Number(lineage?.adoptionOpen) === 1 && lineage?.definitionFingerprint === row.definitionFingerprint
-      });
-    }
-    const pending = await adapter.prepare(migrationSql(
-      "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC"
-    )).all();
-    await scheduleStorageFault?.("after-legacy-pending-scan", { adapter });
-    for (const row of pending) {
-      const schedule = scheduleByName.get(String(row.scheduleName));
-      if (!schedule) continue;
-      if (row.definitionFingerprint !== null && row.definitionFingerprint !== void 0 && row.definitionFingerprint !== schedule.definitionFingerprint) continue;
-      if ((row.definitionFingerprint === null || row.definitionFingerprint === void 0) && !schedule.legacyAdoptionOpen) continue;
-      await adapter.prepare(migrationSql(
-        "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')"
-      )).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
-    }
-    if (initializeLegacyLineage) {
-      await adapter.prepare(migrationSql(
-        "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-legacy-adoption-lineage-v1', 'complete') ON CONFLICT ([key]) DO NOTHING"
-      )).run();
-    }
-  };
-  if (typeof sqlite.withTransaction === "function") {
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        await sqlite.withTransaction(migrateLegacyScheduleIdentity);
-        break;
-      } catch (error) {
-        if (sqlite.engine !== "sqlite" || attempt >= 100 || String(error?.message ?? "") !== "database is locked") throw error;
-        await new Promise((resolve2) => setTimeout(resolve2, Math.min(25, attempt + 1)));
-      }
-    }
-  } else await migrateLegacyScheduleIdentity(sqlite);
-  await sqlite.exec(
-    sql2(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
-    )
-  );
-  await sqlite.exec(
-    sql2(
-      "CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"
-    )
-  );
-}
-async function finishFailedScheduledOccurrence(database, definition, occurrence, error, claimToken) {
-  const scheduledFor = occurrence.toISOString();
-  const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const completedAt = database.clock.now().toISOString();
-  const code2 = "SCHEDULE_ENQUEUE_FAILED";
-  const sql2 = database.adapter.dialect.sql;
-  const generation2 = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
-  if (Number(generation2.changes) !== 1) {
-    await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
-    return { finished: false, nextOccurrence: null, superseded: true };
-  }
-  const terminal = await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code2, completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
-  if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
-  const successor = nextScheduleCursor(definition, occurrence);
-  const summary = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code2, definition.name, definition.fingerprint, definition.generationToken);
-  if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
-  return { finished: true, ...successor };
-}
-function nextScheduleCursor(definition, occurrence) {
-  try {
-    return {
-      nextOccurrence: nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString(),
-      exhausted: false
-    };
-  } catch (error) {
-    if (error?.code !== "SCHEDULE_STATE_INVALID") throw error;
-    return { nextOccurrence: null, exhausted: true };
-  }
-}
-function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
-  return nodeCryptoModule.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
-}
-function schedulePayloadFactoryAbortError() {
-  const error = new Error("Schedule payload factory aborted.");
-  error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
-  return error;
-}
-async function acquireSchedulePayloadFactorySlot(database, signal) {
-  if (signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
-  if (database.schedulePayloadFactoryActive < 4 && database.schedulePayloadFactoryWaiters.length === 0) {
-    database.schedulePayloadFactoryActive += 1;
-  } else {
-    await new Promise((resolve2, reject) => {
-      const waiter = {};
-      const remove = () => {
-        const index = database.schedulePayloadFactoryWaiters.indexOf(waiter);
-        if (index >= 0) database.schedulePayloadFactoryWaiters.splice(index, 1);
-      };
-      const onAbort = () => {
-        remove();
-        reject(schedulePayloadFactoryAbortError());
-      };
-      waiter.grant = () => {
-        signal.removeEventListener("abort", onAbort);
-        resolve2();
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-      database.schedulePayloadFactoryWaiters.push(waiter);
-      if (signal.aborted || database.__scheduleStopped) onAbort();
-    });
-  }
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const waiter = database.schedulePayloadFactoryWaiters.shift();
-    if (waiter) waiter.grant();
-    else database.schedulePayloadFactoryActive -= 1;
-  };
-}
-async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
-  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
-  let unlock = () => {
-  };
-  const current2 = new Promise((resolve2) => {
-    unlock = resolve2;
-  });
-  database.schedulePayloadFactoryLanes.set(scheduleName, current2);
-  if (previous) await previous;
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    unlock();
-    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current2) database.schedulePayloadFactoryLanes.delete(scheduleName);
-  };
-}
-async function resolveSchedulePayload(database, definition, scheduledFor, context2) {
-  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  let releaseLane2;
-  let releaseSlot;
-  const controller = new AbortController();
-  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
-  controllers.add(controller);
-  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
-  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
-  const factoryContext = Object.freeze({
-    app: database.app,
-    signal: controller.signal,
-    privileged: context2.privileged
-  });
-  let timeout;
-  let removeAbortListener;
-  try {
-    releaseLane2 = await acquireSchedulePayloadFactoryLane(database, definition.name);
-    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
-    releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
-    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
-    const timeoutFailure = new Promise((_resolve, reject) => {
-      timeout = database.clock.setTimer(() => {
-        controller.abort();
-        const error = new Error("Schedule payload factory timed out.");
-        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
-        reject(error);
-      }, database.schedulePayloadFactoryTimeoutMs);
-    });
-    const aborted = new Promise((_resolve, reject) => {
-      const onAbort = () => reject(schedulePayloadFactoryAbortError());
-      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
-      if (controller.signal.aborted) onAbort();
-      else controller.signal.addEventListener("abort", onAbort, { once: true });
-    });
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
-    database.clock.clearTimer(timeout);
-    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
-    return { ok: true, value };
-  } catch (error) {
-    database.clock.clearTimer(timeout);
-    const code2 = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
-    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code: code2 } });
-    return { ok: false };
-  } finally {
-    removeAbortListener?.();
-    controllers.delete(controller);
-    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
-    releaseSlot?.();
-    releaseLane2?.();
-  }
-}
-function abortSchedulePayloadFactories(database) {
-  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
-}
-function createRuntimeClock(clock) {
-  const source = clock ?? {
-    now: () => /* @__PURE__ */ new Date(),
-    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimer: (timer) => clearTimeout(timer)
-  };
-  return {
-    now: () => source.now(),
-    setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(
-      () => withoutRuntimeRequestIdentity(callback),
-      delayMs
-    )),
-    clearTimer: (timer) => source.clearTimer(timer)
-  };
-}
-function runtimeOwnedJobHandlers(runtime) {
-  return [
-    {
-      name: TEAM_BILLING_CHECKOUT_JOB,
-      handler: runtime.performTeamBillingCheckout
-    },
-    {
-      name: TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
-      handler: runtime.expireTeamBillingCheckout
-    },
-    { name: TEAM_BILLING_PORTAL_JOB, handler: runtime.performTeamBillingPortal },
-    { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
-    { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
-    { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
-    { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
-    {
-      name: STRIPE_EVENT_JOB,
-      handler: runtime.dispatchStripeEvent
-    },
-    {
-      name: PASSWORD_RESET_MAIL_JOB,
-      handler: async (ctx, payload) => {
-        return await ctx.mail.send({
-          to: payload.to,
-          subject: payload.subject,
-          textBody: payload.textBody,
-          htmlBody: payload.htmlBody
-        });
-      }
-    },
-    {
-      name: PASSWORD_RESET_REQUEST_JOB,
-      handler: async (ctx, payload) => {
-        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
-        if (!delivery) return;
-        return await ctx.mail.send(delivery);
-      }
-    }
-  ];
-}
-function isReservedJobName(name2) {
-  return name2.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
-}
-function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
-  const handlers = [];
-  for (const [name2, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name2) || definition?.kind !== "job" || typeof definition.handler !== "function") {
-      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
-    }
-    if (isReservedJobName(name2)) {
-      throw commandError(
-        `Reserved Job handler name: ${name2}`,
-        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
-        "RESERVED_JOB_NAME"
-      );
-    }
-    if (handlers.some((handler) => handler.name === name2)) {
-      throw commandError(`Duplicate Job handler: ${name2}`, "Use one unique Job handler name per Capsule.");
-    }
-    handlers.push({ name: name2, handler: definition.handler });
-  }
-  return handlers;
-}
-async function ensureJobStorage(sqlite) {
-  const sql2 = sqlite.dialect.sql;
-  await sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
-  await sqlite.prepare(sql2(
-    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
-  )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, serializeStripeEventPayloadSentinelMaintenance("", null));
-  await sqlite.exec(
-    sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
-    )
-  );
-  await sqlite.exec(
-    sql2(
-      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
-    )
-  );
-  await sqlite.exec(
-    sql2("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
-  );
-  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"], ["enqueueTraceContext", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
-  await sqlite.exec(sql2(
-    "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
-  ));
-  await sqlite.exec(
-    sql2("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
-  );
-  const legacyRows = await sqlite.prepare(sqlite.dialect.sql(
-    "SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)"
-  )).all(privilegedAuthUserId());
-  for (const row of legacyRows) {
-    let user = null;
-    try {
-      user = await sqlite.prepare(sqlite.dialect.sql(
-        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?"
-      )).get(row.actorUserId);
-    } catch (error) {
-      if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
-    }
-    const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
-    const authSnapshot = captureJobAuthSnapshot(user ? {
-      userId: user.id,
-      displayName: user.displayName,
-      email: user.email,
-      picture: user.picture,
-      isAuthenticated: Boolean(user.isAuthenticated),
-      isGuest: Boolean(user.isGuest),
-      provider
-    } : legacyJobAuthFallback(row.actorUserId, provider));
-    await sqlite.prepare(sqlite.dialect.sql(
-      "UPDATE [sporades_jobs] SET [authSnapshotJson] = COALESCE([authSnapshotJson], ?), [credentialJson] = COALESCE([credentialJson], ?) WHERE [id] = ?"
-    )).run(JSON.stringify(authSnapshot), JSON.stringify({ kind: "session" }), row.id);
-  }
-}
-async function scheduleSummary(sqlite, row) {
-  const invalid4 = (field) => {
-    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
-    error.scheduleName = typeof row?.name === "string" ? row.name : null;
-    error.field = field;
-    return error;
-  };
-  if (typeof row.name !== "string" || !row.name) throw invalid4("name");
-  if (typeof row.expression !== "string" || !row.expression) throw invalid4("expression");
-  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid4("timezone");
-  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid4("missedRun");
-  if (![0, 1, false, true].includes(row.enabled)) throw invalid4("enabled");
-  const exhausted = row.exhausted ?? 0;
-  if (![0, 1, false, true].includes(exhausted) || !scheduleCursorStateIsConsistent(row.enabled, exhausted, row.nextOccurrence)) throw invalid4("exhausted");
-  if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid4("nextOccurrence");
-  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
-  let latestOccurrence = null;
-  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid4("latestOccurrence");
-  if (latestOutcome !== null && !isCanonicalJobTimestamp(row.latestScheduledFor)) throw invalid4("latestOccurrence.scheduledFor");
-  if (latestOutcome === "enqueued") {
-    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid4("latestOccurrence.jobId");
-    if (row.latestErrorCode != null) throw invalid4("latestOccurrence.errorCode");
-    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
-    if (!job) throw invalid4("latestOccurrence.jobId");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
-  } else if (latestOutcome === "payload-failed") {
-    if (row.latestJobId != null) throw invalid4("latestOccurrence.jobId");
-    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid4("latestOccurrence.errorCode");
-    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid4("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
-  } else if (latestOutcome !== null) throw invalid4("latestOccurrence.outcome");
-  return {
-    name: String(row.name),
-    expression: String(row.expression),
-    timezone: String(row.effectiveTimezone),
-    missedRun: String(row.missedRunPolicy),
-    enabled: Boolean(row.enabled),
-    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
-    latestOccurrence
-  };
-}
-function scheduleCursorStateIsConsistent(enabled, exhausted, nextOccurrence) {
-  if (![0, 1, false, true].includes(enabled) || ![0, 1, false, true].includes(exhausted)) return false;
-  const hasNextOccurrence = nextOccurrence !== null && nextOccurrence !== void 0;
-  return Boolean(enabled) ? hasNextOccurrence !== Boolean(exhausted) : !Boolean(exhausted) && !hasNextOccurrence;
-}
-function assertJobScheduleProvenance(row, expected) {
-  if (!expected) return;
-  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
-    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
-  }
-}
-function jobError(code2, message, hint) {
-  const error = new Error(message);
-  error.code = code2;
-  error.hint = hint;
-  return error;
-}
-function boundedJobJson(value, limit, code2, label) {
-  let serialized2;
-  try {
-    assertJsonCompatible(value);
-    serialized2 = JSON.stringify(value);
-  } catch {
-    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
-  }
-  if (Buffer.byteLength(serialized2, "utf8") > limit) throw jobError(code2, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
-  return serialized2;
-}
-var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
-function boundedJobIdentityString(value, field, maximum, nullable = false) {
-  if (nullable && value === null) return null;
-  if (typeof value !== "string" || value.length > maximum) {
-    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", `Keep ${field} within its runtime-owned bound.`);
-  }
-  return value;
-}
-function canonicalJobAuthSnapshot(auth) {
-  const baseSnapshot = {
-    userId: boundedJobIdentityString(auth?.userId, "userId", 256),
-    displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
-    email: boundedJobIdentityString(auth?.email, "email", 320, true),
-    picture: boundedJobIdentityString(auth?.picture, "picture", 4096, true),
-    isAuthenticated: auth?.isAuthenticated,
-    isGuest: auth?.isGuest,
-    provider: boundedJobIdentityString(auth?.provider, "provider", 64)
-  };
-  if (typeof baseSnapshot.isAuthenticated !== "boolean" || typeof baseSnapshot.isGuest !== "boolean") {
-    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
-  }
-  if (auth?.userKind !== void 0 && auth.userKind !== "service") {
-    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
-  }
-  const snapshot = auth?.userKind === "service" ? { ...baseSnapshot, userKind: "service" } : baseSnapshot;
-  const serialized2 = JSON.stringify(snapshot);
-  if (Buffer.byteLength(serialized2, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
-    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
-  }
-  return snapshot;
-}
-function truncateJobDisplayName(value) {
-  let truncated = value.slice(0, 512);
-  const finalCodeUnit = truncated.charCodeAt(truncated.length - 1);
-  if (finalCodeUnit >= 55296 && finalCodeUnit <= 56319) truncated = truncated.slice(0, -1);
-  return truncated || "Job enqueuer";
-}
-function captureJobAuthSnapshot(auth) {
-  if (typeof auth?.displayName !== "string" || !(auth?.email === null || typeof auth?.email === "string") || !(auth?.picture === null || typeof auth?.picture === "string")) return canonicalJobAuthSnapshot(auth);
-  boundedJobIdentityString(auth?.userId, "userId", 256);
-  boundedJobIdentityString(auth?.provider, "provider", 64);
-  if (typeof auth?.isAuthenticated !== "boolean" || typeof auth?.isGuest !== "boolean") {
-    return canonicalJobAuthSnapshot(auth);
-  }
-  const bounded = {
-    ...auth,
-    displayName: auth.displayName.length > 512 ? truncateJobDisplayName(auth.displayName) : auth.displayName,
-    email: auth.email !== null && auth.email.length > 320 ? null : auth.email,
-    picture: auth.picture !== null && auth.picture.length > 4096 ? null : auth.picture
-  };
-  try {
-    return canonicalJobAuthSnapshot(bounded);
-  } catch (error) {
-    if (error?.code !== "INVALID_JOB_IDENTITY") throw error;
-    return canonicalJobAuthSnapshot({ ...bounded, displayName: "Job enqueuer", email: null, picture: null });
-  }
-}
-function canonicalJobCredentialProvenance(credential) {
-  if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind")) return { kind: "session" };
-  if (credential?.kind === "access-key" && Object.keys(credential).every((key) => ["kind", "id", "name"].includes(key))) {
-    return {
-      kind: "access-key",
-      id: boundedJobIdentityString(credential.id, "credential.id", 256),
-      name: boundedJobIdentityString(credential.name, "credential.name", 256)
-    };
-  }
-  throw jobError("INVALID_JOB_CREDENTIAL", "Job Credential provenance is invalid.", "Enqueue from a runtime-issued Session or Access-key context.");
-}
-function legacyJobAuthFallback(userId, provider) {
-  const normalizedProvider = jobActorProvider({ provider, isGuest: provider === "anonymous" });
-  return {
-    userId: boundedJobIdentityString(userId, "userId", 256),
-    displayName: "Job enqueuer",
-    email: null,
-    picture: null,
-    isAuthenticated: normalizedProvider !== "anonymous",
-    isGuest: normalizedProvider === "anonymous",
-    provider: normalizedProvider
-  };
-}
-function readJobAuthSnapshot(row) {
-  let snapshot;
-  if (row?.authSnapshotJson) {
-    try {
-      snapshot = canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
-    } catch {
-      throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
-    }
-  } else {
-    snapshot = canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
-  }
-  if (snapshot.userId !== row?.actorUserId) {
-    throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair the mismatched Job actor snapshot before retrying execution.");
-  }
-  return snapshot;
-}
-function readJobCredentialProvenance(row) {
-  if (row?.credentialJson) {
-    try {
-      return canonicalJobCredentialProvenance(JSON.parse(String(row.credentialJson)));
-    } catch {
-      throw jobError("JOB_CREDENTIAL_INVALID", "Stored Job Credential provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
-    }
-  }
-  return { kind: "session" };
-}
-function jobState(row, includeDetail) {
-  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId, credential: readJobCredentialProvenance(row) };
-  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
-  if (includeDetail && row.result) state.result = JSON.parse(row.result);
-  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
-  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
-  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
-  return state;
-}
-function jobActorProvider(auth) {
-  const provider = auth?.provider;
-  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
-  return auth?.isGuest ? "anonymous" : "authenticated";
-}
-var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
-var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
-function normalizeJobAvailableAt(value) {
-  let milliseconds = Number.NaN;
-  try {
-    if (typeof value === "string") {
-      if (/^[+-]?\d+(?:\.\d+)?$/.test(value.trim())) throw new TypeError("Unsupported Job availability value.");
-      milliseconds = new Date(value).getTime();
-    } else {
-      milliseconds = Date.prototype.getTime.call(value);
-    }
-  } catch {
-  }
-  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) {
-    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value in the supported four-digit UTC timestamp range.");
-  }
-  return new Date(milliseconds).toISOString();
-}
-function isCanonicalJobTimestamp(value) {
-  if (typeof value !== "string") return false;
-  try {
-    return normalizeJobAvailableAt(value) === value;
-  } catch {
-    return false;
-  }
-}
-function normalizeJobRetry(value) {
-  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
-  let maxAttempts;
-  let delayMs;
-  let hasMaxAttempts = false;
-  let keys = [];
-  try {
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid Job retry policy.");
-    keys = Reflect.ownKeys(value);
-    hasMaxAttempts = Object.prototype.hasOwnProperty.call(value, "maxAttempts");
-    maxAttempts = value.maxAttempts;
-    delayMs = Object.prototype.hasOwnProperty.call(value, "delayMs") ? value.delayMs : 0;
-  } catch {
-  }
-  if (!hasMaxAttempts || keys.some((key) => typeof key !== "string" || !["maxAttempts", "delayMs"].includes(key)) || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20 || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_JOB_TIMESTAMP_MS) {
-    throw jobError(
-      "INVALID_JOB_OPTIONS",
-      "Invalid Job retry policy.",
-      "Pass retry.maxAttempts (1-20) and retry.delayMs within the supported Job timestamp range."
-    );
-  }
-  return { maxAttempts, delayMs };
-}
-function parsePersistedJobRetry(value) {
-  try {
-    return normalizeJobRetry(value ? JSON.parse(value) : void 0);
-  } catch {
-    return null;
-  }
-}
-function jobTimestampAfter(instant, delayMs) {
-  const milliseconds = instant.getTime() + delayMs;
-  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) return null;
-  return new Date(milliseconds).toISOString();
-}
-function invalidJobRetryPolicyFailure() {
-  return { code: "JOB_RETRY_POLICY_INVALID", message: "The stored Job retry policy is invalid." };
-}
-async function cancelJob(database, context2, id2) {
-  const sql2 = database.adapter.dialect.sql;
-  const read = () => context2.__privilegedJobAccess ? database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id2) : database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id2, context2.auth.userId);
-  for (let transition = 0; transition < 8; transition += 1) {
-    const row = await read();
-    if (!row) return null;
-    const now2 = database.clock.now().toISOString();
-    if (["queued", "delayed"].includes(row.status)) {
-      const changed = await database.adapter.prepare(sql2(
-        "UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?"
-      )).run(now2, id2, row.status);
-      if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now2, startedAt: null, leaseExpiresAt: null }, true);
-      continue;
-    }
-    if (row.status === "running") {
-      const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
-      const changed = await database.adapter.prepare(sql2(
-        "UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " + (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL")
-      )).run(now2, id2, ...hasClaimToken ? [row.claimToken] : []);
-      if (Number(changed?.changes ?? 0) !== 1) continue;
-      const runtimeDatabase = database.__rootDatabase ?? database;
-      if (database.__transactionActive) {
-        const pendingContext = context2.__jobParentContext ?? context2;
-        const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
-        pendingOwner.__pendingJobCancellationAborts ??= /* @__PURE__ */ new Map();
-        pendingOwner.__pendingJobCancellationAborts.set(id2, { runtimeDatabase, claimToken: row.claimToken });
-      } else {
-        abortRuntimeJobClaim(runtimeDatabase, id2, row.claimToken);
-      }
-      return jobState({ ...row, cancelRequestedAt: now2 }, true);
-    }
-    throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
-  }
-  throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
-}
-function commitPendingJobCancellationAborts(context2) {
-  if (!context2) return;
-  const pendingContext = context2.__jobParentContext ?? context2;
-  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
-  const pending = pendingOwner.__pendingJobCancellationAborts;
-  if (!(pending instanceof Map)) return;
-  delete pendingOwner.__pendingJobCancellationAborts;
-  for (const [id2, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id2, claim.claimToken);
-}
-function dropPendingJobCancellationAborts(context2) {
-  if (!context2) return;
-  const pendingContext = context2.__jobParentContext ?? context2;
-  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
-  delete pendingOwner.__pendingJobCancellationAborts;
-}
-function abortRuntimeJobClaim(runtimeDatabase, id2, claimToken) {
-  const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id2);
-  const controller = activeClaim?.controller ?? activeClaim;
-  if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken) controller?.abort?.();
-}
-function jobSummary(row) {
-  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
-}
-function encodeJobCursor(row) {
-  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
-}
-function decodeJobCursor(value) {
-  if (value === void 0) return null;
-  try {
-    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
-    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
-    return cursor;
-  } catch {
-    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
-  }
-}
-function safeJobFailure(error) {
-  const knownCodes = /* @__PURE__ */ new Set([
-    "JOB_ACTOR_UNAVAILABLE",
-    "UNKNOWN_JOB_HANDLER",
-    "JOB_RESULT_TOO_LARGE",
-    "INVALID_JOB_PAYLOAD",
-    "STRIPE_CHECKOUT_REJECTED",
-    "STRIPE_CHECKOUT_RESPONSE_INVALID",
-    "STRIPE_PORTAL_REJECTED",
-    "STRIPE_PORTAL_RESPONSE_INVALID",
-    "PAYMENT_PORTAL_UNAVAILABLE",
-    "RESOURCE_BUSY",
-    "RESOURCE_INVALID_INPUT",
-    "RESOURCE_CONTEXT_UNSUPPORTED",
-    "RESOURCE_ADAPTER_UNSUPPORTED",
-    "RESOURCE_OPERATION_CONFLICT",
-    "RESOURCE_SCOPE_INACTIVE",
-    "RESOURCE_EFFECT_UNSUPPORTED",
-    "RESOURCE_DEADLINE_EXCEEDED",
-    "RESOURCE_CLAIM_LOST",
-    "RESOURCE_COMMIT_UNKNOWN",
-    "RESOURCE_STORAGE_ERROR"
-  ]);
-  const code2 = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
-  const messages = {
-    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
-    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
-    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
-    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
-    STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
-    STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
-    STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
-    STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
-    PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
-    RESOURCE_BUSY: "Resource transaction is busy.",
-    JOB_FAILED: "Job handler failed."
-  };
-  return { code: code2, message: messages[code2] ?? "Resource operation could not complete." };
-}
-
-// src/stored-value-coding.ts
-function deserializeFieldValue(field, value) {
-  if (field.kind === "Boolean") {
-    return value === null ? null : Boolean(value);
-  }
-  if (field.kind === "Json") {
-    return value === null ? null : JSON.parse(value);
-  }
-  if (field.kind === "Number") {
-    return value === null ? null : Number(value);
-  }
-  return value;
-}
-function deserializeRow(table, row) {
-  const output = { ...row };
-  for (const field of table.fields) {
-    if (field.kind === "Boolean") {
-      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
-    } else if (field.kind === "Json") {
-      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
-    }
-    if (field.kind === "Number") {
-      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
-    }
-  }
-  return output;
-}
-function serializeFieldValue(field, value) {
-  if (value === void 0) {
-    return null;
-  }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
-  if (value === null) {
-    return null;
-  }
-  if (field?.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  if (field?.kind === "Number") {
-    return toSqlNumber(value, field.name);
-  }
-  if (field?.kind === "Date") {
-    return normalizeDateValue(value, field.name);
-  }
-  if (field?.kind === "Reference") {
-    return String(value);
-  }
-  return String(value ?? "");
-}
-function normalizeDateValue(value, fieldName) {
-  if (value instanceof Date) {
-    if (Number.isNaN(value.getTime())) {
-      throw dateValueError(fieldName);
-    }
-    return value.toISOString();
-  }
-  if (typeof value !== "string") {
-    throw dateValueError(fieldName);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw dateValueError(fieldName);
-  }
-  return parsed.toISOString();
-}
-function toSqlNumber(value, fieldName) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
-  }
-  return value;
-}
-function dateValueError(fieldName) {
-  return commandError(
-    `Invalid date value for field: ${fieldName}`,
-    "Pass an ISO 8601 date string or JavaScript Date value."
-  );
-}
-
-// src/promise-coordinator.ts
-var nodePromiseHooks = process.getBuiltinModule("node:v8")?.promiseHooks;
-var observerRetainers = /* @__PURE__ */ new Map();
-var promiseParents = /* @__PURE__ */ new WeakMap();
-var promiseSettlementCauses = /* @__PURE__ */ new WeakMap();
-var promiseCombinatorInputs = /* @__PURE__ */ new WeakMap();
-var settledPromises = /* @__PURE__ */ new WeakSet();
-var promiseHookStack = [];
-var promiseHookStop;
-var compositionRootCandidates = [];
-var thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
-var promiseCombinatorKinds = /* @__PURE__ */ new WeakMap();
-var promiseCombinatorNames = /* @__PURE__ */ new Set(["all", "allSettled", "any", "race"]);
-var compositionRootClearQueued = false;
-function promiseCombinatorOnStack() {
-  const prepareStackTrace = Error.prepareStackTrace;
-  let callSites;
-  Error.prepareStackTrace = (_error, sites) => sites;
-  try {
-    callSites = new Error().stack;
-  } finally {
-    Error.prepareStackTrace = prepareStackTrace;
-  }
-  if (!Array.isArray(callSites)) return void 0;
-  for (const site of callSites) {
-    if (site.isAsync?.()) continue;
-    const name2 = site.getFunctionName();
-    const type = site.getTypeName();
-    if (name2 && promiseCombinatorNames.has(name2) && (type === "Promise" || type === "Function")) return name2;
-  }
-  return void 0;
-}
-function retainCompositionRootCandidate(promise) {
-  compositionRootCandidates.push(promise);
-  if (compositionRootClearQueued) return;
-  compositionRootClearQueued = true;
-  queueMicrotask(() => {
-    compositionRootCandidates = [];
-    compositionRootClearQueued = false;
-  });
-}
-function installPromiseHook() {
-  if (promiseHookStop || !nodePromiseHooks?.createHook) return;
-  promiseHookStop = nodePromiseHooks.createHook({
-    init(promise, parent) {
-      if (parent) promiseParents.set(promise, parent);
-      else retainCompositionRootCandidate(promise);
-      const combinator = parent ? promiseCombinatorOnStack() : void 0;
-      if (parent && combinator) {
-        const root = [...compositionRootCandidates].reverse().find((candidate) => !thenableWrapperRoots.has(candidate));
-        if (root) {
-          promiseCombinatorKinds.set(root, combinator);
-          const inputs = promiseCombinatorInputs.get(root) ?? /* @__PURE__ */ new Set();
-          inputs.add(parent);
-          promiseCombinatorInputs.set(root, inputs);
-        }
-      }
-      for (const observer of observerRetainers.keys()) observer.init?.(promise, parent);
-    },
-    before(promise) {
-      promiseHookStack.push(promise);
-      for (const observer of observerRetainers.keys()) observer.before?.(promise);
-    },
-    after(promise) {
-      for (const observer of observerRetainers.keys()) observer.after?.(promise);
-      promiseHookStack.pop();
-    },
-    settled(promise) {
-      settledPromises.add(promise);
-      const cause = promiseHookStack.at(-1);
-      if (cause && cause !== promise) promiseSettlementCauses.set(promise, cause);
-      for (const observer of observerRetainers.keys()) observer.settled?.(promise);
-    }
-  });
-}
-function retainPromiseObserver(observer) {
-  observerRetainers.set(observer, (observerRetainers.get(observer) ?? 0) + 1);
-  installPromiseHook();
-}
-function releasePromiseObserver(observer) {
-  const retained = observerRetainers.get(observer) ?? 0;
-  if (retained <= 1) observerRetainers.delete(observer);
-  else observerRetainers.set(observer, retained - 1);
-  if (observerRetainers.size !== 0) return;
-  promiseHookStop?.();
-  promiseHookStop = void 0;
-  promiseHookStack = [];
-  compositionRootCandidates = [];
-  thenableWrapperRoots = /* @__PURE__ */ new WeakSet();
-  settledPromises = /* @__PURE__ */ new WeakSet();
-  compositionRootClearQueued = false;
-}
-function activePromise() {
-  return promiseHookStack.at(-1);
-}
-function promiseSettlementCause(promise) {
-  return promiseSettlementCauses.get(promise);
-}
-function promiseDescendsFrom(promise, ancestor) {
-  const visited = /* @__PURE__ */ new Set();
-  for (let current2 = promise; current2 && !visited.has(current2); current2 = promiseParents.get(current2)) {
-    if (current2 === ancestor) return true;
-    visited.add(current2);
-  }
-  return false;
-}
-function promiseDependsOn(promise, dependency) {
-  const pending = promise ? [promise] : [];
-  const visited = /* @__PURE__ */ new Set();
-  while (pending.length > 0) {
-    const current2 = pending.pop();
-    if (current2 === dependency) return true;
-    if (visited.has(current2)) continue;
-    visited.add(current2);
-    const parent = promiseParents.get(current2);
-    if (parent) pending.push(parent);
-    if (["all", "allSettled"].includes(promiseCombinatorKinds.get(current2) ?? "")) {
-      pending.push(...promiseCombinatorInputs.get(current2) ?? []);
-    }
-  }
-  return false;
-}
-function promiseCompositionRootCandidate() {
-  const wrapper = compositionRootCandidates.at(-1);
-  if (!wrapper) return void 0;
-  thenableWrapperRoots.add(wrapper);
-  const combinator = promiseCombinatorOnStack();
-  if (!combinator) return void 0;
-  for (let index = compositionRootCandidates.length - 2; index >= 0; index -= 1) {
-    const candidate = compositionRootCandidates[index];
-    if (!thenableWrapperRoots.has(candidate)) {
-      promiseCombinatorKinds.set(candidate, combinator);
-      return candidate;
-    }
-  }
-  promiseCombinatorKinds.set(wrapper, combinator);
-  return wrapper;
-}
-function promiseCombinatorKind(promise) {
-  return promiseCombinatorKinds.get(promise);
-}
-function enclosingPromiseCombinatorRoot() {
-  if (!promiseCombinatorOnStack()) return void 0;
-  for (let index = compositionRootCandidates.length - 1; index >= 0; index -= 1) {
-    const candidate = compositionRootCandidates[index];
-    if (!settledPromises.has(candidate)) return candidate;
-  }
-  return void 0;
-}
-
-// src/acl-runtime.ts
-var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
-var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
-function createPrivilegedAuditEmitter(log) {
-  return {
-    emit(details) {
-      return emitPrivilegedAuditEvent(log, details);
-    }
-  };
-}
-function emitPrivilegedAuditEvent(target, details = {}) {
-  const log = target?.log?.emit ? target.log : target;
-  if (!log?.emit) {
-    throw new Error("Privileged audit events require a runtime log sink.");
-  }
-  return log.emit(createPrivilegedAuditLogInput(details));
-}
-async function emitPrivilegedRunAudit(database, context2, details) {
-  const event = await database.audit.emit(details);
-  recordPrivilegedAuditEventForTransaction(context2, event);
-  return event;
-}
-function recordPrivilegedAuditEventForTransaction(context2, event) {
-  if (!context2 || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
-    return;
-  }
-  if (!Array.isArray(context2.__privilegedAuditEvents)) {
-    Object.defineProperty(context2, "__privilegedAuditEvents", {
-      value: [],
-      enumerable: false,
-      configurable: true
-    });
-  }
-  context2.__privilegedAuditEvents.push(event);
-}
-async function reindexPrivilegedAuditEventsAfterRollback(database, context2) {
-  const events = context2?.__privilegedAuditEvents;
-  if (!Array.isArray(events) || events.length === 0) {
-    return;
-  }
-  for (const event of events) {
-    try {
-      if (event?.data?.metadata?.actionOwned !== true && await privilegedAuditEventAlreadyIndexed(database, event)) {
-        continue;
-      }
-      await database.adapter.insertLogIndexEvent(event);
-    } catch {
-      return;
-    }
-  }
-  try {
-    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
-  } catch {
-  }
-}
-async function privilegedAuditEventAlreadyIndexed(database, event) {
-  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
-  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
-}
-function samePrivilegedAuditLogEvent(left, right) {
-  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
-}
-function normalizePrivilegedRunSignal(value) {
-  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
-    return value;
-  }
-  return new AbortController().signal;
-}
-function createPrivilegedRunAbortError() {
-  return commandError(
-    "Privileged run aborted.",
-    "Retry the privileged operation if cancellation was not intended.",
-    "ABORTED"
-  );
-}
-function createPrivilegedRunAuditDetails(context2, options) {
-  if (!options || typeof options !== "object" || Array.isArray(options)) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
-  }
-  const operation = validatedPrivilegedOperation(options.operation);
-  const metadata2 = validatedPrivilegedMetadata(options.metadata);
-  return {
-    actorKind: "privileged-server-role",
-    operation,
-    surface: auditString(options.surface ?? context2?.kind, "server-handler"),
-    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
-    correlation: options.correlation ?? null,
-    request: options.request ?? null,
-    source: "runtime",
-    metadata: metadata2
-  };
-}
-function validatedPrivilegedOperation(value) {
-  if (typeof value !== "string" || !value.trim()) {
-    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
-  }
-  const operation = value.trim();
-  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
-    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
-  }
-  return operation;
-}
-function validatedPrivilegedMetadata(value) {
-  if (value === void 0) {
-    return {};
-  }
-  if (!isPlainPrivilegedMetadata(value)) {
-    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
-  }
-  return { ...value };
-}
-function isPlainPrivilegedMetadata(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return false;
-  }
-  if (typeof value.then === "function") {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-function invalidPrivilegedRunMetadata(message) {
-  return commandError(
-    message,
-    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
-    "INVALID_PRIVILEGED_RUN_METADATA"
-  );
-}
-function createPrivilegedRunPublicError(cause) {
-  const error = commandError(
-    "Privileged run failed.",
-    "Check the privileged audit events and server logs before exposing a safe response.",
-    "PRIVILEGED_RUN_FAILED"
-  );
-  error.cause = cause;
-  return error;
-}
-function createPrivilegedAuditEmissionPublicError(cause, context2 = void 0) {
-  const error = commandError(
-    "Privileged audit emission failed.",
-    "Check the server audit log configuration before retrying the privileged operation.",
-    "PRIVILEGED_AUDIT_EMISSION_FAILED"
-  );
-  error.cause = cause;
-  if (context2) {
-    error.privilegedAuditContext = context2;
-  }
-  return error;
-}
-function isPrivilegedAuditEmissionPublicError(error) {
-  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
-}
-function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => database.adapter;
-  return {
-    async get(name2) {
-      assertActivePrivilegedJobAccess(contextGetter);
-      if (typeof name2 !== "string" || !name2) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
-      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name2);
-      return row ? await scheduleSummary(sqlite(), row) : null;
-    },
-    async list() {
-      assertActivePrivilegedJobAccess(contextGetter);
-      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
-      const summaries = [];
-      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
-      return summaries;
-    }
-  };
-}
-function createPrivilegedFileApi(database, contextGetter) {
-  return Object.freeze({
-    async list(options = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) return active;
-      let cutoff = null;
-      let after = null;
-      try {
-        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["createdBefore", "cursor"].includes(key))) throw new Error();
-        if (options.createdBefore !== void 0) {
-          if (!(typeof options.createdBefore === "string" || options.createdBefore instanceof Date)) throw new Error();
-          cutoff = new Date(options.createdBefore).toISOString();
-        }
-        if (options.cursor !== void 0 && options.cursor !== null) {
-          if (typeof options.cursor !== "string" || options.cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw new Error();
-          const decoded = JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8"));
-          if (decoded.v !== 1 || typeof decoded.id !== "string" || decoded.id.length === 0 || decoded.id.length > 200 || typeof decoded.createdAt !== "string" || new Date(decoded.createdAt).toISOString() !== decoded.createdAt || decoded.cutoff !== null && (typeof decoded.cutoff !== "string" || new Date(decoded.cutoff).toISOString() !== decoded.cutoff)) throw new Error();
-          if (options.createdBefore !== void 0 && cutoff !== decoded.cutoff) throw new Error();
-          cutoff = decoded.cutoff;
-          after = { createdAt: decoded.createdAt, id: decoded.id };
-        }
-      } catch {
-        return { ok: false, error: { message: "Invalid File listing options.", hint: "Use a valid createdBefore date and the cursor from the previous page with the same cutoff.", code: "INVALID_FILE_LIST_OPTIONS" } };
-      }
-      const rows = await database.adapter.selectLiveFilesPage(cutoff, after);
-      const stillActive = activePrivilegedFileAccess(contextGetter);
-      if (!stillActive.ok) return stillActive;
-      const page = rows.slice(0, 100);
-      const last = page.at(-1);
-      return { ok: true, data: {
-        files: page.map((row) => ({ ...fileMetadataFromRow(row), ownerId: row.ownerId, createdAt: row.createdAt, updatedAt: row.updatedAt })),
-        cursor: rows.length > 100 ? Buffer.from(JSON.stringify({ v: 1, createdAt: last.createdAt, id: last.id, cutoff })).toString("base64url") : null
-      }, error: null };
-    },
-    async url(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      const row = resolved.row;
-      if (!row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: {
-            ...fileMetadataFromRow(row),
-            ownerId: row.ownerId
-          }
-        },
-        error: null
-      };
-    },
-    async createPublicUrl(fileReference, options = {}) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
-    },
-    async delete(fileReference) {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        return active;
-      }
-      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
-      if (!resolved.ok) {
-        return resolved;
-      }
-      if (!resolved.row) {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
-        };
-      }
-      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
-    },
-    unsupported() {
-      const active = activePrivilegedFileAccess(contextGetter);
-      if (!active.ok) {
-        throw commandError(
-          active.error?.message ?? "Privileged file access is no longer active.",
-          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
-          "PRIVILEGED_FILE_ACCESS_INACTIVE"
-        );
-      }
-      throw commandError(
-        "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: list, url, createPublicUrl, or delete.",
-        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
-      );
-    }
-  });
-}
-function activePrivilegedFileAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return { ok: true };
-  }
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "Privileged file access is no longer active.",
-      "Start a new ctx.privileged.run callback before using privileged file operations."
-    )
-  };
-}
-function createPrivilegedAuditLogInput(details = {}) {
-  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
-  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
-  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
-  const release = details.release ?? null;
-  const data2 = {
-    schema: PRIVILEGED_AUDIT_SCHEMA,
-    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
-    operation: auditString(details.operation, "unknown"),
-    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
-    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
-    outcome,
-    safeErrorCode,
-    source: auditString(details.source, "runtime"),
-    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
-  };
-  return {
-    category: "audit",
-    event: auditString(details.event, `privileged.${outcome}`),
-    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
-    message: auditString(details.message, `Privileged audit event ${outcome}: ${data2.operation}`),
-    data: data2,
-    request: details.request ?? null,
-    release,
-    correlation
-  };
-}
-function normalizePrivilegedAuditActorKind(value) {
-  const candidate = String(value ?? "unknown");
-  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
-}
-function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "started");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
-}
-function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "errored") {
-    return "error";
-  }
-  return "info";
-}
-function safePrivilegedAuditErrorCode(value, outcome = "started") {
-  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
-  if (source === null || source === void 0 || source === "") {
-    if (outcome === "errored") {
-      return "UNKNOWN_ERROR";
-    }
-    return null;
-  }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
-}
-function normalizePrivilegedAuditCorrelation(value) {
-  if (value === null || value === void 0) {
-    return null;
-  }
-  if (typeof value === "string") {
-    return { id: value };
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value;
-  }
-  return { id: String(value) };
-}
-function auditString(value, fallback) {
-  const text3 = value === null || value === void 0 ? "" : String(value);
-  return text3.trim() ? text3 : fallback;
-}
-function normalizeTableAcl(tableName, aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
-  if (aclRules === void 0) {
-    return {
-      allowByDefault: true,
-      resolve(operation) {
-        return resolveEffectiveAclRule(this, operation);
-      }
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      `Invalid Capsule table ACL: ${tableName}`,
-      "Pass an object with function rules for read, write, insert, update, and delete."
-    );
-  }
-  const normalized = {
-    allowByDefault: true
-  };
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
-        "Supported ACL operations are read, write, insert, update, and delete."
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule table ACL: ${tableName}.${operation}`,
-        "ACL rules must be functions for read, write, insert, update, and delete."
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve2(operation) {
-    return resolveEffectiveAclRule(this, operation);
-  };
-  return normalized;
-}
-function normalizeFileAcl(aclRules) {
-  const supportedOperations = /* @__PURE__ */ new Set(["read", "publicUrl", "delete", "upload"]);
-  if (aclRules === void 0) {
-    return {
-      resolve() {
-        return void 0;
-      }
-    };
-  }
-  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
-    throw commandError(
-      "Invalid Capsule File ACL.",
-      "Declare files as { acl: { read?, publicUrl?, delete?, upload? } }.",
-      "INVALID_FILE_ACL"
-    );
-  }
-  const normalized = {};
-  for (const [operation, rule] of Object.entries(aclRules)) {
-    if (!supportedOperations.has(operation)) {
-      throw commandError(
-        `Unsupported Capsule File ACL operation: ${operation}.`,
-        "Supported File ACL operations are read, publicUrl, delete, and upload.",
-        "INVALID_FILE_ACL"
-      );
-    }
-    if (typeof rule !== "function") {
-      throw commandError(
-        `Invalid Capsule File ACL: ${operation}.`,
-        "File ACL rules must be functions.",
-        "INVALID_FILE_ACL"
-      );
-    }
-    normalized[operation] = rule;
-  }
-  normalized.resolve = function resolve2(operation) {
-    return this[operation];
-  };
-  return normalized;
-}
-function resolveEffectiveAclRule(aclRules, operation) {
-  if (!aclRules || typeof aclRules !== "object") {
-    return void 0;
-  }
-  if (operation === "insert" || operation === "update" || operation === "delete") {
-    return aclRules[operation] ?? aclRules.write;
-  }
-  return aclRules[operation];
-}
-function createTableAclContext(context2, database) {
-  return bindAppContext({
-    auth: context2?.auth,
-    credential: context2?.credential,
-    acl: createAclHelpers(database, context2)
-  }, database.app);
-}
-var pendingAclWritesByContext = /* @__PURE__ */ new WeakMap();
-function bindPendingAclWrites(context2, sourceContext) {
-  if (!context2 || typeof context2 !== "object") return context2;
-  const shared = sourceContext && typeof sourceContext === "object" ? pendingAclWritesByContext.get(sourceContext) : void 0;
-  if (sourceContext && !shared) return context2;
-  pendingAclWritesByContext.set(context2, shared ?? []);
-  return context2;
-}
-function trackPendingAclWrite(context2, pending) {
-  const entries = context2 && typeof context2 === "object" ? pendingAclWritesByContext.get(context2) : void 0;
-  if (entries) entries.push(pending);
-  return pending;
-}
-function pendingAclWrites(context2) {
-  return context2 && typeof context2 === "object" ? pendingAclWritesByContext.get(context2) : void 0;
-}
-function createFileAclContext(auth, database, credential = { kind: "session" }) {
-  const context2 = {
-    auth: Object.freeze({ ...auth }),
-    credential: Object.freeze({ ...credential })
-  };
-  return Object.freeze({
-    app: database.app,
-    auth: context2.auth,
-    credential: context2.credential,
-    acl: createAclHelpers(database, context2)
-  });
-}
-async function allowFileUpload(database, auth, meta2) {
-  const rule = database.fileAcl?.resolve?.("upload");
-  if (!rule) return true;
-  const context2 = createFileAclContext(auth, database);
-  try {
-    const result = invokeAclRule(context2, () => rule(context2, Object.freeze(meta2)));
-    const allowed = isPromiseLike(result) ? await result : result;
-    return allowed === true && !aclRuleTouchedAsyncHelperRead(context2, !isPromiseLike(result));
-  } catch {
-    return false;
-  } finally {
-    await settleAclHelperReads(context2);
-  }
-}
-function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
-  const rule = database.fileAcl?.resolve?.(operation);
-  if (!rule) return false;
-  const context2 = createFileAclContext(auth, database, credential);
-  const input = Object.freeze({
-    ctx: context2,
-    operation,
-    file: Object.freeze(aclStorageMetadataFromFileRow(row))
-  });
-  const deny = () => {
-    emitFileAclDeniedLog(database, { context: context2, operation, row });
-    return false;
-  };
-  const result = invokeAclRule(context2, () => rule(input));
-  if (!isPromiseLike(result)) {
-    if (result && !aclRuleTouchedAsyncHelperRead(context2, true)) return true;
-    const settlement = settleAclHelperReads(context2);
-    return settlement ? settlement.then(deny) : deny();
-  }
-  return Promise.resolve(result).then((allowed) => {
-    if (allowed && !aclRuleTouchedAsyncHelperRead(context2)) return true;
-    const settlement = settleAclHelperReads(context2);
-    return settlement ? settlement.then(deny) : deny();
-  });
-}
-function privilegedDbAccessContextSet() {
-  const holder = privilegedDbAccessContextSet;
-  if (!holder.contexts) {
-    Object.defineProperty(holder, "contexts", {
-      value: /* @__PURE__ */ new WeakSet(),
-      enumerable: false,
-      configurable: false
-    });
-  }
-  return holder.contexts;
-}
-function grantPrivilegedDbAccess(context2) {
-  if (context2 && typeof context2 === "object") {
-    privilegedDbAccessContextSet().add(context2);
-  }
-  return context2;
-}
-function revokePrivilegedDbAccess(context2) {
-  if (context2 && typeof context2 === "object") {
-    privilegedDbAccessContextSet().delete(context2);
-  }
-  return context2;
-}
-function hasPrivilegedDbAccess(context2) {
-  return Boolean(context2 && typeof context2 === "object" && privilegedDbAccessContextSet().has(context2));
-}
-function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) {
-    return write();
-  }
-  const rule = table.acl?.resolve?.(operation);
-  if (!rule) {
-    return write();
-  }
-  const context2 = contextGetter?.();
-  const denialLogData = createAclDenialLogData({
-    context: context2,
-    table,
-    operation,
-    previous,
-    next
-  });
-  const deny = () => {
-    if (!pendingAclWrites(context2)) {
-      emitAclDeniedLog(database, { data: denialLogData });
-    }
-    throw createAclDeniedError(denialLogData);
-  };
-  const aclContext = createTableAclContext(context2, database);
-  const result = invokeAclRule(aclContext, () => rule({
-    ctx: aclContext,
-    operation,
-    table: table.name,
-    previous,
-    next
-  }));
-  if (!isPromiseLike(result)) {
-    if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
-      const settlement = settleAclHelperReads(aclContext);
-      return settlement ? settlement.then(deny) : deny();
-    }
-    return write();
-  }
-  const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
-      const settlement = settleAclHelperReads(aclContext);
-      return settlement ? settlement.then(deny) : deny();
-    }
-    return write();
-  });
-  trackPendingAclWrite(context2, pending);
-  return pending;
-}
-function applyReadAcl(database, table, row, context2) {
-  if (hasPrivilegedDbAccess(context2)) {
-    return true;
-  }
-  const rule = table.acl?.resolve?.("read");
-  if (!rule) {
-    return true;
-  }
-  const aclContext = createTableAclContext(context2, database);
-  const result = invokeAclRule(aclContext, () => rule({
-    ctx: aclContext,
-    operation: "read",
-    table: table.name,
-    row
-  }));
-  const deny = () => {
-    emitAclDeniedLog(database, {
-      context: context2,
-      table,
-      operation: "read",
-      row
-    });
-    return false;
-  };
-  if (!isPromiseLike(result)) {
-    if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true)) return true;
-    const settlement = settleAclHelperReads(aclContext);
-    return settlement ? settlement.then(deny) : deny();
-  }
-  return Promise.resolve(result).then((allowed) => {
-    if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext)) return true;
-    const settlement = settleAclHelperReads(aclContext);
-    return settlement ? settlement.then(deny) : deny();
-  });
-}
-function filterRowsByReadAcl(database, table, rows, context2) {
-  const decisions = rows.map((row) => applyReadAcl(database, table, row, context2));
-  if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved) => rows.filter((_2, index) => resolved[index]));
-  }
-  return rows.filter((_2, index) => decisions[index]);
-}
-var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
-var aclPromiseObserver = {};
-function retainAclPromiseHook(state) {
-  if (state.promiseHookRetained) return;
-  state.promiseHookRetained = true;
-  retainPromiseObserver(aclPromiseObserver);
-}
-function releaseAclPromiseHook(state) {
-  if (!state.promiseHookRetained) return;
-  state.promiseHookRetained = false;
-  releasePromiseObserver(aclPromiseObserver);
-}
-function createAclHelpers(database, context2) {
-  const state = {
-    readCount: 0,
-    maxReads: 32,
-    touchedAsyncRead: false,
-    rulePromise: void 0,
-    promiseHookRetained: false,
-    unconsumedAsyncReads: /* @__PURE__ */ new Set(),
-    pendingAsyncReads: /* @__PURE__ */ new Set(),
-    helperPromiseDependencies: /* @__PURE__ */ new WeakMap()
-  };
-  const helpers = {
-    db: createAclDbHelpers(database, state),
-    storage: createAclStorageHelpers(database, state),
-    teams: createAclTeamHelpers(database, context2, state)
-  };
-  Object.defineProperty(helpers, ACL_HELPER_STATE, {
-    value: state,
-    enumerable: false
-  });
-  return Object.freeze(helpers);
-}
-function createAclTeamHelpers(database, context2, state) {
-  return Object.freeze({
-    isMember(teamId) {
-      const membership = readAclTeamMembership(database, context2, state, teamId);
-      return resolveAclHelperRead(state, membership, (resolved) => resolved?.role === "admin" || resolved?.role === "member");
-    },
-    isAdmin(teamId) {
-      return resolveAclHelperRead(state, readAclTeamMembership(database, context2, state, teamId), (membership) => membership?.role === "admin");
-    },
-    hasRole(teamId, role) {
-      assertAclHelperReadAllowed(state);
-      if (!isActiveAclTeamApplicationRole(database, role)) return false;
-      const actorUserId = aclTeamActorUserId(context2);
-      if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
-        "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
-      )).get(teamId, actorUserId, role));
-      return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
-    },
-    hasAnyRole(teamId, roles) {
-      assertAclHelperReadAllowed(state);
-      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
-      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
-      if (activeRoles.length !== roles.length) return false;
-      const actorUserId = aclTeamActorUserId(context2);
-      if (!actorUserId || !isAclTeamId(teamId)) return false;
-      const placeholders = activeRoles.map(() => "?").join(", ");
-      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
-        `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
-      )).all(teamId, actorUserId, ...activeRoles));
-      return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
-    }
-  });
-}
-function readAclTeamMembership(database, context2, state, teamId) {
-  assertAclHelperReadAllowed(state);
-  const actorUserId = aclTeamActorUserId(context2);
-  if (!actorUserId || !isAclTeamId(teamId)) return null;
-  const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () => database.adapter.prepare(database.adapter.dialect.sql(
-    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
-  )).get(teamId, actorUserId));
-  return selected;
-}
-function readWithAclHelperDependencies(database, tableNames, read) {
-  const lock = database.lockAclHelperDependencies?.(tableNames);
-  return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
-}
-function bindPostgresAclDependencyLocking(database, adapter) {
-  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
-  const lockedTables = /* @__PURE__ */ new Set();
-  database.lockAclHelperDependencies = async (tableNames) => {
-    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
-    if (pending.length === 0) return;
-    try {
-      await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
-    } catch (error) {
-      if (error?.code === "55P03") throw resourceError("RESOURCE_BUSY");
-      throw error;
-    }
-    for (const tableName of pending) lockedTables.add(tableName);
-  };
-}
-function aclTeamActorUserId(context2) {
-  const auth = context2?.auth;
-  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
-  return auth.userId;
-}
-function isAclTeamId(value) {
-  return typeof value === "string" && value.length > 0 && value.length <= 128;
-}
-function isActiveAclTeamApplicationRole(database, role) {
-  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
-}
-function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
-  const state = aclContext?.acl?.[ACL_HELPER_STATE];
-  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
-  return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
-}
-function consumeParticipatingAclHelperReads(state) {
-  if (!state?.rulePromise) return;
-  const settlementCause = promiseSettlementCause(state.rulePromise);
-  for (const dependency of state.unconsumedAsyncReads ?? []) {
-    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDependsOn(settlementCause, promise)))) {
-      state.unconsumedAsyncReads.delete(dependency);
-    }
-  }
-}
-function invokeAclRule(aclContext, invoke) {
-  const state = aclContext?.acl?.[ACL_HELPER_STATE];
-  if (!state) return invoke();
-  retainAclPromiseHook(state);
-  let result;
-  try {
-    result = invoke();
-    state.rulePromise = isPromiseLike(result) ? result : void 0;
-    consumeAclHelperPromiseDependencies(state, result);
-    return result;
-  } finally {
-    if (isPromiseLike(result)) {
-      void Promise.resolve(result).then(
-        () => releaseAclPromiseHook(state),
-        () => releaseAclPromiseHook(state)
-      );
-    } else releaseAclPromiseHook(state);
-  }
-}
-function consumeAclHelperPromiseDependencies(state, promise) {
-  if (!promise || typeof promise !== "object") return;
-  const dependencies = state.helperPromiseDependencies.get(promise);
-  if (!dependencies) return;
-  for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
-}
-function isPromiseAssimilationContinuation(args) {
-  return args.length === 2 && args.every((callback) => typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
-}
-function trackAclHelperPromise(state, promise, dependencies) {
-  let tracked;
-  tracked = new Proxy(promise, {
-    get(target, property) {
-      if (property === "then" || property === "catch" || property === "finally") {
-        if (property === "then") {
-          const compositionRoot = promiseCompositionRootCandidate();
-          if (compositionRoot) {
-            for (const dependency of dependencies) {
-              dependency.assimilationPromises.add(compositionRoot);
-              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
-            }
-          }
-        }
-        return (...args) => {
-          const active = activePromise();
-          if (property === "then" && isPromiseAssimilationContinuation(args) && active) {
-            for (const dependency of dependencies) dependency.assimilationPromises.add(active);
-          }
-          const derived = target[property](...args);
-          return trackAclHelperPromise(state, derived, dependencies);
-        };
-      }
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    }
-  });
-  state.helperPromiseDependencies.set(tracked, dependencies);
-  return tracked;
-}
-function settleAclHelperReads(aclContext) {
-  const pending = [...aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? []];
-  return pending.length > 0 ? Promise.allSettled(pending) : null;
-}
-function resolveAclHelperRead(state, result, resolve2) {
-  if (!isPromiseLike(result)) return resolve2(result);
-  state.touchedAsyncRead = true;
-  const pending = Promise.resolve(result).then(resolve2);
-  const dependency = {
-    assimilationPromises: /* @__PURE__ */ new Set(),
-    compositionKinds: /* @__PURE__ */ new WeakMap(),
-    settled: false
-  };
-  const dependencies = /* @__PURE__ */ new Set([dependency]);
-  state.unconsumedAsyncReads.add(dependency);
-  state.pendingAsyncReads.add(pending);
-  void pending.then(
-    () => {
-      dependency.settled = true;
-      state.pendingAsyncReads.delete(pending);
-    },
-    () => {
-      dependency.settled = true;
-      state.pendingAsyncReads.delete(pending);
-    }
-  );
-  pending.catch(() => {
-  });
-  return trackAclHelperPromise(state, pending, dependencies);
-}
-function createAclDbHelpers(database, state) {
-  return Object.freeze({
-    get(tableName, id2) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
-      return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
-    },
-    exists(tableName, id2) {
-      assertAclHelperReadAllowed(state);
-      const table = resolveAclAppTable(database, tableName);
-      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
-      return resolveAclHelperRead(state, selected, Boolean);
-    }
-  });
-}
-function createAclStorageHelpers(database, state) {
-  return Object.freeze({
-    get(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
-        return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
-      }
-      return null;
-    },
-    exists(resourceName, reference) {
-      assertAclHelperReadAllowed(state);
-      const resource = resolveAclStorageResource(resourceName);
-      if (resource === "files") {
-        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
-        return resolveAclHelperRead(state, row, Boolean);
-      }
-      return false;
-    }
-  });
-}
-function resolveAclStorageFileReference(database, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path26;
-    try {
-      path26 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return null;
-    }
-    const selected2 = database.adapter.selectLiveFileByPath(path26);
-    return thenIfPromise(selected2, (rows) => {
-      const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
-      return resolved?.ambiguous ? null : resolved;
-    });
-  }
-  const selected = database.adapter.selectFileById(value);
-  return thenIfPromise(selected, (resolved) => {
-    if (!resolved || resolved.deletedAt !== null || resolved.status !== "uploaded") return null;
-    return resolved;
-  });
-}
-function assertAclHelperReadAllowed(state) {
-  state.readCount += 1;
-  if (state.readCount > state.maxReads) {
-    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
-  }
-}
-function resolveAclAppTable(database, tableName) {
-  const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
-  if (!table) {
-    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
-  }
-  return table;
-}
-function resolveAclStorageResource(resourceName) {
-  const normalized = String(resourceName ?? "");
-  if (normalized === "files") {
-    return normalized;
-  }
-  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
-}
-function aclStorageMetadataFromFileRow(row) {
-  const metadata2 = fileMetadataFromRow(row);
-  return {
-    ...metadata2,
-    originalName: row.name,
-    owner: row.ownerId,
-    ownerId: row.ownerId,
-    status: row.status,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    deletedAt: row.deletedAt ?? null
-  };
-}
-function emitAclDeniedLog(database, details) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied table operation.",
-    data: details.data ?? createAclDenialLogData(details)
-  });
-}
-function emitFileAclDeniedLog(database, { context: context2, operation, row }) {
-  database.log?.emit?.({
-    category: "platform",
-    event: "acl.denied",
-    level: "warn",
-    message: "ACL denied File operation.",
-    data: {
-      resource: { kind: "file", id: row?.id ?? null },
-      operation,
-      rule: { category: "file", declaredOperation: operation },
-      actor: {
-        userId: context2?.auth?.userId ?? null,
-        provider: context2?.auth?.provider ?? null,
-        isAuthenticated: context2?.auth?.isAuthenticated ?? null,
-        isGuest: context2?.auth?.isGuest ?? null
-      },
-      ...accessKeyCredentialLogAttribution(context2)
-    }
-  });
-}
-function createAclDenialLogData({ context: context2, table, operation, row = null, previous = null, next = null }) {
-  return {
-    resource: {
-      kind: "table",
-      name: table.name
-    },
-    operation,
-    rule: {
-      category: "table",
-      declaredOperation: aclRuleDeclaredOperation(table, operation)
-    },
-    actor: {
-      userId: context2?.auth?.userId ?? null,
-      provider: context2?.auth?.provider ?? null,
-      isAuthenticated: context2?.auth?.isAuthenticated ?? null,
-      isGuest: context2?.auth?.isGuest ?? null
-    },
-    ...accessKeyCredentialLogAttribution(context2),
-    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
-  };
-}
-function aclRuleDeclaredOperation(table, operation) {
-  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
-    return "write";
-  }
-  return operation;
-}
-function aclRowLogSnapshot(input) {
-  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
-    const previous = input.previous ?? null;
-    const next = input.next ?? null;
-    return {
-      previousId: previous?.id ?? null,
-      nextId: next?.id ?? null,
-      previousFields: aclVisibleFieldNames(previous),
-      nextFields: aclVisibleFieldNames(next),
-      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
-      previousPresent: Boolean(previous),
-      nextPresent: Boolean(next)
-    };
-  }
-  return {
-    id: input?.id ?? null,
-    fields: aclVisibleFieldNames(input)
-  };
-}
-function aclVisibleFieldNames(row) {
-  return Object.keys(row ?? {}).filter(
-    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
-  );
-}
-function createAclDeniedError(logData = null) {
-  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
-  if (logData) {
-    error.sporadesAclDenialLogData = logData;
-  }
-  return error;
-}
-function assertActivePrivilegedJobAccess(contextGetter) {
-  if (hasPrivilegedDbAccess(contextGetter?.())) return;
-  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
-}
-async function drainPendingAclWrites(context2) {
-  let firstError = null;
-  const entries = pendingAclWrites(context2);
-  while (entries && entries.length > 0) {
-    const pending = entries.splice(0);
-    const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
-    for (const result of results) {
-      if (result.status === "rejected" && !firstError) {
-        firstError = result.reason;
-      }
-    }
-  }
-  if (firstError) {
-    throw firstError;
-  }
-}
-
-// src/file-storage-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
-async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path26 = await import("node:path");
-  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
-    return createS3CompatibleFileStorageAdapter({
-      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
-      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
-      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
-      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
-      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule"
-    });
-  }
-  return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path26.join(path26.dirname(databasePath), "files")
-  });
-}
-function createLocalFileStorageAdapter({ storagePath }) {
-  if (typeof storagePath !== "string" || storagePath.length === 0) {
-    throw new Error("Local file storage requires a storagePath.");
-  }
-  return {
-    engine: "local",
-    storagePath,
-    async writeFileVersion({ fileId, version: version3, bytes }) {
-      const { mkdir: mkdir13, writeFile: writeFile11 } = await import("node:fs/promises");
-      await mkdir13(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile11(localFileVersionPath(storagePath, fileId, version3), bytes);
-    },
-    async readFileVersion({ fileId, version: version3 }) {
-      const { readFile: readFile17 } = await import("node:fs/promises");
-      return await readFile17(localFileVersionPath(storagePath, fileId, version3));
-    },
-    async openFileVersionStream({ fileId, version: version3 }) {
-      const { createReadStream: createReadStream2 } = await import("node:fs");
-      const stream = createReadStream2(localFileVersionPath(storagePath, fileId, version3));
-      await new Promise((resolve2, reject) => {
-        const cleanup = () => {
-          stream.removeListener("open", opened);
-          stream.removeListener("error", failed);
-        };
-        const opened = () => {
-          cleanup();
-          resolve2();
-        };
-        const failed = (error) => {
-          cleanup();
-          stream.destroy();
-          reject(error);
-        };
-        stream.once("open", opened);
-        stream.once("error", failed);
-      });
-      return stream;
-    },
-    async deleteFileVersion({ fileId, version: version3 }) {
-      const { rm: rm13 } = await import("node:fs/promises");
-      await rm13(localFileVersionPath(storagePath, fileId, version3), { force: true });
-    },
-    async checkHealth() {
-      const { mkdir: mkdir13, rm: rm13, writeFile: writeFile11 } = await import("node:fs/promises");
-      const path26 = await import("node:path");
-      const probeDirectory = path26.join(storagePath, ".sporades-health");
-      const probeFile = path26.join(probeDirectory, `${nodeCryptoModule2.randomUUID()}.tmp`);
-      try {
-        await mkdir13(probeDirectory, { recursive: true });
-        await writeFile11(probeFile, "");
-        await rm13(probeFile, { force: true });
-        return { ok: true };
-      } catch {
-        await rm13(probeFile, { force: true }).catch(() => {
-        });
-        return { ok: false };
-      }
-    },
-    close() {
-    }
-  };
-}
-function localFileStoragePath(storagePath, fileId) {
-  return `${storagePath}/${fileId}`;
-}
-function localFileVersionPath(storagePath, fileId, version3) {
-  return `${localFileStoragePath(storagePath, fileId)}/${version3}`;
-}
-function createS3CompatibleFileStorageAdapter({
-  endpoint,
-  bucket,
-  region,
-  accessKey,
-  secretKey,
-  namespace
-}) {
-  if (typeof endpoint !== "string" || endpoint.length === 0) {
-    throw new Error("S3-compatible file storage requires an endpoint.");
-  }
-  if (typeof bucket !== "string" || bucket.length === 0) {
-    throw new Error("S3-compatible file storage requires a bucket.");
-  }
-  if (typeof region !== "string" || region.length === 0) {
-    throw new Error("S3-compatible file storage requires a region.");
-  }
-  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
-    throw new Error("S3-compatible file storage requires access credentials.");
-  }
-  const isolatedNamespace = s3StorageNamespace(namespace);
-  const config = { endpoint, bucket, region, accessKey, secretKey };
-  let bucketReady = false;
-  const ensureBucket = async () => {
-    if (bucketReady) {
-      return;
-    }
-    const head = await s3Request(config, { method: "HEAD", key: null });
-    if (head.statusCode === 404) {
-      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
-      if (created.statusCode < 200 || created.statusCode >= 300) {
-        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
-      }
-    } else if (head.statusCode < 200 || head.statusCode >= 300) {
-      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
-    }
-    bucketReady = true;
-  };
-  return {
-    engine: "s3-compatible",
-    endpoint,
-    bucket,
-    region,
-    namespace: isolatedNamespace,
-    objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version: version3, bytes }) {
-      await ensureBucket();
-      const result = await s3Request(config, {
-        method: "PUT",
-        key: s3ObjectKey(isolatedNamespace, fileId, version3),
-        body: bytes
-      });
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async readFileVersion({ fileId, version: version3 }) {
-      const result = await s3Request(config, {
-        method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version3)
-      });
-      if (result.statusCode === 404) {
-        throw s3ObjectNotFoundError();
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
-      }
-      return result.body;
-    },
-    async openFileVersionStream({ fileId, version: version3 }) {
-      const response = await s3RequestStream(config, {
-        method: "GET",
-        key: s3ObjectKey(isolatedNamespace, fileId, version3)
-      });
-      if (response.statusCode === 404) {
-        response.resume();
-        throw s3ObjectNotFoundError();
-      }
-      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
-        response.resume();
-        throw new Error(`S3-compatible file read failed with HTTP ${response.statusCode ?? 0}.`);
-      }
-      return response;
-    },
-    async deleteFileVersion({ fileId, version: version3 }) {
-      const result = await s3Request(config, {
-        method: "DELETE",
-        key: s3ObjectKey(isolatedNamespace, fileId, version3)
-      });
-      if (result.statusCode === 404) {
-        return;
-      }
-      if (result.statusCode < 200 || result.statusCode >= 300) {
-        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
-      }
-    },
-    async checkHealth() {
-      try {
-        await ensureBucket();
-        return { ok: true, adapter: "s3-compatible" };
-      } catch {
-        return { ok: false, adapter: "s3-compatible" };
-      }
-    },
-    close() {
-    }
-  };
-}
-function s3ObjectKey(namespace, fileId, version3) {
-  return `${namespace}/files/${fileId}/${version3}`;
-}
-async function s3Request(config, { method, key = null, body = null }) {
-  const endpoint = new URL(config.endpoint);
-  const isHttps = endpoint.protocol === "https:";
-  const transport = await (isHttps ? import("node:https") : import("node:http"));
-  const payload = s3RequestBodyBuffer(body);
-  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
-  const date = amzDate.slice(0, 8);
-  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
-  const payloadHash = s3Sha256Hex(payload);
-  const headers = s3SignedHeaders({
-    "host": endpoint.host,
-    "x-amz-content-sha256": payloadHash,
-    "x-amz-date": amzDate
-  });
-  headers.authorization = s3Signature({
-    method,
-    pathname,
-    query: "",
-    headers,
-    payloadHash,
-    accessKey: config.accessKey,
-    secretKey: config.secretKey,
-    region: config.region,
-    date,
-    amzDate
-  });
-  return await new Promise((resolve2, reject) => {
-    const request = transport.request(
-      {
-        protocol: endpoint.protocol,
-        hostname: endpoint.hostname,
-        port: endpoint.port || void 0,
-        method,
-        path: `${pathname}${endpoint.search}`,
-        headers: {
-          ...headers,
-          "content-length": payload.length
-        }
-      },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-        response.on("end", () => {
-          resolve2({
-            statusCode: response.statusCode ?? 0,
-            headers: response.headers,
-            body: Buffer.concat(chunks)
-          });
-        });
-      }
-    );
-    request.on("error", reject);
-    if (payload.length > 0) {
-      request.write(payload);
-    }
-    request.end();
-  });
-}
-async function s3RequestStream(config, { method, key = null }) {
-  const endpoint = new URL(config.endpoint);
-  const isHttps = endpoint.protocol === "https:";
-  const transport = await (isHttps ? import("node:https") : import("node:http"));
-  const payload = Buffer.alloc(0);
-  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
-  const date = amzDate.slice(0, 8);
-  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
-  const payloadHash = s3Sha256Hex(payload);
-  const headers = s3SignedHeaders({ "host": endpoint.host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate });
-  headers.authorization = s3Signature({ method, pathname, query: "", headers, payloadHash, accessKey: config.accessKey, secretKey: config.secretKey, region: config.region, date, amzDate });
-  return await new Promise((resolve2, reject) => {
-    const request = transport.request({ protocol: endpoint.protocol, hostname: endpoint.hostname, port: endpoint.port || void 0, method, path: `${pathname}${endpoint.search}`, headers: { ...headers, "content-length": 0 } }, resolve2);
-    request.on("error", reject);
-    request.end();
-  });
-}
-function s3RequestBodyBuffer(body) {
-  if (body === null || body === void 0) {
-    return Buffer.alloc(0);
-  }
-  if (Buffer.isBuffer(body)) {
-    return body;
-  }
-  if (body instanceof Uint8Array) {
-    return Buffer.from(body);
-  }
-  return Buffer.from(String(body));
-}
-function s3SignedHeaders(headers) {
-  return Object.fromEntries(
-    Object.entries(headers).map(([name2, value]) => [name2.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
-  );
-}
-function s3Signature({
-  method,
-  pathname,
-  query,
-  headers,
-  payloadHash,
-  accessKey,
-  secretKey,
-  region,
-  date,
-  amzDate
-}) {
-  const signedHeaders = Object.keys(headers).join(";");
-  const canonicalHeaders = Object.entries(headers).map(([name2, value]) => `${name2}:${value}
-`).join("");
-  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
-  const credentialScope = `${date}/${region}/s3/aws4_request`;
-  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
-  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
-  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
-}
-function s3SigningKey(secretKey, date, region) {
-  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
-  const dateRegionKey = s3Hmac(dateKey, region);
-  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
-  return s3Hmac(dateRegionServiceKey, "aws4_request");
-}
-function s3CanonicalPath(basePath, bucket, key) {
-  const base = String(basePath ?? "").split("/").filter(Boolean);
-  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
-  return `/${parts.join("/")}`;
-}
-function s3EncodedPathSegment(segment) {
-  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-function s3StorageNamespace(namespace) {
-  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
-    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
-  }
-  return `capsules/${namespace}`;
-}
-function s3AmzDate(date) {
-  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
-}
-function s3Hmac(key, data2) {
-  return nodeCryptoModule2.createHmac("sha256", key).update(data2).digest();
-}
-function s3Sha256Hex(data2) {
-  return nodeCryptoModule2.createHash("sha256").update(data2).digest("hex");
-}
-function s3ObjectNotFoundError() {
-  const error = new Error("S3-compatible file object not found.");
-  error.code = "ENOENT";
-  return error;
-}
-async function checkRuntimeFileStorage(database) {
-  return await database.fileStorage.checkHealth();
-}
-function createFileStorageTables(sqlite) {
-  const sql2 = sqlite.dialect.sql;
-  return chainMaybePromise([
-    () => sqlite.exec(
-      sql2(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_buckets] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [name] TEXT NOT NULL, [createdAt] TEXT NOT NULL, UNIQUE([ownerId], [name]))"
-      )
-    ),
-    () => sqlite.exec(
-      sql2(
-        "CREATE TABLE IF NOT EXISTS [sporades_files] ([id] TEXT PRIMARY KEY, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [size] INTEGER NOT NULL, [version] TEXT NOT NULL, [status] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deletedAt] TEXT)"
-      )
-    ),
-    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
-    () => sqlite.exec(sql2(filePathBackfillSql())),
-    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_files_created_live] ON [sporades_files] ([createdAt], [id]) WHERE [deletedAt] IS NULL AND [status] = 'uploaded'")),
-    () => sqlite.exec(sql2(activeFilePathDedupeSql())),
-    () => sqlite.exec(
-      sql2("CREATE INDEX IF NOT EXISTS [sporades_files_path_live] ON [sporades_files] ([path], [deletedAt], [status])")
-    ),
-    () => sqlite.exec(
-      sql2(
-        "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_files_path_active_unique] ON [sporades_files] ([path]) WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded')"
-      )
-    ),
-    () => sqlite.exec(
-      sql2(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_uploads] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [bucketId] TEXT NOT NULL, [bucketName] TEXT NOT NULL, [path] TEXT NOT NULL, [name] TEXT NOT NULL, [type] TEXT NOT NULL, [version] TEXT NOT NULL, [expectedSize] INTEGER NOT NULL, [createdAt] TEXT NOT NULL)"
-      )
-    ),
-    () => ensureFileUploadTargetColumns(sqlite),
-    () => sqlite.exec(
-      sql2(
-        "CREATE TABLE IF NOT EXISTS [sporades_file_public_urls] ([id] TEXT PRIMARY KEY, [fileId] TEXT NOT NULL, [ownerId] TEXT NOT NULL, [version] TEXT NOT NULL, [expiresAt] TEXT, [createdAt] TEXT NOT NULL, [revokedAt] TEXT)"
-      )
-    ),
-    // Runtime-private ingress receipts. The identity columns are intentionally queryable:
-    // endpoint transactions lock and classify a lease without scanning JSON payloads.
-    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress] ([key] TEXT PRIMARY KEY, [leaseId] TEXT, [state] TEXT, [actorId] TEXT, [authorityKind] TEXT, [authorityId] TEXT, [ownerId] TEXT, [principalNamespace] TEXT, [principalKeyDigest] TEXT, [endpointMethod] TEXT, [endpointPath] TEXT, [requestKey] TEXT, [partKey] TEXT, [expiresAt] TEXT, [sweepToken] TEXT, [payload] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)")),
-    () => ensureFileIngressColumns(sqlite),
-    () => sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_file_ingress_audit_outbox] ([claimId] TEXT PRIMARY KEY, [state] TEXT NOT NULL, [claimToken] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [deliveredAt] TEXT)")),
-    () => sqlite.exec(sql2("CREATE INDEX IF NOT EXISTS [sporades_file_ingress_audit_outbox_pending] ON [sporades_file_ingress_audit_outbox] ([state], [createdAt], [claimId])"))
-  ]);
-}
-async function readRequestBytes(request, maxBytes) {
-  const chunks = [];
-  let total = 0;
-  for await (const chunk of request) {
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      );
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
-function contentTypeForFile(type) {
-  if (typeof type !== "string") {
-    return "application/octet-stream";
-  }
-  const normalized = type.split(";")[0].trim().toLowerCase();
-  const safeInlineTypes = /* @__PURE__ */ new Set([
-    "text/plain",
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-    "image/avif",
-    "image/bmp"
-  ]);
-  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
-}
-async function createPendingFileUpload(database, auth, message) {
-  return traceRuntimeOperation("sporades.file.upload.prepare", () => createPendingFileUploadOperation(database, auth, message), (result) => result.ok ? "success" : "denied");
-}
-async function createPendingFileUploadOperation(database, auth, message) {
-  const input = message.file ?? {};
-  const size = Number(input.size ?? 0);
-  if (!Number.isFinite(size) || size < 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size.")
-    };
-  }
-  if (size > database.fileMaxSizeBytes) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "File is too large.",
-        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`
-      )
-    };
-  }
-  try {
-    assertAllowedFileMimeType(database.fileAllowedMimeTypes, input.type);
-  } catch (error) {
-    return { ok: false, error: { message: error.message, hint: error.hint, code: error.code } };
-  }
-  return await withFileUploadPathLock("capsule", async () => {
-    const now2 = (/* @__PURE__ */ new Date()).toISOString();
-    const replacing = message.replace === true;
-    const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-    if (!resolvedReplacement.ok) {
-      return resolvedReplacement;
-    }
-    const existingByReference = resolvedReplacement.row;
-    if (replacing && !existingByReference) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    let normalizedPath;
-    try {
-      const effectivePath = input.path ?? existingByReference?.path;
-      normalizedPath = effectivePath == null ? null : normalizeAbsoluteFilePath(effectivePath);
-    } catch (error) {
-      return {
-        ok: false,
-        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
-      };
-    }
-    const name2 = normalizeFileName(input.name, normalizedPath);
-    const targetPath = normalizedPath ?? `/default/${name2}`;
-    if (database.fileAcl?.resolve?.("upload") && !await allowFileUpload(database, auth, {
-      sizeBytes: size,
-      mimeType: normalizeFileMimeType(input.type),
-      name: name2
-    })) {
-      return { ok: false, error: { ...createStructuredFileError("File upload denied.", "The Capsule upload policy denied this file."), code: "FILE_UPLOAD_DENIED" } };
-    }
-    return await database.adapter.withTransaction(async (sqlite) => {
-      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-      let target;
-      try {
-        target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: targetPath } : await resolveFileWriteTarget(transactionDatabase, auth.userId, targetPath, now2);
-      } catch (error) {
-        return {
-          ok: false,
-          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
-        };
-      }
-      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
-      if (existingByPath?.ambiguous) {
-        return ambiguousFileReferenceError(target.path);
-      }
-      if (existingByPath && existingByPath.ownerId !== auth.userId) {
-        return {
-          ok: false,
-          error: createStructuredFileError(
-            "File path already exists.",
-            "Choose another absolute File path or ask the owning user to delete the existing file first."
-          )
-        };
-      }
-      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(target.path) : null;
-      const existing = existingByReference ?? existingByPath;
-      const fileId = existing?.id ?? (pendingByPath?.ownerId === auth.userId ? pendingByPath.fileId : null) ?? nodeCryptoModule2.randomUUID();
-      const uploadId = nodeCryptoModule2.randomUUID();
-      const version3 = nodeCryptoModule2.randomUUID();
-      const type = database.fileAllowedMimeTypes ? normalizeFileMimeType(input.type) : String(input.type ?? "application/octet-stream");
-      await sqlite.deleteFileUploadsForPath(target.path);
-      try {
-        await sqlite.insertFileUpload({
-          id: uploadId,
-          fileId,
-          ownerId: auth.userId,
-          bucketId: target.bucket.id,
-          bucketName: target.bucket.name,
-          path: target.path,
-          name: name2,
-          type,
-          version: version3,
-          expectedSize: size,
-          createdAt: now2
-        });
-      } catch (error) {
-        if (!isUniqueConstraintError(error)) throw error;
-        const current2 = await sqlite.selectPendingFileUploadByPath(target.path);
-        if (!current2) throw error;
-        return {
-          ok: true,
-          data: {
-            uploadUrl: `/__sporades/uploads/${current2.id}`,
-            method: "PUT",
-            headers: {},
-            file: fileMetadataFromUpload(current2)
-          },
-          error: null
-        };
-      }
-      return {
-        ok: true,
-        data: {
-          uploadUrl: `/__sporades/uploads/${uploadId}`,
-          method: "PUT",
-          headers: {},
-          file: fileMetadataFromUpload({
-            fileId,
-            bucketName: target.bucket.name,
-            path: target.path,
-            name: name2,
-            type,
-            expectedSize: size,
-            version: version3
-          })
-        },
-        error: null
-      };
-    });
-  });
-}
-async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  return traceRuntimeOperation("sporades.file.upload", () => completePendingFileUploadOperation(database, uploadId, request, websocketHub), (result) => result.ok ? "success" : "denied");
-}
-async function completePendingFileUploadOperation(database, uploadId, request, websocketHub = null) {
-  const upload = await database.adapter.selectFileUpload(uploadId);
-  if (!upload) {
-    return {
-      ok: false,
-      data: null,
-      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
-    };
-  }
-  const previousFile = await database.adapter.selectFileById(upload.fileId);
-  try {
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.progress",
-      fileId: upload.fileId,
-      loaded: 0,
-      total: upload.expectedSize
-    });
-    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    if (database.fileAcl?.resolve?.("upload") && bytes.length !== upload.expectedSize) {
-      throw Object.assign(new Error("File size differs from the admitted upload metadata."), {
-        code: "FILE_UPLOAD_SIZE_MISMATCH",
-        hint: "Request a fresh upload URL with the actual file size."
-      });
-    }
-    assertAllowedFileMimeType(database.fileAllowedMimeTypes, upload.type, bytes);
-    const now2 = (/* @__PURE__ */ new Date()).toISOString();
-    const completion = await database.adapter.withTransaction(async (sqlite) => {
-      const completed = await sqlite.completeFileUpload(upload, bytes.length, now2);
-      if (completed?.changes === 0) {
-        return { ok: false, superseded: true };
-      }
-      try {
-        await traceRuntimeOperation("sporades.file.bytes.write", () => database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes }));
-        await sqlite.revokePublicFileUrlsForFile(upload.fileId, now2);
-        return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
-      } catch (error) {
-        await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-        throw error;
-      }
-    });
-    if (!completion.ok && completion.superseded) {
-      return {
-        ok: false,
-        data: null,
-        error: createStructuredFileError(
-          "Upload URL was superseded.",
-          "Request a fresh upload URL before retrying this file upload."
-        )
-      };
-    }
-    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
-      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
-    }
-    const file = fileMetadataFromRow(completion.row);
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.complete",
-      file
-    });
-    return { ok: true, data: { file }, error: null };
-  } catch (error) {
-    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
-      message: error.message,
-      hint: error.hint ?? "Request a fresh upload URL and retry.",
-      ...error.code ? { code: error.code } : {}
-    };
-    websocketHub?.notifyFileEvent?.(upload.ownerId, {
-      type: "file.upload.failed",
-      fileId: upload.fileId,
-      error: structuredError
-    });
-    return {
-      ok: false,
-      data: null,
-      error: structuredError
-    };
-  }
-}
-async function getPrivateFileUrl(database, auth, fileReference) {
-  return traceRuntimeOperation("sporades.file.private_url", () => getPrivateFileUrlOperation(database, auth, fileReference), (result) => result.ok ? "success" : "denied");
-}
-async function getPrivateFileUrlOperation(database, auth, fileReference) {
-  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read");
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-      file: fileMetadataFromRow(row)
-    },
-    error: null
-  };
-}
-async function createPublicFileUrl(database, auth, fileReference, options = {}) {
-  return traceRuntimeOperation("sporades.file.public_url.create", () => createPublicFileUrlOperation(database, auth, fileReference, options), (result) => result.ok ? "success" : "denied");
-}
-async function createPublicFileUrlOperation(database, auth, fileReference, options = {}) {
-  const expiry = validatePublicUrlExpiry(options);
-  if (!expiry.ok) {
-    return expiry;
-  }
-  return await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
-    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "publicUrl");
-    if (!resolved.ok) {
-      return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    const id2 = nodeCryptoModule2.randomUUID();
-    const now2 = (/* @__PURE__ */ new Date()).toISOString();
-    await sqlite.insertPublicFileUrl({
-      id: id2,
-      fileId: row.id,
-      // A File ACL permits the operation; it does not transfer the File or
-      // create an independent public capability. Keep revocation with the
-      // File owner so a collaborating Team member cannot strand a URL that
-      // the owner is unable to revoke.
-      ownerId: row.ownerId,
-      version: row.version,
-      expiresAt: expiry.expiresAt,
-      createdAt: now2
-    });
-    return {
-      ok: true,
-      data: {
-        publicUrl: {
-          id: id2,
-          fileId: row.id,
-          url: `/__sporades/files/public/${id2}?v=${encodeURIComponent(row.version)}`,
-          expiresAt: expiry.expiresAt,
-          revokedAt: null
-        }
-      },
-      error: null
-    };
-  });
-}
-async function revokePublicFileUrl(database, auth, publicUrlId) {
-  return traceRuntimeOperation("sporades.file.public_url.revoke", () => revokePublicFileUrlOperation(database, auth, publicUrlId), (result) => result.ok ? "success" : "denied");
-}
-async function revokePublicFileUrlOperation(database, auth, publicUrlId) {
-  const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now2);
-  if (result.changes === 0) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user.")
-    };
-  }
-  return {
-    ok: true,
-    data: { publicUrl: { id: publicUrlId, revokedAt: now2 } },
-    error: null
-  };
-}
-var currentUserFileApiState = /* @__PURE__ */ new WeakMap();
-var forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
-var forwardedFilePromiseNodes = /* @__PURE__ */ new WeakMap();
-var forwardedFilePromiseHookRetainers = 0;
-var forwardedFilePromiseHookStack = [];
-var forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
-var forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
-var forwardedFileCallbackOperationSets = [];
-var observingForwardedFilePromise = false;
-var forwardedFileRejectionSettlementTimeoutMs = 1e3;
-var forwardedFileActiveContinuationTimeoutMs = 2e3;
-function isNativePromiseResolverPair(onFulfilled, onRejected) {
-  return typeof onFulfilled === "function" && typeof onRejected === "function" && onFulfilled.name === "" && onRejected.name === "" && Function.prototype.toString.call(onFulfilled).includes("[native code]") && Function.prototype.toString.call(onRejected).includes("[native code]");
-}
-function registerForwardedFilePromiseNode(promise, operation, parent) {
-  let nodes = forwardedFilePromiseNodes.get(promise);
-  if (!nodes) {
-    nodes = /* @__PURE__ */ new Map();
-    forwardedFilePromiseNodes.set(promise, nodes);
-  }
-  let node = nodes.get(operation);
-  if (!node) {
-    node = {
-      promise,
-      operation,
-      children: /* @__PURE__ */ new Set(),
-      userChildren: /* @__PURE__ */ new Set(),
-      userContinuation: false,
-      callbackStarted: false,
-      composition: false,
-      propagatesRejection: false,
-      forwarded: false,
-      outcome: "pending"
-    };
-    nodes.set(operation, node);
-    operation.promiseNodes.add(node);
-    for (const childReference of forwardedFilePromiseChildren.get(promise) ?? []) {
-      const child = childReference.deref();
-      if (child) registerForwardedFilePromiseNode(child, operation, node);
-    }
-    observingForwardedFilePromise = true;
-    node.settlement = promise.then(
-      () => {
-        node.outcome = "fulfilled";
-      },
-      (reason) => {
-        node.outcome = "rejected";
-        node.rejectionReason = reason;
-      }
-    );
-    observingForwardedFilePromise = false;
-  }
-  if (parent && parent !== node) parent.children.add(node);
-  return node;
-}
-function getForwardedFilePromiseNode(promise, operation) {
-  return forwardedFilePromiseNodes.get(promise)?.get(operation);
-}
-var forwardedFilePromiseObserver = {
-  init(promise, parent) {
-    if (observingForwardedFilePromise) return;
-    if (!parent) {
-      forwardedFileRootPromises.add(promise);
-    }
-    if (parent) {
-      let children = forwardedFilePromiseChildren.get(parent);
-      if (!children) {
-        children = /* @__PURE__ */ new Set();
-        forwardedFilePromiseChildren.set(parent, children);
-      }
-      for (const childReference of children) {
-        if (!childReference.deref()) children.delete(childReference);
-      }
-      children.add(new WeakRef(promise));
-    }
-    const parentNodes = parent ? forwardedFilePromiseNodes.get(parent)?.values() : void 0;
-    for (const parentNode of parentNodes ?? []) {
-      const childNode = registerForwardedFilePromiseNode(promise, parentNode.operation, parentNode);
-      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
-      if (!activePromise2 || !forwardedFilePromiseNodes.has(activePromise2)) {
-        childNode.userContinuation = true;
-        parentNode.userChildren.add(childNode);
-      }
-    }
-  },
-  before(promise) {
-    for (const node of forwardedFilePromiseNodes.get(promise)?.values() ?? []) {
-      node.callbackStarted = true;
-    }
-    forwardedFilePromiseHookStack.push(promise);
-  },
-  after() {
-    forwardedFilePromiseHookStack.pop();
-  },
-  settled(promise) {
-    if (observingForwardedFilePromise) return;
-    const activePromise2 = forwardedFilePromiseHookStack.at(-1);
-    const callbackOperations = forwardedFileCallbackOperationSets.at(-1);
-    const activeNodes = activePromise2 ? forwardedFilePromiseNodes.get(activePromise2) : void 0;
-    const operations = callbackOperations?.length ? callbackOperations : [...new Set([...activeNodes?.values() ?? []].map((node) => node.operation))];
-    for (const operation of operations) {
-      if (callbackOperations?.includes(operation) && forwardedFileRootPromises.has(promise)) {
-        operation.exactForwardingPromiseObserved = true;
-      }
-      if (getForwardedFilePromiseNode(promise, operation)) continue;
-      registerForwardedFilePromiseNode(
-        promise,
-        operation,
-        activePromise2 ? getForwardedFilePromiseNode(activePromise2, operation) : void 0
-      );
-    }
-  }
-};
-function retainForwardedFilePromiseHook(state) {
-  if (state.promiseHookRetained) return;
-  state.promiseHookRetained = true;
-  forwardedFilePromiseHookRetainers += 1;
-  retainPromiseObserver(forwardedFilePromiseObserver);
-}
-function releaseForwardedFilePromiseHook(state) {
-  if (!state.promiseHookRetained) return;
-  state.promiseHookRetained = false;
-  forwardedFilePromiseHookRetainers -= 1;
-  releasePromiseObserver(forwardedFilePromiseObserver);
-  if (forwardedFilePromiseHookRetainers === 0) {
-    forwardedFilePromiseHookStack = [];
-    forwardedFileCallbackOperationSets.length = 0;
-    forwardedFileResolverOperations = /* @__PURE__ */ new WeakMap();
-    forwardedFileRootPromises = /* @__PURE__ */ new WeakSet();
-    forwardedFilePromiseChildren = /* @__PURE__ */ new WeakMap();
-  }
-}
-function findDiscardedForwardedFileRejection(operation) {
-  const propagated = [...operation.promiseNodes].find((node) => node.propagatesRejection && node.userChildren.size === 0 && node.outcome === "rejected");
-  if (propagated) return propagated;
-  const userContinuation = [...operation.promiseNodes].find((node) => node.userContinuation && !node.forwarded && node.userChildren.size === 0 && node.outcome === "rejected");
-  if (userContinuation) return userContinuation;
-  let nextIndex2 = 0;
-  const indexes = /* @__PURE__ */ new Map();
-  const lowLinks = /* @__PURE__ */ new Map();
-  const stack = [];
-  const stacked = /* @__PURE__ */ new Set();
-  const components = [];
-  const visit = (node) => {
-    indexes.set(node, nextIndex2);
-    lowLinks.set(node, nextIndex2);
-    nextIndex2 += 1;
-    stack.push(node);
-    stacked.add(node);
-    for (const child of node.children) {
-      if (!indexes.has(child)) {
-        visit(child);
-        lowLinks.set(node, Math.min(lowLinks.get(node), lowLinks.get(child)));
-      } else if (stacked.has(child)) {
-        lowLinks.set(node, Math.min(lowLinks.get(node), indexes.get(child)));
-      }
-    }
-    if (lowLinks.get(node) !== indexes.get(node)) return;
-    const component = [];
-    let member;
-    do {
-      member = stack.pop();
-      stacked.delete(member);
-      component.push(member);
-    } while (member !== node);
-    components.push(component);
-  };
-  for (const node of operation.promiseNodes) if (!indexes.has(node)) visit(node);
-  const componentByNode = /* @__PURE__ */ new Map();
-  for (const component of components) for (const node of component) componentByNode.set(node, component);
-  const discardedComponent = components.find((component) => component.some((node) => node.outcome === "rejected") && !component.some((node) => [...node.children].some((child) => componentByNode.get(child) !== component)));
-  return discardedComponent?.find((node) => node.outcome === "rejected");
-}
-function descendsFromFilePromiseComposition(operation, target) {
-  const pending = [...operation.promiseNodes].filter((node) => node.composition);
-  const visited = /* @__PURE__ */ new Set();
-  while (pending.length > 0) {
-    const node = pending.pop();
-    if (node === target) return true;
-    if (visited.has(node)) continue;
-    visited.add(node);
-    pending.push(...node.children);
-  }
-  return false;
-}
-async function settleForwardedFileRejectionGraph(operation) {
-  let deadline;
-  let activeContinuationDeadline;
-  const settledUserContinuations = /* @__PURE__ */ new Set();
-  while (true) {
-    const pendingNodes = [...operation.promiseNodes].filter((node) => node.outcome === "pending" && (node.userContinuation || node.composition));
-    if (pendingNodes.length === 0) return true;
-    const userContinuations = pendingNodes.filter((node) => node.userContinuation && node.callbackStarted && !node.forwarded);
-    if (userContinuations.length > 0) {
-      activeContinuationDeadline ??= Date.now() + forwardedFileActiveContinuationTimeoutMs;
-      const remainingMs2 = activeContinuationDeadline - Date.now();
-      if (remainingMs2 <= 0) return false;
-      let timer2;
-      const settled2 = await Promise.race([
-        Promise.all(userContinuations.map((node) => node.settlement)).then(() => true),
-        new Promise((resolve2) => {
-          timer2 = setTimeout(() => resolve2(false), remainingMs2);
-        })
-      ]);
-      if (timer2) clearTimeout(timer2);
-      if (!settled2) return false;
-      for (const node of userContinuations) settledUserContinuations.add(node);
-      continue;
-    }
-    if (settledUserContinuations.size > 0) {
-      const continuationDescendants = /* @__PURE__ */ new Set();
-      const remaining = [...settledUserContinuations];
-      while (remaining.length > 0) {
-        const parent = remaining.pop();
-        for (const child of parent.children) {
-          if (continuationDescendants.has(child)) continue;
-          continuationDescendants.add(child);
-          remaining.push(child);
-        }
-      }
-      if (pendingNodes.every((node) => continuationDescendants.has(node))) return true;
-    }
-    deadline ??= Date.now() + forwardedFileRejectionSettlementTimeoutMs;
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) return false;
-    let timer;
-    const settled = await Promise.race([
-      Promise.all(pendingNodes.map((node) => node.settlement)).then(() => true),
-      new Promise((resolve2) => {
-        timer = setTimeout(() => resolve2(false), remainingMs);
-      })
-    ]);
-    if (timer) clearTimeout(timer);
-    if (!settled) return false;
-  }
-}
-function trackCurrentUserFileOperation(operation) {
-  const decorate = (promise) => {
-    Object.defineProperties(promise, {
-      then: { configurable: true, get: () => {
-        if (!observingForwardedFilePromise) {
-          const compositionRoot = operation.enclosingCompositionRoot ?? promiseCompositionRootCandidate();
-          if (compositionRoot && compositionRoot !== promise) {
-            const parentNode = getForwardedFilePromiseNode(promise, operation);
-            const aggregateNode = registerForwardedFilePromiseNode(compositionRoot, operation, parentNode);
-            aggregateNode.forwarded = true;
-            aggregateNode.composition = true;
-            operation.exactForwardingPromiseObserved = true;
-          }
-        }
-        return (onFulfilled, onRejected) => {
-          let promiseResolveForwarding = false;
-          let trackPromiseResolveForwarding = false;
-          if (typeof onRejected === "function") {
-            promiseResolveForwarding = isNativePromiseResolverPair(onFulfilled, onRejected);
-            if (promiseResolveForwarding) {
-              trackPromiseResolveForwarding = !observingForwardedFilePromise;
-              if (trackPromiseResolveForwarding) operation.forwardedRejection = true;
-            }
-            if (trackPromiseResolveForwarding) {
-              let resolverOperations = forwardedFileResolverOperations.get(onRejected);
-              if (!resolverOperations) {
-                resolverOperations = /* @__PURE__ */ new Set();
-                forwardedFileResolverOperations.set(onRejected, resolverOperations);
-              }
-              resolverOperations.add(operation);
-              forwardedFileResolverOperations.set(onFulfilled, resolverOperations);
-              const targetNode = getForwardedFilePromiseNode(promise, operation);
-              if (targetNode) targetNode.forwarded = true;
-            } else if (!promiseResolveForwarding) {
-              operation.explicitRejectionHandler = true;
-            }
-          }
-          let continuation;
-          const fulfillmentHandler = trackPromiseResolveForwarding ? (value) => {
-            const resolverOperations = forwardedFileResolverOperations.get(onFulfilled) ?? /* @__PURE__ */ new Set([operation]);
-            forwardedFileCallbackOperationSets.push([...resolverOperations]);
-            try {
-              return onFulfilled(value);
-            } finally {
-              forwardedFileCallbackOperationSets.pop();
-            }
-          } : onFulfilled;
-          const rejectionHandler = trackPromiseResolveForwarding ? (reason) => {
-            const resolverOperations = forwardedFileResolverOperations.get(onRejected) ?? /* @__PURE__ */ new Set([operation]);
-            forwardedFileCallbackOperationSets.push([...resolverOperations]);
-            let forwardedResult;
-            try {
-              forwardedResult = onRejected(reason);
-            } finally {
-              forwardedFileCallbackOperationSets.pop();
-            }
-            if (forwardedResult && typeof forwardedResult.then === "function") {
-              for (const resolverOperation of resolverOperations) {
-                const parentNode2 = getForwardedFilePromiseNode(promise, resolverOperation);
-                const continuationNode = registerForwardedFilePromiseNode(continuation, resolverOperation, parentNode2);
-                continuationNode.userContinuation = true;
-                continuationNode.propagatesRejection = true;
-                continuationNode.forwarded = false;
-                parentNode2?.userChildren.add(continuationNode);
-                resolverOperation.exactForwardingPromiseObserved = true;
-              }
-            }
-            return forwardedResult;
-          } : onRejected;
-          continuation = Promise.prototype.then.call(promise, fulfillmentHandler, rejectionHandler);
-          const parentNode = getForwardedFilePromiseNode(promise, operation);
-          if (promiseResolveForwarding) {
-            const continuationNode = getForwardedFilePromiseNode(continuation, operation);
-            if (continuationNode) {
-              continuationNode.forwarded = true;
-              continuationNode.userContinuation = false;
-              parentNode?.userChildren.delete(continuationNode);
-            }
-          } else {
-            const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
-            continuationNode.userContinuation = true;
-            if (parentNode) parentNode.userChildren.add(continuationNode);
-          }
-          return decorate(continuation);
-        };
-      } },
-      catch: { configurable: true, value: (onRejected) => {
-        if (typeof onRejected === "function") operation.explicitRejectionHandler = true;
-        const continuation = Promise.prototype.then.call(promise, void 0, onRejected);
-        const parentNode = getForwardedFilePromiseNode(promise, operation);
-        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
-        continuationNode.userContinuation = true;
-        if (parentNode) parentNode.userChildren.add(continuationNode);
-        return decorate(continuation);
-      } },
-      finally: { configurable: true, value: (onFinally) => {
-        const continuation = Promise.prototype.finally.call(promise, onFinally);
-        const parentNode = getForwardedFilePromiseNode(promise, operation);
-        const continuationNode = registerForwardedFilePromiseNode(continuation, operation, parentNode);
-        continuationNode.userContinuation = true;
-        continuationNode.propagatesRejection = true;
-        if (parentNode) parentNode.userChildren.add(continuationNode);
-        return decorate(continuation);
-      } }
-    });
-    return promise;
-  };
-  return decorate(operation.promise);
-}
-function bindCurrentUserFileDeleteState(context2, sourceContext) {
-  const state = sourceContext ? currentUserFileApiState.get(sourceContext) : void 0;
-  if (state) currentUserFileApiState.set(context2, state);
-}
-function createCurrentUserFileApi(database, contextGetter, options = {}) {
-  const state = {
-    active: true,
-    drainActive: false,
-    pendingByteDeletes: [],
-    pendingOperations: [],
-    promiseHookRetained: false
-  };
-  const initialContext = contextGetter?.();
-  const admittedAuth = initialContext?.auth ? Object.freeze({ ...initialContext.auth }) : void 0;
-  const admittedCredential = initialContext?.credential ? Object.freeze({ ...initialContext.credential }) : void 0;
-  if (initialContext) currentUserFileApiState.set(initialContext, state);
-  if (admittedCredential) retainForwardedFilePromiseHook(state);
-  return Object.freeze({
-    delete(fileReference) {
-      const enclosingCompositionRoot = enclosingPromiseCombinatorRoot();
-      const context2 = contextGetter?.();
-      const activePromise2 = forwardedFilePromiseHookStack.at(-1);
-      const registeredDrainContinuation = state.drainActive && !state.active && activePromise2 ? [...forwardedFilePromiseNodes.get(activePromise2)?.values() ?? []].some((node) => node.operation.state === state) : false;
-      if (!state.active && !registeredDrainContinuation || !context2) {
-        return Promise.reject(createStructuredFileError(
-          "File access is no longer active.",
-          "Call ctx.files.delete(...) only while the Capsule handler is running."
-        ));
-      }
-      if (!admittedCredential || !admittedAuth) {
-        return Promise.reject(createStructuredFileError(
-          "File deletion requires a user credential.",
-          "Use ctx.files.delete(...) from a user-scoped handler or an audited privileged File operation for userless work."
-        ));
-      }
-      retainForwardedFilePromiseHook(state);
-      const operation = deletePrivateFile(
-        database,
-        admittedAuth,
-        fileReference,
-        admittedCredential,
-        database.__transactionActive ? (file) => {
-          state.pendingByteDeletes.push({ database: database.__rootDatabase ?? database, ...file });
-        } : void 0,
-        options.requireLiveActor === true
-      ).then((result) => {
-        if (!result.ok) throw result.error;
-        return result.data.file;
-      });
-      const trackedOperation = {
-        state,
-        promise: operation,
-        explicitRejectionHandler: false,
-        forwardedRejection: false,
-        exactForwardingPromiseObserved: false,
-        enclosingCompositionRoot,
-        promiseNodes: /* @__PURE__ */ new Set()
-      };
-      registerForwardedFilePromiseNode(operation, trackedOperation);
-      state.pendingOperations.push(trackedOperation);
-      return trackCurrentUserFileOperation(trackedOperation);
-    }
-  });
-}
-async function drainCurrentUserFileOperations(context2) {
-  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
-  try {
-    if (state) state.drainActive = true;
-    while (state?.pendingOperations.length) {
-      const operations = state.pendingOperations.splice(0);
-      observingForwardedFilePromise = true;
-      let outcomesPromise;
-      try {
-        outcomesPromise = Promise.allSettled(operations.map((operation) => operation.promise));
-      } finally {
-        observingForwardedFilePromise = false;
-      }
-      const outcomes = await outcomesPromise;
-      if (operations.some((operation) => operation.promiseNodes.size > 0)) {
-        await new Promise((resolve2) => setImmediate(resolve2));
-      }
-      const graphSettled = await Promise.all(operations.map((operation) => settleForwardedFileRejectionGraph(operation)));
-      const discardedRejections = operations.map((operation, index) => graphSettled[index] ? findDiscardedForwardedFileRejection(operation) : void 0);
-      const rejectedIndex = outcomes.findIndex((outcome, index) => {
-        if (outcome.status !== "rejected") return false;
-        if (!graphSettled[index]) return true;
-        const operation = operations[index];
-        const discardedForwarding = discardedRejections[index];
-        if (discardedForwarding) return true;
-        if (operation.forwardedRejection && !operation.exactForwardingPromiseObserved && ![...operation.promiseNodes].some((node) => !node.forwarded && (node.outcome === "rejected" || node.userContinuation && node.outcome === "fulfilled"))) {
-          return true;
-        }
-        const graphFailureWasHandled = operation.promiseNodes.size > 0 && !discardedForwarding;
-        return !operation.explicitRejectionHandler && !graphFailureWasHandled;
-      });
-      if (rejectedIndex !== -1) {
-        const discardedForwarding = discardedRejections[rejectedIndex];
-        if (discardedForwarding && !discardedForwarding.forwarded && !descendsFromFilePromiseComposition(operations[rejectedIndex], discardedForwarding)) {
-          throw discardedForwarding.rejectionReason;
-        }
-        const rejected = outcomes[rejectedIndex];
-        if (rejected.status === "rejected") throw rejected.reason;
-      }
-      if (graphSettled.some((settled, index) => !settled && outcomes[index].status === "fulfilled")) {
-        throw createStructuredFileError(
-          "File operation continuation did not settle.",
-          "Ensure File operation Promise continuations settle before the handler finishes."
-        );
-      }
-      const rejectedContinuation = discardedRejections.find((node, index) => outcomes[index].status === "fulfilled" && node);
-      if (rejectedContinuation) throw rejectedContinuation.rejectionReason;
-    }
-  } finally {
-    if (state) {
-      state.drainActive = false;
-      releaseForwardedFilePromiseHook(state);
-    }
-  }
-}
-async function commitPendingCurrentUserFileByteDeletes(context2) {
-  if (!context2) return;
-  const state = currentUserFileApiState.get(context2);
-  if (!state) return;
-  releaseForwardedFilePromiseHook(state);
-  state.active = false;
-  currentUserFileApiState.delete(context2);
-  for (const file of state.pendingByteDeletes.splice(0)) {
-    await removeFileVersionBestEffort(file.database, file.fileId, file.version);
-  }
-}
-function dropPendingCurrentUserFileByteDeletes(context2) {
-  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
-  if (!state) return;
-  state.active = false;
-  state.pendingOperations.length = 0;
-  releaseForwardedFilePromiseHook(state);
-  state.pendingByteDeletes.length = 0;
-  currentUserFileApiState.delete(context2);
-}
-function revokeCurrentUserFileApi(context2) {
-  const state = context2 ? currentUserFileApiState.get(context2) : void 0;
-  if (state) state.active = false;
-}
-async function deletePrivateFile(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
-  return traceRuntimeOperation("sporades.file.delete", () => deletePrivateFileOperation(database, auth, fileReference, credential, deferByteRemoval, requireLiveActor), (result) => result.ok ? "success" : "denied");
-}
-async function deletePrivateFileOperation(database, auth, fileReference, credential = { kind: "session" }, deferByteRemoval, requireLiveActor = false) {
-  const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await runFileMetadataTransaction(database, async (sqlite) => {
-    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
-    bindPostgresAclDependencyLocking(transactionDatabase, sqlite);
-    if (requireLiveActor) {
-      const actor = await sqlite.lockAuthUserFileAuthority(auth?.userId);
-      if (!actor || actor.lifecycleStatus === "terminated" || actor.userKind === "service" && actor.lifecycleStatus !== "active") {
-        return {
-          ok: false,
-          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-        };
-      }
-    }
-    const resolved = await resolveLockedAccessibleFileReference(transactionDatabase, auth, fileReference, "delete", credential);
-    if (!resolved.ok) return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-    };
-    const row = resolved.row;
-    if (!row) {
-      return {
-        ok: false,
-        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-      };
-    }
-    await sqlite.deleteFileUploadsForFile(row.ownerId, row.id);
-    await sqlite.deleteFileUploadsForPath(row.path);
-    await sqlite.markFileDeleted(row.id, now2);
-    await sqlite.revokePublicFileUrlsForFile(row.id, now2);
-    return {
-      ok: true,
-      data: { file: fileMetadataFromRow({ ...row, deletedAt: now2 }) },
-      error: null,
-      deletedFile: row
-    };
-  });
-  if (!result.ok) {
-    return result;
-  }
-  if (deferByteRemoval) {
-    deferByteRemoval({ fileId: result.deletedFile.id, version: result.deletedFile.version });
-  } else {
-    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
-  }
-  return {
-    ok: true,
-    data: result.data,
-    error: null
-  };
-}
-async function runFileMetadataTransaction(database, fn2) {
-  if (database.__transactionActive) {
-    return await fn2(database.adapter);
-  }
-  return await database.adapter.withTransaction(fn2);
-}
-function validatePublicUrlExpiry(options) {
-  const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
-  if (choices.length !== 1) {
-    return {
-      ok: false,
-      error: createStructuredFileError(
-        "Public file URLs require exactly one expiry choice.",
-        "Pass exactly one of ttlSeconds, expires, or noExpiry: true."
-      )
-    };
-  }
-  if (options.noExpiry === true) {
-    return { ok: true, expiresAt: null };
-  }
-  if (options.ttlSeconds !== void 0) {
-    const ttlSeconds = Number(options.ttlSeconds);
-    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-      return {
-        ok: false,
-        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number.")
-      };
-    }
-    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1e3).toISOString() };
-  }
-  const expiresAt = new Date(options.expires);
-  if (Number.isNaN(expiresAt.getTime())) {
-    return {
-      ok: false,
-      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string.")
-    };
-  }
-  return { ok: true, expiresAt: expiresAt.toISOString() };
-}
-async function fileRowForActor(database, auth, fileReference, credential = { kind: "session" }) {
-  return traceRuntimeOperation("sporades.file.authorize", () => fileRowForActorOperation(database, auth, fileReference, credential), (result) => result ? "success" : "denied");
-}
-async function fileRowForActorOperation(database, auth, fileReference, credential = { kind: "session" }) {
-  const resolved = await resolveAccessibleFileReference(database, auth, fileReference, "read", credential);
-  return resolved.ok ? resolved.row : null;
-}
-function fileMetadataFromRow(row) {
-  return {
-    id: row.id,
-    bucket: row.bucketName,
-    size: Number(row.size),
-    type: row.type,
-    name: row.name,
-    path: row.path,
-    version: row.version
-  };
-}
-function fileMetadataFromUpload(upload) {
-  return {
-    id: upload.fileId,
-    bucket: upload.bucketName,
-    size: Number(upload.expectedSize),
-    type: upload.type,
-    name: upload.name,
-    path: upload.path,
-    version: upload.version
-  };
-}
-async function withFileUploadPathLock(path26, fn2) {
-  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path26);
-  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release;
-  const current2 = new Promise((resolve2) => {
-    release = resolve2;
-  });
-  const next = previous.then(() => current2, () => current2);
-  fileUploadPathLocks.set(key, next);
-  try {
-    await previous.catch(() => {
-    });
-    return await fn2();
-  } finally {
-    release?.();
-    if (fileUploadPathLocks.get(key) === next) {
-      fileUploadPathLocks.delete(key);
-    }
-  }
-}
-async function resolveFileWriteTarget(database, ownerId, path26, now2) {
-  const firstSegment = path26.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now2);
-  return { bucket, path: path26 };
-}
-async function ensureFileBucket(database, ownerId, name2, now2) {
-  const existing = await database.adapter.findFileBucket(ownerId, name2);
-  if (existing) return existing;
-  const bucket = { id: nodeCryptoModule2.randomUUID(), ownerId, name: name2, createdAt: now2 };
-  try {
-    await database.adapter.createFileBucket(bucket);
-    return bucket;
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.adapter.findFileBucket(ownerId, name2);
-    if (raced) return raced;
-    throw error;
-  }
-}
-function normalizeAbsoluteFilePath(value) {
-  const raw = String(value ?? "").trim();
-  if (!raw.startsWith("/")) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
-  }
-  const segments = raw.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
-  }
-  return `/${segments.join("/")}`;
-}
-function normalizeFileName(name2, filePath) {
-  const candidate = String(name2 ?? "").trim();
-  if (candidate) return candidate;
-  const pathName = filePath?.split("/").filter(Boolean).at(-1);
-  return pathName || "upload";
-}
-function isAbsoluteFilePath(value) {
-  return typeof value === "string" && value.startsWith("/");
-}
-async function resolveLiveFileReference(database, ownerId, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path26;
-    try {
-      path26 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path26);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
-  }
-  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
-}
-async function resolveAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
-  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
-  if (!resolved.ok || !resolved.row) return resolved;
-  if (resolved.row.ownerId === auth?.userId) return resolved;
-  const allowed = await applyFileAcl(database, operation, resolved.row, auth, credential);
-  return { ok: true, row: allowed ? resolved.row : null };
-}
-async function resolveLockedAccessibleFileReference(database, auth, reference, operation, credential = { kind: "session" }) {
-  const resolved = await resolvePrivilegedLiveFileReference(database, reference);
-  if (!resolved.ok || !resolved.row) return resolved;
-  const row = await database.adapter.lockFileById(resolved.row.id);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  if (isAbsoluteFilePath(String(reference ?? ""))) {
-    let normalizedPath;
-    try {
-      normalizedPath = normalizeAbsoluteFilePath(String(reference));
-    } catch {
-      return { ok: true, row: null };
-    }
-    if (row.path !== normalizedPath) return { ok: true, row: null };
-  }
-  if (row.ownerId === auth?.userId) return { ok: true, row };
-  const allowed = await applyFileAcl(database, operation, row, auth, credential);
-  return { ok: true, row: allowed ? row : null };
-}
-async function resolvePrivilegedLiveFileReference(database, reference) {
-  const value = String(reference ?? "");
-  if (isAbsoluteFilePath(value)) {
-    let path26;
-    try {
-      path26 = normalizeAbsoluteFilePath(value);
-    } catch {
-      return { ok: true, row: null };
-    }
-    const resolved = await singleLiveFileRowByPath(database, path26);
-    if (resolved?.ambiguous) {
-      return ambiguousFileReferenceError(value);
-    }
-    return { ok: true, row: resolved };
-  }
-  const row = await database.adapter.selectFileById(value);
-  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
-    return { ok: true, row: null };
-  }
-  return { ok: true, row };
-}
-function singleLiveFileRowByPath(database, path26) {
-  return thenIfPromise(database.adapter.selectLiveFileByPath(path26), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function singleActiveFileRowByPath(database, path26) {
-  return thenIfPromise(database.adapter.selectActiveFileByPath(path26), (rows) => {
-    if (rows.length > 1) return { ambiguous: true };
-    return rows[0] ?? null;
-  });
-}
-function ambiguousFileReferenceError(reference) {
-  return {
-    ok: false,
-    error: createStructuredFileError(
-      "File reference is ambiguous.",
-      `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`
-    )
-  };
-}
-function structuredFileException(message, hint) {
-  const error = new Error(message);
-  error.hint = hint;
-  return error;
-}
-function isUniqueConstraintError(error) {
-  const text3 = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
-  return /unique constraint|duplicate key|constraint failed/i.test(text3);
-}
-function filePathBackfillSql() {
-  return "UPDATE [sporades_files] SET [path] = CASE WHEN (SELECT COUNT(*) FROM [sporades_files] AS [matching] WHERE [matching].[ownerId] = [sporades_files].[ownerId] AND [matching].[bucketName] = [sporades_files].[bucketName] AND [matching].[name] = [sporades_files].[name] AND [matching].[deletedAt] IS NULL AND [matching].[status] IN ('pending', 'uploaded')) = 1 THEN '/' || [bucketName] || '/' || [name] ELSE '/' || [bucketName] || '/' || [id] || '/' || [name] END WHERE [path] IS NULL OR [path] = ''";
-}
-function activeFilePathDedupeSql() {
-  return "UPDATE [sporades_files] SET [deletedAt] = COALESCE([deletedAt], [updatedAt]), [updatedAt] = [updatedAt] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') AND [id] NOT IN (SELECT MAX([id]) FROM [sporades_files] WHERE [deletedAt] IS NULL AND [status] IN ('pending', 'uploaded') GROUP BY [path])";
-}
-function ensureFileUploadTargetColumns(sqlite) {
-  const addedColumns = [
-    ["bucketId", "TEXT"],
-    ["bucketName", "TEXT"],
-    ["path", "TEXT"],
-    ["name", "TEXT"],
-    ["type", "TEXT"]
-  ];
-  const statements = [
-    "UPDATE [sporades_file_uploads] SET [bucketId] = COALESCE([bucketId], (SELECT [bucketId] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [bucketName] = COALESCE([bucketName], (SELECT [bucketName] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [path] = COALESCE([path], (SELECT [path] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [name] = COALESCE([name], (SELECT [name] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])), [type] = COALESCE([type], (SELECT [type] FROM [sporades_files] WHERE [sporades_files].[id] = [sporades_file_uploads].[fileId])) WHERE [path] IS NULL OR [path] = ''",
-    "DELETE FROM [sporades_file_uploads] WHERE [id] NOT IN (SELECT MAX([id]) FROM [sporades_file_uploads] GROUP BY [path])",
-    "CREATE INDEX IF NOT EXISTS [sporades_file_uploads_path] ON [sporades_file_uploads] ([path])",
-    "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_uploads_path_unique] ON [sporades_file_uploads] ([path])"
-  ];
-  return chainMaybePromise([
-    ...addedColumns.map(([name2, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name2, type)),
-    ...statements.map((statement) => () => sqlite.exec(sqlite.dialect.sql(statement)))
-  ]);
-}
-function ensureFileIngressColumns(sqlite) {
-  const addedColumns = [
-    ["leaseId", "TEXT"],
-    ["state", "TEXT"],
-    ["actorId", "TEXT"],
-    ["authorityKind", "TEXT"],
-    ["authorityId", "TEXT"],
-    ["ownerId", "TEXT"],
-    ["principalNamespace", "TEXT"],
-    ["principalKeyDigest", "TEXT"],
-    ["endpointMethod", "TEXT"],
-    ["endpointPath", "TEXT"],
-    ["requestKey", "TEXT"],
-    ["partKey", "TEXT"],
-    ["expiresAt", "TEXT"],
-    ["sweepToken", "TEXT"]
-  ];
-  return chainMaybePromise([
-    ...addedColumns.map(([name2, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_ingress", name2, type)),
-    () => thenIfPromise(sqlite.prepare(sqlite.dialect.sql("SELECT [key], [payload] FROM [sporades_file_ingress] WHERE [leaseId] IS NULL OR [expiresAt] IS NULL OR [authorityKind] IS NULL")).all(), (rows) => chainMaybePromise(rows.map((stored) => () => {
-      let row;
-      try {
-        row = JSON.parse(stored.payload);
-      } catch {
-        return void 0;
-      }
-      const normalized = { ...row, authorityKind: row.authorityKind ?? "actor", authorityId: row.authorityId ?? `actor:${row.actorId}`, ownerId: row.ownerId ?? row.actorId };
-      return sqlite.prepare(sqlite.dialect.sql("UPDATE [sporades_file_ingress] SET [leaseId]=?, [state]=?, [actorId]=?, [authorityKind]=?, [authorityId]=?, [ownerId]=?, [principalNamespace]=?, [principalKeyDigest]=?, [endpointMethod]=?, [endpointPath]=?, [requestKey]=?, [partKey]=?, [expiresAt]=?, [sweepToken]=?, [payload]=? WHERE [key]=?")).run(normalized.leaseId ?? null, normalized.state ?? null, normalized.actorId ?? null, normalized.authorityKind, normalized.authorityId, normalized.ownerId, normalized.principalNamespace ?? null, normalized.principalKeyDigest ?? null, normalized.endpointMethod ?? null, normalized.endpointPath ?? null, normalized.requestKey ?? null, normalized.partKey ?? null, normalized.expiresAt ?? null, normalized.sweepToken ?? null, JSON.stringify(normalized), stored.key);
-    }))),
-    () => sqlite.exec(sqlite.dialect.sql("CREATE UNIQUE INDEX IF NOT EXISTS [sporades_file_ingress_lease_unique] ON [sporades_file_ingress] ([leaseId])"))
-  ]);
-}
-function createStructuredFileError(message, hint) {
-  return { message, hint };
-}
-async function removeFileVersionBestEffort(database, fileId, version3) {
-  await traceRuntimeOperation("sporades.file.bytes.delete", () => database.fileStorage.deleteFileVersion({ fileId, version: version3 })).catch(() => {
   });
 }
 
@@ -129745,7 +123780,7 @@ function prepareHttpSecurity(database, request, response, admitPreflight) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
   const directives = { ...policy.csp.directives };
   if (policy.csp.nonce) {
-    const nonce = randomBytes6(32).toString("base64");
+    const nonce = randomBytes5(32).toString("base64");
     pageNonces.set(response, nonce);
     for (const name2 of ["script-src", "script-src-elem"]) {
       if (name2 === "script-src-elem" && directives[name2] === void 0) continue;
@@ -130374,7 +124409,7 @@ function endpointResponseError() {
 }
 
 // src/auth-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var PRIVILEGED_AUTH_USER_ID = "__privileged__";
 var CAPSULE_INGRESS_AUTH_USER_PREFIX = "__sporades_capsule_ingress__:";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
@@ -130398,7 +124433,7 @@ function privilegedAuthUserId() {
   return "__privileged__";
 }
 function capsuleIngressAuthUserId(capsuleIdentity) {
-  const digest3 = nodeCryptoModule3.createHash("sha256").update(String(capsuleIdentity ?? "capsule"), "utf8").digest("hex").slice(0, 32);
+  const digest3 = nodeCryptoModule2.createHash("sha256").update(String(capsuleIdentity ?? "capsule"), "utf8").digest("hex").slice(0, 32);
   return `${CAPSULE_INGRESS_AUTH_USER_PREFIX}${digest3}`;
 }
 function isReservedAuthUserId(userId) {
@@ -130510,7 +124545,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   return await withRegistrationTransaction(database, async (tx) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
-    const userId = identity?.userId ?? nodeCryptoModule3.randomUUID();
+    const userId = identity?.userId ?? nodeCryptoModule2.randomUUID();
     if (identity) {
       await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0, provider });
       await tx.updateAuthIdentity({
@@ -130535,7 +124570,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         provider
       });
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule3.randomUUID(),
+        id: nodeCryptoModule2.randomUUID(),
         userId,
         provider,
         subject,
@@ -130942,7 +124977,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
   }
   let signingKey;
   try {
-    signingKey = nodeCryptoModule3.createPrivateKey(privateKey);
+    signingKey = nodeCryptoModule2.createPrivateKey(privateKey);
   } catch {
     throw commandError(
       "Apple client credential is invalid.",
@@ -130965,7 +125000,7 @@ function createAppleClientSecret(database, nowSeconds2 = Math.floor(Date.now() /
     aud: "https://appleid.apple.com",
     sub: apple.clientId
   })).toString("base64url");
-  const signatureBytes = nodeCryptoModule3.sign(
+  const signatureBytes = nodeCryptoModule2.sign(
     "sha256",
     Buffer.from(`${header2}.${claims}`),
     { key: signingKey, dsaEncoding: "ieee-p1363" }
@@ -131323,7 +125358,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule3.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -131646,7 +125681,7 @@ async function verifyMicrosoftIdentityToken(database, token, expectedNonce, disc
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule3.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -131732,7 +125767,7 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
   let signatureValid = false;
   let signatureCheckFailed = false;
   try {
-    signatureValid = nodeCryptoModule3.verify(
+    signatureValid = nodeCryptoModule2.verify(
       "RSA-SHA256",
       Buffer.from(`${parts[0]}.${parts[1]}`),
       { key: jwk, format: "jwk" },
@@ -132024,7 +126059,7 @@ function normalizePasswordResetPath(value) {
   return value;
 }
 function passwordResetCodeParts(database, requestedCode = null) {
-  const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule3.randomBytes(16).toString("base64url"), nodeCryptoModule3.randomBytes(32).toString("base64url")];
+  const [selector, verifier, ...rest] = typeof requestedCode === "string" ? requestedCode.split(".") : [nodeCryptoModule2.randomBytes(16).toString("base64url"), nodeCryptoModule2.randomBytes(32).toString("base64url")];
   if (!selector || !verifier || rest.length > 0 || !/^[A-Za-z0-9_-]{16,64}$/.test(selector) || !/^[A-Za-z0-9_-]{32,128}$/.test(verifier)) {
     throw commandError("Invalid password reset request.", "Request a new password reset link.", "INVALID_PASSWORD_RESET_REQUEST");
   }
@@ -132037,7 +126072,7 @@ function passwordResetCodeParts(database, requestedCode = null) {
   };
 }
 function hashPasswordResetVerifier(verifier) {
-  return nodeCryptoModule3.createHash("sha256").update(verifier).digest("base64url");
+  return nodeCryptoModule2.createHash("sha256").update(verifier).digest("base64url");
 }
 async function issuePasswordResetCode(database, credential, requestedCode = null, allowRequestedCodeInsert = true) {
   return await withAuthTransaction(database, async (tx) => {
@@ -132147,7 +126182,7 @@ async function readPasswordResetCode(database, code2) {
   const row = await database.adapter.findPasswordResetCode(parts[0]);
   const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
   const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
-  const matches2 = actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
+  const matches2 = actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
   if (!row || !matches2) {
     return null;
   }
@@ -132490,14 +126525,14 @@ function normalizeEmailCredentials(credentials) {
   return { ok: true, email, password, name: name2 };
 }
 function hashEmailPassword(password) {
-  const salt = nodeCryptoModule3.randomBytes(16).toString("base64url");
-  const hash2 = nodeCryptoModule3.scryptSync(password, salt, 64).toString("base64url");
+  const salt = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const hash2 = nodeCryptoModule2.scryptSync(password, salt, 64).toString("base64url");
   return { hash: hash2, salt };
 }
 function verifyEmailPassword(password, salt, expectedHash) {
-  const actual = nodeCryptoModule3.scryptSync(password, salt, 64);
+  const actual = nodeCryptoModule2.scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHash, "base64url");
-  return actual.length === expected.length && nodeCryptoModule3.timingSafeEqual(actual, expected);
+  return actual.length === expected.length && nodeCryptoModule2.timingSafeEqual(actual, expected);
 }
 function emailAuthDisabledError() {
   return {
@@ -132513,7 +126548,7 @@ function isExpiredSession(row) {
   return Date.parse(row.expiresAt) <= Date.now();
 }
 function createSessionToken() {
-  return nodeCryptoModule3.randomBytes(32).toString("base64url");
+  return nodeCryptoModule2.randomBytes(32).toString("base64url");
 }
 async function refreshSessionOnAdapter(sqlite, token) {
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
@@ -132536,7 +126571,7 @@ async function resolveAnonymousSessionOperation(database, sessionToken) {
     }
   }
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
-  const userId = nodeCryptoModule3.randomUUID();
+  const userId = nodeCryptoModule2.randomUUID();
   const token = createSessionToken();
   await database.adapter.withTransaction(async (tx) => {
     await tx.insertAuthUser({
@@ -132731,7 +126766,7 @@ async function signUpWithEmail(database, session, provider, credentials, registr
   if (database.registrationThrottle) {
     const { email, address } = database.registrationThrottle;
     const normalizedEmail = String(credentials?.email ?? "").trim().toLowerCase();
-    const identity = nodeCryptoModule3.createHash("sha256").update(normalizedEmail).digest("hex");
+    const identity = nodeCryptoModule2.createHash("sha256").update(normalizedEmail).digest("hex");
     const emailResult = database.registrationRateLimiter.consume(`email:${identity}`, email);
     const clientAddress = database.securitySession === "hosted" ? canonicalClientAddress(session?.clientAddress ?? session?.auth?.clientAddress) : null;
     const addressResult = clientAddress ? database.registrationRateLimiter.consume(`address:${clientAddress}`, address) : { ok: true, retryAfterMs: 0 };
@@ -132972,7 +127007,7 @@ async function linkProviderIdentity(database, session, provider, profile, sealed
       });
     } else {
       await tx.insertAuthIdentity({
-        id: nodeCryptoModule3.randomUUID(),
+        id: nodeCryptoModule2.randomUUID(),
         userId: auth.userId,
         provider,
         subject,
@@ -133143,7 +127178,7 @@ async function routeSporadesAuth(database, request, response) {
           if (!freshnessVerified || !policy || !current2 || current2.token !== stateRow.sessionToken || current2.userId !== stateRow.reauthUserId || !current2.isAuthenticated || current2.isGuest || Date.parse(current2.expiresAt) <= now2.getTime() || identity?.userId !== current2.userId) return false;
           const currentAuth = sessionFromRow(current2).auth;
           if (!await database.authorizeReauthentication(tx, currentAuth, stateRow.reauthPurpose)) return false;
-          await tx.replaceReauthenticationProof({ id: nodeCryptoModule3.randomUUID(), userId: current2.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
+          await tx.replaceReauthenticationProof({ id: nodeCryptoModule2.randomUUID(), userId: current2.userId, sessionToken: stateRow.sessionToken, purpose: stateRow.reauthPurpose, createdAt: now2.toISOString(), expiresAt: new Date(now2.getTime() + policy.maxAgeSeconds * 1e3).toISOString() });
           return true;
         });
       } catch {
@@ -133236,10 +127271,10 @@ async function beginOAuthSignIn(database, session, provider, options) {
   }
   const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
   const returnTo = normalizeReturnTo(options.returnTo, origin);
-  const state = nodeCryptoModule3.randomBytes(32).toString("base64url");
-  const nonce = nodeCryptoModule3.randomBytes(32).toString("base64url");
-  const pkceVerifier = nodeCryptoModule3.randomBytes(48).toString("base64url");
-  const pkceChallenge = nodeCryptoModule3.createHash("sha256").update(pkceVerifier).digest("base64url");
+  const state = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const nonce = nodeCryptoModule2.randomBytes(32).toString("base64url");
+  const pkceVerifier = nodeCryptoModule2.randomBytes(48).toString("base64url");
+  const pkceChallenge = nodeCryptoModule2.createHash("sha256").update(pkceVerifier).digest("base64url");
   const now2 = (/* @__PURE__ */ new Date()).toISOString();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
   const admission = boundedRegistrationInput(options.registration?.admission);
@@ -133335,8 +127370,8 @@ async function reconcileOAuthRegistrationKeysOnAdapter(adapter, now2) {
     return { keyId: active.value, migratedLegacy: false };
   }
   if (active && !oauthRegistrationMaterial(active.value)) throw new Error("OAuth registration key is unavailable.");
-  const candidateId = nodeCryptoModule3.randomBytes(16).toString("base64url");
-  const candidateMaterial = active?.value ?? nodeCryptoModule3.randomBytes(32).toString("base64url");
+  const candidateId = nodeCryptoModule2.randomBytes(16).toString("base64url");
+  const candidateMaterial = active?.value ?? nodeCryptoModule2.randomBytes(32).toString("base64url");
   await adapter.prepare(adapter.dialect.sql(
     "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT([key]) DO NOTHING"
   )).run(oauthRegistrationMaterialKey(candidateId), candidateMaterial);
@@ -133412,8 +127447,8 @@ ${row.expiresAt}`;
 }
 async function sealOAuthRegistration(database, value, binding) {
   const key = await withAuthTransaction(database, async (tx) => oauthRegistrationKeyForSeal(database, tx));
-  const iv = nodeCryptoModule3.randomBytes(12);
-  const cipher = nodeCryptoModule3.createCipheriv("aes-256-gcm", key.material, iv);
+  const iv = nodeCryptoModule2.randomBytes(12);
+  const cipher = nodeCryptoModule2.createCipheriv("aes-256-gcm", key.material, iv);
   cipher.setAAD(Buffer.from(oauthRegistrationAad(binding)));
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return `${key.keyId}.${iv.toString("base64url")}.${cipher.getAuthTag().toString("base64url")}.${encrypted.toString("base64url")}`;
@@ -133440,7 +127475,7 @@ async function unsealOAuthRegistration(database, row, transactionAdapter = datab
     if (!oauthRegistrationKeyId(keyId) && keyId !== "active" || !iv || !tag || !encrypted) return oauthRegistrationUnsealFailed;
     const material = await oauthRegistrationKeyForUnseal(transactionAdapter, keyId);
     if (!material) return oauthRegistrationUnsealFailed;
-    const decipher = nodeCryptoModule3.createDecipheriv("aes-256-gcm", material, iv);
+    const decipher = nodeCryptoModule2.createDecipheriv("aes-256-gcm", material, iv);
     decipher.setAAD(Buffer.from(oauthRegistrationAad(row)));
     decipher.setAuthTag(tag);
     const admission = boundedRegistrationInput(JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8")));
@@ -133572,6 +127607,6154 @@ function migrateAuthUserProviderLabels(sqlite) {
     "UPDATE [sporades_auth_users] SET [provider] = CASE WHEN [isAuthenticated] = 1 THEN COALESCE((SELECT MIN([i].[provider]) FROM [sporades_auth_identities] [i] WHERE [i].[userId] = [sporades_auth_users].[id] HAVING COUNT(DISTINCT [i].[provider]) = 1 AND MIN([i].[provider]) IN ('email', 'google', 'microsoft', 'apple', 'facebook')), 'unknown') ELSE 'anonymous' END WHERE ([isAuthenticated] = 1 AND [provider] IN ('anonymous', 'guest')) OR ([isAuthenticated] = 0 AND [isGuest] = 1 AND [provider] = 'guest')"
   ));
 }
+
+// src/team-billing-runtime.ts
+import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
+
+// src/team-billing-subscription-semantics.ts
+function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
+  if (eventType === "customer.subscription.deleted") {
+    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
+  }
+  if (state === "cancelled") return null;
+  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
+}
+function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
+  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
+  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
+  if (state !== "active") return null;
+  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
+}
+
+// src/team-billing-quantity.ts
+function billableTeamMemberQuantity(policy, memberCount) {
+  return Math.max(memberCount, policy?.minimum ?? 1);
+}
+function teamBillingQuantityPolicyFingerprint(policy) {
+  if (policy.kind === "fixed") return `fixed:${policy.value}`;
+  return policy.minimum === void 0 ? "team-members" : `team-members:minimum:${policy.minimum}`;
+}
+
+// src/team-billing-convergence.ts
+import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+
+// src/team-billing-management.ts
+import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
+var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
+var CLAIM_TTL_MS = 5 * 60 * 1e3;
+var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey) {
+  const definition = database.teamBillingDefinition;
+  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition?.catalogue?.[productKey]) throw denied();
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    await admitPlanTransition(database, transaction, auth, teamId, productKey);
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
+    const sql2 = transaction.dialect.sql;
+    const repeated = await transaction.prepare(sql2(
+      "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+    )).get(teamId, requestId);
+    if (repeated) {
+      if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey) throw conflict();
+      return planOperationResult(teamId, requestId, productKey, repeated);
+    }
+    const subscription = await currentSubscription(transaction, teamId);
+    const currentProduct = definition.catalogue[subscription.productKey];
+    const targetProduct = definition.catalogue[productKey];
+    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+    if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity)) throw transitionNotRequired();
+    const quantity = await targetQuantity(transaction, teamId, targetProduct);
+    const operationId = randomUUID4();
+    const now2 = nowIso(database);
+    const effectiveAt = nowSeconds(database);
+    const staged = await stageDesired(transaction, database, {
+      teamId,
+      kind: "plan-transition",
+      operationId,
+      targetProductKey: productKey,
+      targetQuantity: quantity,
+      effectiveAt
+    });
+    await transaction.prepare(sql2(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
+    )).run(now2, teamId);
+    await transaction.prepare(sql2(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity);
+    await enqueueIntent(database, transaction, staged);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = nowSeconds(database)) {
+  if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    try {
+      await assertTeamBillingErasureInactive(database, transaction, teamId);
+    } catch {
+      return Object.freeze({ staged: false, reason: "erasure-active" });
+    }
+    const subscription = await optionalCurrentSubscription(transaction, teamId);
+    if (!subscription) return Object.freeze({ staged: false });
+    const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+    if (product?.quantity?.kind !== "team-members") return Object.freeze({ staged: false });
+    const quantity = billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied));
+    const existing = await desiredForTeam(transaction, teamId);
+    if (existing?.kind === "plan-transition") return Object.freeze({ staged: false, reason: "plan-transition-active" });
+    if (!existing && subscription.quantity === quantity) return Object.freeze({ staged: false });
+    const staged = await stageDesired(transaction, database, {
+      teamId,
+      kind: "seat-convergence",
+      operationId: null,
+      targetProductKey: subscription.productKey,
+      targetQuantity: quantity,
+      effectiveAt
+    });
+    let generationId = staged.activeJobGenerationId ?? null;
+    if (staged.enqueue) {
+      generationId = await enqueueIntent(database, transaction, staged);
+      enqueued = true;
+    }
+    return Object.freeze({ staged: true, intentId: staged.intentId, generationId, quantity });
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function performTeamBillingPlanTransition(database, context2, payload) {
+  return performDesired(database, context2, payload, "plan-transition");
+}
+async function performTeamBillingSeatConvergence(database, context2, payload) {
+  return performDesired(database, context2, payload, "seat-convergence");
+}
+async function performDesired(database, _context, payload, kind) {
+  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
+  const claimToken = randomUUID4();
+  const snapshot = await inTransaction(database, async (transaction) => {
+    const desired = await desiredByIntent(transaction, payload.intentId);
+    if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
+    const subscription = await currentSubscription(transaction, desired.teamId);
+    const product = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
+    if (!product) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
+    try {
+      assertCurrentModeAndCatalogue(database, subscription, database.teamBillingDefinition?.catalogue?.[subscription.productKey]);
+    } catch {
+      return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+    }
+    if (kind === "plan-transition") {
+      const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
+      const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey);
+      if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
+      const billableQuantity = await targetQuantity(transaction, desired.teamId, product);
+      if (billableQuantity !== Number(desired.targetQuantity)) {
+        const replacement = await stageDesired(transaction, database, {
+          teamId: desired.teamId,
+          kind,
+          operationId: desired.operationId,
+          targetProductKey: desired.targetProductKey,
+          targetQuantity: billableQuantity,
+          effectiveAt: nowSeconds(database)
+        });
+        await enqueueIntent(database, transaction, replacement);
+        return { superseded: true, dispatch: true };
+      }
+    } else {
+      const targetProductKey = subscription.productKey;
+      const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
+      if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
+      const billableQuantity = billableTeamMemberQuantity(
+        currentProduct.quantity,
+        await countAcceptedTeamMembers(transaction, desired.teamId, denied)
+      );
+      if (billableQuantity !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey) {
+        const replacement = await stageDesired(transaction, database, {
+          teamId: desired.teamId,
+          kind,
+          operationId: null,
+          targetProductKey,
+          targetQuantity: billableQuantity,
+          effectiveAt: nowSeconds(database)
+        });
+        await enqueueIntent(database, transaction, replacement);
+        return { superseded: true, dispatch: true };
+      }
+    }
+    const customer = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ? AND [mode] = ?"
+    )).get(desired.teamId, subscription.mode);
+    if (!customer?.providerCustomerId) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+    const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
+    if (!claimed) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(nowIso(database), desired.intentId);
+    const binding = modeBinding(database, product);
+    return {
+      desired: { ...desired },
+      provider: {
+        teamId: desired.teamId,
+        mode: subscription.mode,
+        providerCustomerId: customer.providerCustomerId,
+        providerSubscriptionId: subscription.providerSubscriptionId,
+        providerSubscriptionItemId: subscription.providerSubscriptionItemId,
+        sourcePriceId: subscription.providerPriceId,
+        targetPriceId: binding.priceId,
+        ...binding.productId ? { targetProductId: binding.productId } : {},
+        targetProductKey: desired.targetProductKey,
+        targetQuantity: Number(desired.targetQuantity),
+        effectiveAt: Number(desired.effectiveAt),
+        prorationDate: Number(desired.effectiveAt),
+        idempotencyKey: desired.idempotencyKey,
+        operationKind: desired.kind
+      }
+    };
+  });
+  if (snapshot.dispatch) database.scheduleTeamBillingJobDispatch?.();
+  if (snapshot.superseded) return { superseded: true };
+  if (snapshot.denied) throw denied();
+  try {
+    if (typeof database.updateTeamBillingSubscription !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+    const providerResult = await database.updateTeamBillingSubscription(_context, Object.freeze(snapshot.provider));
+    if (!validProviderAcknowledgement(providerResult)) throw coded(
+      "Team Billing provider returned an invalid acknowledgement.",
+      "TEAM_BILLING_PROVIDER_REJECTED"
+    );
+    if (providerResult?.outcome === "payment-action-required") {
+      await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" });
+      return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
+    }
+  } catch (error) {
+    const classified = classifyProviderError(database, error);
+    await releaseAfterFailure(database, snapshot.desired, claimToken, classified);
+    if (classified.retryable) {
+      error.retryable = true;
+      error.code ??= classified.code;
+    }
+    throw error;
+  }
+  const acknowledged = await inTransaction(database, async (transaction) => {
+    const current2 = await desiredByIntent(transaction, snapshot.desired.intentId);
+    const ownedLane = await releaseLane(transaction, snapshot.desired.teamId, claimToken, database);
+    if (!ownedLane || !current2 || current2.activeJobGenerationId !== snapshot.desired.activeJobGenerationId || current2.operationId !== snapshot.desired.operationId || current2.status !== "running") return false;
+    const updated = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] = 'running' AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))"
+    )).run(
+      nowIso(database),
+      nowIso(database),
+      current2.intentId,
+      snapshot.desired.activeJobGenerationId,
+      snapshot.desired.operationId,
+      snapshot.desired.operationId
+    );
+    if (Number(updated?.changes ?? updated?.changesCount ?? 0) !== 1) return false;
+    if (current2.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?"
+    )).run(nowIso(database), current2.operationId);
+    return true;
+  });
+  return acknowledged ? { providerAcknowledged: true } : { superseded: true };
+}
+async function settleVerifiedTeamBillingTarget(database, accepted) {
+  if (!accepted || typeof accepted.teamId !== "string" || typeof accepted.productKey !== "string" || !Number.isSafeInteger(accepted.quantity) || typeof accepted.subscriptionId !== "string") return { settled: false };
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    const sql2 = transaction.dialect.sql;
+    const subscription = await transaction.prepare(sql2(
+      "SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?"
+    )).get(accepted.teamId, accepted.subscriptionId);
+    if (!subscription) return { settled: false };
+    const desired = await desiredForTeam(transaction, accepted.teamId);
+    if (!desired) return { settled: false };
+    if (desired.targetProductKey === accepted.productKey && Number(desired.targetQuantity) === accepted.quantity) {
+      const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
+      if (product?.quantity?.kind === "team-members") {
+        const billableQuantity = billableTeamMemberQuantity(
+          product.quantity,
+          await countAcceptedTeamMembers(transaction, accepted.teamId, denied)
+        );
+        if (billableQuantity !== accepted.quantity) {
+          if (desired.operationId) await transaction.prepare(sql2(
+            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+          )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+          const replacement = await stageDesired(transaction, database, {
+            teamId: accepted.teamId,
+            kind: "seat-convergence",
+            operationId: null,
+            targetProductKey: accepted.productKey,
+            targetQuantity: billableQuantity,
+            effectiveAt: nowSeconds(database)
+          });
+          await enqueueIntent(database, transaction, replacement);
+          enqueued = true;
+          return { settled: true, repairRequired: true };
+        }
+      }
+      await transaction.prepare(sql2("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+      await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
+      if (desired.operationId) await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+      return { settled: true };
+    }
+    if (desired.status === "awaiting-observation") {
+      await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [safeFailureCode] = 'PROVIDER_DRIFT', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+      )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true });
+      enqueued = true;
+      return { settled: false, repairRequired: true };
+    }
+    return { settled: false };
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function repairTeamBillingDesiredState(database) {
+  let queued = 0;
+  await inTransaction(database, async (transaction) => {
+    const subscriptions = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [teamId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]"
+    )).all();
+    for (const subscription of subscriptions) {
+      const desired = await desiredForTeam(transaction, subscription.teamId);
+      if (desired) {
+        if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity)) {
+          const product2 = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+          if (product2?.quantity?.kind === "team-members") {
+            const billableQuantity2 = billableTeamMemberQuantity(
+              product2.quantity,
+              await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
+            );
+            if (billableQuantity2 !== Number(subscription.quantity)) {
+              const replacement = await stageDesired(transaction, database, {
+                teamId: subscription.teamId,
+                kind: "seat-convergence",
+                operationId: null,
+                targetProductKey: subscription.productKey,
+                targetQuantity: billableQuantity2,
+                effectiveAt: nowSeconds(database)
+              });
+              await enqueueIntent(database, transaction, replacement);
+              queued += 1;
+              continue;
+            }
+          }
+          if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+            "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
+          )).run(nowIso(database), desired.operationId);
+          await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+          continue;
+        }
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+        )).run(nowIso(database), desired.intentId);
+        await enqueueIntent(database, transaction, { ...desired, enqueue: true });
+        queued += 1;
+        continue;
+      }
+      const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
+      if (product?.quantity?.kind !== "team-members") continue;
+      const billableQuantity = billableTeamMemberQuantity(
+        product.quantity,
+        await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
+      );
+      if (billableQuantity === Number(subscription.quantity)) continue;
+      const staged = await stageDesired(transaction, database, {
+        teamId: subscription.teamId,
+        kind: "seat-convergence",
+        operationId: null,
+        targetProductKey: subscription.productKey,
+        targetQuantity: billableQuantity,
+        effectiveAt: nowSeconds(database)
+      });
+      await enqueueIntent(database, transaction, staged);
+      queued += 1;
+    }
+  });
+  if (queued) scheduleAfterOwnedTransaction(database);
+  return { queued };
+}
+var repairTeamBillingDesiredStateAtStartup = repairTeamBillingDesiredState;
+async function settleExhaustedTeamBillingManagementJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
+  if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { settled: false };
+  const failureCode = safeCode(safeFailureCode);
+  let replacementScheduled = false;
+  const result = await inTransaction(database, async (transaction) => {
+    const desired = await desiredByIntent(transaction, payload.intentId);
+    if (!desired || desired.activeJobGenerationId !== payload.generationId || desired.status === "awaiting-observation") return { settled: false, stale: true };
+    const lane = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+    )).get(desired.teamId);
+    if (lane?.claimToken && typeof lane.claimExpiresAt === "string" && lane.claimExpiresAt > nowIso(database)) {
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, lane.claimExpiresAt);
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt: lane.claimExpiresAt };
+    }
+    if (failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
+      const availableAt = nowIso(database);
+      await enqueueIntent(database, transaction, { ...desired, enqueue: true }, availableAt);
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt };
+    }
+    const settled = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'failed', [safeFailureCode] = ?, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+    )).run(failureCode, nowIso(database), desired.intentId, payload.generationId);
+    if (Number(settled?.changes ?? settled?.changesCount ?? 0) !== 1) return { settled: false, stale: true };
+    if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(failureCode, nowIso(database), desired.operationId);
+    return { settled: true };
+  });
+  if (replacementScheduled && !database.__transactionActive) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function stageDesired(transaction, database, input) {
+  const existing = await desiredForTeam(transaction, input.teamId);
+  const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && Number(existing.targetQuantity) === input.targetQuantity;
+  if (unchanged) {
+    const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
+    const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
+    if (enqueue) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(transfersPlanOwnership ? input.operationId : existing.operationId, nowIso(database), existing.intentId);
+    return {
+      ...existing,
+      operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
+      status: enqueue ? "queued" : existing.status,
+      enqueue
+    };
+  }
+  const intentId = randomUUID4();
+  const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
+  const now2 = nowIso(database);
+  if (existing) {
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2, input.teamId);
+  } else {
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)"
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetQuantity, input.effectiveAt, idempotencyKey, now2, now2);
+  }
+  await ensureLane(transaction, input.teamId, database);
+  return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
+}
+async function enqueueIntent(database, transaction, desired, availableAt) {
+  const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
+  if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+  const generationId = randomUUID4();
+  const activated = await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
+  )).run(generationId, nowIso(database), desired.intentId);
+  if (Number(activated?.changes ?? activated?.changesCount ?? 0) !== 1) throw retryable("TEAM_BILLING_DESIRED_STATE_SUPERSEDED");
+  await callback(
+    transaction,
+    { intentId: desired.intentId, generationId },
+    `team-billing-management:${desired.intentId}:${generationId}`,
+    availableAt
+  );
+  return generationId;
+}
+async function admitPlanTransition(database, transaction, auth, teamId, productKey) {
+  if (!await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey)) throw denied();
+}
+async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey) {
+  if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true) return false;
+  await lockTeamLifecycle(transaction, teamId, denied);
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (membership?.role !== "admin") return false;
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: "plan-transition",
+    teamId,
+    teamRole: "admin",
+    productKey
+  }));
+  return decision?.allow === true;
+}
+async function actorForOperation(transaction, operationId) {
+  if (typeof operationId !== "string") return null;
+  return (await transaction.prepare(transaction.dialect.sql(
+    "SELECT [actorUserId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-transition'"
+  )).get(operationId))?.actorUserId ?? null;
+}
+async function targetQuantity(transaction, teamId, product) {
+  return product.quantity.kind === "team-members" ? billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied)) : Number(product.quantity.value);
+}
+async function currentSubscription(transaction, teamId) {
+  const rows = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]"
+  )).all(teamId);
+  if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
+  return rows[0];
+}
+async function optionalCurrentSubscription(transaction, teamId) {
+  try {
+    return await currentSubscription(transaction, teamId);
+  } catch {
+    return null;
+  }
+}
+async function desiredForTeam(transaction, teamId) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+  )).get(teamId);
+}
+async function desiredByIntent(transaction, intentId) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?"
+  )).get(intentId);
+}
+async function ensureLane(transaction, teamId, database) {
+  const existing = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+  )).get(teamId);
+  if (!existing) await transaction.prepare(transaction.dialect.sql(
+    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?)"
+  )).run(teamId, nowIso(database));
+}
+async function claimLane(transaction, teamId, token, database) {
+  await ensureLane(transaction, teamId, database);
+  const now2 = nowIso(database);
+  const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS).toISOString();
+  const result = await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+  )).run(token, expiresAt, now2, teamId, now2);
+  return Number(result?.changes ?? result?.changesCount ?? 0) === 1;
+}
+async function releaseLane(transaction, teamId, token, database) {
+  const released = await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+  )).run(nowIso(database), teamId, token);
+  return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
+}
+async function releaseAfterFailure(database, desired, token, classified) {
+  await inTransaction(database, async (transaction) => {
+    await releaseLane(transaction, desired.teamId, token, database);
+    const current2 = await desiredByIntent(transaction, desired.intentId);
+    if (!current2) return;
+    const updated = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ? AND [activeJobGenerationId] = ?"
+    )).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
+    if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current2.operationId) await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(classified.code, nowIso(database), current2.operationId);
+  });
+}
+async function attention(transaction, database, desired, code2, deniedResult = false) {
+  const updatedAt = nowIso(database);
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_desired_state] SET [status] = 'attention-required', [safeFailureCode] = ?, [updatedAt] = ? WHERE [intentId] = ?"
+  )).run(code2, updatedAt, desired.intentId);
+  if (desired.operationId) await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?"
+  )).run(code2, updatedAt, desired.operationId);
+  return deniedResult ? { denied: true } : { superseded: true };
+}
+function classifyProviderError(database, error) {
+  const classified = database.classifyTeamBillingProviderError?.(error);
+  return { retryable: classified?.retryable ?? error?.retryable === true, code: safeCode(classified?.code ?? error?.code ?? "PROVIDER_REJECTED") };
+}
+function modeBinding(database, product) {
+  return product.stripe[database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox"];
+}
+function assertCurrentModeAndCatalogue(database, subscription, product) {
+  const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
+  if (!product || subscription.mode !== mode || product.stripe?.[mode]?.priceId !== subscription.providerPriceId) throw attentionRequired();
+}
+function sameQuantityPolicy(left, right) {
+  return left?.kind === right?.kind && teamBillingQuantityPolicyFingerprint(left) === teamBillingQuantityPolicyFingerprint(right);
+}
+function intentIdempotency(database, teamId, intentId) {
+  return `sporades-team-billing-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${teamId}\0${intentId}`).digest("hex")}`;
+}
+function operationIdempotency(database, operationId) {
+  return `sporades-team-billing-operation-${createHash6("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${operationId}`).digest("hex")}`;
+}
+async function inTransaction(database, callback) {
+  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
+  return database.adapter.withTransaction(callback);
+}
+function nowIso(database) {
+  return database.clock.now().toISOString();
+}
+function nowSeconds(database) {
+  return Math.floor(database.clock.now().getTime() / 1e3);
+}
+function scheduleAfterOwnedTransaction(database) {
+  database.scheduleTeamBillingJobDispatch?.();
+}
+function safeCode(value) {
+  const text3 = String(value ?? "PROVIDER_REJECTED").toUpperCase().replace(/[^A-Z0-9_]/g, "_").slice(0, 64);
+  return text3 || "PROVIDER_REJECTED";
+}
+function validProviderAcknowledgement(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "ok\0outcome" && value.ok === true && ["acknowledged", "payment-action-required"].includes(value.outcome);
+}
+function planOperationResult(teamId, requestId, productKey, operation) {
+  if (operation.status === "completed" || operation.status === "superseded") {
+    return Object.freeze({ state: operation.status, teamId, requestId, productKey });
+  }
+  if (operation.status === "failed") {
+    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required" : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode) ? "provider-state-ambiguous" : "unavailable";
+    return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
+  }
+  return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
+}
+function coded(message, code2, retry = false) {
+  return Object.assign(new Error(message), { code: code2, ...retry ? { retryable: true } : {} });
+}
+function denied() {
+  return coded("Team Billing plan transition denied.", "TEAM_BILLING_DENIED");
+}
+function conflict() {
+  return coded("The Team Billing request conflicts with an existing request.", "TEAM_BILLING_REQUEST_CONFLICT");
+}
+function transitionNotRequired() {
+  return coded("This Plan transition does not require managed quantity policy work.", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED");
+}
+function attentionRequired() {
+  return coded("Team Billing provider state requires attention.", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
+}
+function retryable(code2) {
+  return coded("Team Billing provider work should be retried.", code2, true);
+}
+
+// src/team-billing-convergence.ts
+var SUPPORTED = /* @__PURE__ */ new Set([
+  "checkout.session.completed",
+  "checkout.session.expired",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.deleted",
+  "invoice.payment_failed"
+]);
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var EVENT_ID = /^evt_[A-Za-z0-9_]{1,240}$/;
+var CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
+var CUSTOMER_ID = /^cus_[A-Za-z0-9_]{1,120}$/;
+var SUBSCRIPTION_ID = /^sub_[A-Za-z0-9_]{1,240}$/;
+var ITEM_ID = /^si_[A-Za-z0-9_]{1,240}$/;
+var INVOICE_ID = /^in_[A-Za-z0-9_]{1,240}$/;
+var INVOICE_LINE_ID = /^il_[A-Za-z0-9_]{1,240}$/;
+var PRICE_ID = /^price_[A-Za-z0-9_]{1,249}$/;
+var PRODUCT_ID = /^prod_[A-Za-z0-9_]{1,240}$/;
+var CANONICAL_TIME = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
+var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
+var Quarantine = class extends Error {
+  teamId;
+  reason;
+  rank;
+  objectId;
+  constructor(reason, teamId = null, rank = 50, objectId = null) {
+    super(reason);
+    this.teamId = teamId;
+    this.reason = reason;
+    this.rank = rank;
+    this.objectId = objectId;
+  }
+};
+async function applyVerifiedTeamBillingObservation(database, event) {
+  if (!SUPPORTED.has(event?.type)) return Object.freeze({ applied: false, ignored: true });
+  const transaction = database?.adapter;
+  if (!transaction?.prepare || !database.teamBillingDefinition) return Object.freeze({ applied: false, ignored: true });
+  if (typeof database.teamBillingErasureObjectKey === "function" && boundedObjectId(event?.objectId)) {
+    const erased = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [objectKey] FROM [sporades_team_billing_erasure_object_tombstones] WHERE [objectKey] = ?"
+    )).get(database.teamBillingErasureObjectKey(event.objectId));
+    if (erased) return Object.freeze({ applied: false, erased: true });
+  }
+  const digest3 = safeDigest(event?.raw);
+  const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
+  const occurredAt = canonicalTimestamp(event?.occurredAt);
+  const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
+  const preliminaryTeamId = await inferTeamId(transaction, event);
+  if (eventId && digest3) {
+    const existing = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [payloadDigest], [teamId], [outcome] FROM [sporades_team_billing_observations] WHERE [providerEventId] = ?"
+    )).get(eventId);
+    if (existing) {
+      if (existing.payloadDigest !== digest3) {
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_observations] SET [outcome] = 'quarantined', [safeReason] = 'provider-state-ambiguous' WHERE [providerEventId] = ?"
+        )).run(eventId);
+        return Object.freeze({ applied: false, quarantined: true });
+      }
+      return Object.freeze({ applied: false, duplicate: true });
+    }
+  }
+  try {
+    validateEnvelope2(database, event);
+    let result;
+    if (event.type.startsWith("checkout.session.")) result = await applyCheckout(database, event, expectedMode);
+    else if (event.type.startsWith("customer.subscription.")) result = await applySubscription(database, event, expectedMode);
+    else result = await applyInvoiceFailure(database, event, expectedMode);
+    const outcome = result.outcome ?? "applied";
+    await recordObservation(database, event, digest3, result.teamId, result.objectId, result.rank, outcome, null);
+    return Object.freeze({ applied: outcome === "applied" });
+  } catch (error) {
+    if (!(error instanceof Quarantine)) throw error;
+    const quarantine = error;
+    if (eventId && digest3 && occurredAt) {
+      await recordObservation(database, event, digest3, quarantine.teamId ?? preliminaryTeamId, quarantine.objectId ?? boundedObjectId(event?.objectId), quarantine.rank, "quarantined", quarantine.reason);
+    }
+    return Object.freeze({ applied: false, quarantined: true });
+  }
+}
+function validateEnvelope2(database, event) {
+  const raw = event?.raw;
+  const object2 = raw?.data?.object;
+  if (event?.provider !== "stripe" || !EVENT_ID.test(String(event.providerEventId ?? "")) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode) || !canonicalTimestamp(event.occurredAt) || !isRecord2(raw) || raw.object !== "event" || raw.id !== event.providerEventId || raw.type !== event.type || raw.livemode !== event.livemode || !Number.isInteger(raw.created) || new Date(raw.created * 1e3).toISOString() !== event.occurredAt || !isRecord2(raw.data) || !isRecord2(object2) || event.objectId !== object2.id || !boundedObjectId(object2.id)) {
+    throw new Quarantine("provider-state-ambiguous");
+  }
+}
+async function applyCheckout(database, event, mode) {
+  const tx = database.adapter;
+  const object2 = event.raw.data.object;
+  const operationId = object2.client_reference_id;
+  if (object2.object !== "checkout.session" || object2.mode !== "subscription" || object2.livemode !== event.livemode || !CHECKOUT_ID.test(String(object2.id ?? "")) || !UUID.test(String(operationId ?? "")) || object2.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
+  const operation = await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+  )).get(operationId);
+  if (!operation || operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", operation?.teamId ?? null, 50, object2.id);
+  if (operation.providerObjectId && operation.providerObjectId !== object2.id) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
+  const completed = event.type === "checkout.session.completed";
+  const customerId = completed && CUSTOMER_ID.test(String(object2.customer ?? "")) ? object2.customer : null;
+  const subscriptionId = completed && SUBSCRIPTION_ID.test(String(object2.subscription ?? "")) ? object2.subscription : null;
+  if (completed && (!customerId || !subscriptionId || object2.status !== "complete") || !completed && object2.status !== "expired") {
+    throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
+  }
+  if (operation.providerCustomerId && customerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
+  if (operation.providerSubscriptionId && subscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
+  if (customerId) await bindCustomer(tx, operation.teamId, mode, customerId, event.occurredAt);
+  let outcome = "ignored";
+  const currentRank = operation.status === "completed" ? 2 : operation.status === "expired" ? 1 : 0;
+  const nextRank = completed ? 2 : 1;
+  if (!operation.terminalObservedAt || nextRank > currentRank) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = ?, [providerObjectId] = ?, [providerCustomerId] = COALESCE(?, [providerCustomerId]), [providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(completed ? "completed" : "expired", object2.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
+    outcome = "applied";
+  }
+  return { teamId: operation.teamId, objectId: object2.id, rank: 10, outcome };
+}
+async function applySubscription(database, event, mode) {
+  const tx = database.adapter;
+  const object2 = event.raw.data.object;
+  const subscriptionId = object2.id;
+  const customerId = object2.customer;
+  const metadataOperationId = object2.metadata?.sporades_team_billing_operation;
+  if (object2.object !== "subscription" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode) {
+    throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
+  }
+  const existing = await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+  )).get(subscriptionId);
+  const operation = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+  )).get(metadataOperationId) : null;
+  const teamId = existing?.teamId ?? operation?.teamId ?? null;
+  if (!teamId || existing && operation && existing.teamId !== operation.teamId || existing?.mode !== void 0 && existing.mode !== mode || operation?.mode !== void 0 && operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  if (operation?.providerCustomerId && operation.providerCustomerId !== customerId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  if (operation?.providerSubscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  await assertCustomerAssociation(tx, teamId, mode, customerId);
+  const deleted = event.type === "customer.subscription.deleted";
+  const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId))?.count ?? 0);
+  const normalized = normalizeSubscription(database.teamBillingDefinition, object2, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
+  if (existing?.terminalLatch === 1) {
+    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  if (existing && !deleted && !winsRatchet(
+    normalized.periodStart,
+    event.occurredAt,
+    normalized.rank,
+    existing.currentPeriodStart,
+    existing.lastEventOccurredAt,
+    Number(existing.lastEventRank ?? 0)
+  )) {
+    return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
+  if (!existing) {
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )).run(
+      randomUUID5(),
+      teamId,
+      mode,
+      subscriptionId,
+      normalized.priceId,
+      normalized.itemId,
+      normalized.productKey,
+      normalized.quantity,
+      normalized.state,
+      normalized.cancelAtPeriodEnd,
+      normalized.periodStart,
+      normalized.periodEnd,
+      event.occurredAt,
+      event.occurredAt,
+      event.occurredAt,
+      normalized.kind,
+      normalized.rank,
+      deleted ? 1 : 0
+    );
+  } else {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?"
+    )).run(
+      normalized.priceId,
+      normalized.itemId,
+      normalized.productKey,
+      normalized.quantity,
+      normalized.state,
+      normalized.cancelAtPeriodEnd,
+      normalized.periodStart,
+      normalized.periodEnd,
+      event.occurredAt,
+      event.occurredAt,
+      event.occurredAt,
+      normalized.kind,
+      normalized.rank,
+      deleted ? 1 : 0,
+      subscriptionId
+    );
+  }
+  if (operation) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?"
+    )).run(customerId, subscriptionId, event.occurredAt, operation.id);
+  }
+  await settleVerifiedTeamBillingTarget(
+    { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
+    { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt }
+  );
+  return { teamId, objectId: subscriptionId, rank: normalized.rank };
+}
+function normalizeSubscription(definition, object2, operation, mode, eventType, teamId, desiredTeamQuantity) {
+  const items = object2.items?.data;
+  if (!isRecord2(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord2(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  const item = items[0];
+  const priceId = item.price?.id;
+  const productId = typeof item.price?.product === "string" ? item.price.product : item.price?.product?.id;
+  if (item.object !== "subscription_item" || item.subscription !== object2.id || item.price?.recurring?.usage_type !== "licensed" || !ITEM_ID.test(String(item.id ?? "")) || !PRICE_ID.test(String(priceId ?? "")) || !PRODUCT_ID.test(String(productId ?? "")) || !Number.isSafeInteger(item.quantity) || item.quantity < 1) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  const matches2 = Object.entries(definition.catalogue).filter(([, product2]) => {
+    const binding = product2.stripe?.[mode];
+    return binding?.priceId === priceId && (!binding.productId || binding.productId === productId);
+  });
+  if (matches2.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  const [productKey, product] = matches2[0];
+  if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  }
+  if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1 || billableTeamMemberQuantity(product.quantity, desiredTeamQuantity) !== item.quantity)) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  }
+  const periodStart = unixTimestamp(item.current_period_start);
+  const periodEnd = unixTimestamp(item.current_period_end);
+  if (!periodStart || !periodEnd || periodEnd <= periodStart) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  const cancelAtPeriodEnd = object2.cancel_at_period_end;
+  const cancelAt = object2.cancel_at;
+  if (typeof cancelAtPeriodEnd !== "boolean" || cancelAt !== void 0 && cancelAt !== null && (!Number.isSafeInteger(cancelAt) || cancelAt < 1 || cancelAt !== item.current_period_end)) {
+    throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  }
+  const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
+  const deleted = eventType === "customer.subscription.deleted";
+  let state;
+  if (deleted) {
+    if (object2.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+    state = "cancelled";
+  } else if (object2.status === "active") {
+    state = "active";
+  } else if (object2.status === "past_due" || object2.status === "unpaid") {
+    state = "past-due";
+  } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  const semantics = teamBillingSubscriptionSemantics(eventType, state, cancel);
+  if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  return {
+    productKey,
+    priceId,
+    itemId: item.id,
+    quantity: item.quantity,
+    periodStart,
+    periodEnd,
+    state,
+    cancelAtPeriodEnd: cancel ? 1 : 0,
+    kind: semantics.kind,
+    rank: semantics.rank
+  };
+}
+async function applyInvoiceFailure(database, event, mode) {
+  const tx = database.adapter;
+  const object2 = event.raw.data.object;
+  const subscriptionId = object2.parent?.subscription_details?.subscription;
+  const customerId = object2.customer;
+  if (object2.object !== "invoice" || !INVOICE_ID.test(String(object2.id ?? "")) || object2.parent?.type !== "subscription_details" || !isRecord2(object2.parent?.subscription_details) || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode || object2.status !== "open" || object2.paid !== false || !Number.isInteger(object2.attempt_count) || object2.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object2.id));
+  const subscription = await tx.prepare(tx.dialect.sql(
+    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+  )).get(subscriptionId);
+  if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object2.id));
+  await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
+  const lines = object2.lines?.data;
+  if (!isRecord2(object2.lines) || object2.lines.object !== "list" || object2.lines.has_more !== false || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
+  const line = lines[0];
+  const details = line?.parent?.subscription_item_details;
+  const pricing = line?.pricing?.price_details;
+  const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
+  const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
+  if (!binding || binding.priceId !== subscription.providerPriceId || !isRecord2(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object2.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
+  if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object2.id, rank: RANK["past-due"], outcome: "ignored" };
+  let outcome = "ignored";
+  if (winsRatchet(
+    subscription.currentPeriodStart,
+    event.occurredAt,
+    RANK["past-due"],
+    subscription.currentPeriodStart,
+    subscription.lastEventOccurredAt,
+    Number(subscription.lastEventRank ?? 0)
+  )) {
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_subscriptions] SET [state] = 'past-due', [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'invoice-failed', [lastEventRank] = ? WHERE [providerSubscriptionId] = ?"
+    )).run(event.occurredAt, event.occurredAt, event.occurredAt, RANK["past-due"], subscriptionId);
+    outcome = "applied";
+  }
+  return { teamId: subscription.teamId, objectId: object2.id, rank: RANK["past-due"], outcome };
+}
+async function inferTeamId(tx, event) {
+  const object2 = event?.raw?.data?.object;
+  const operationId = object2?.client_reference_id ?? object2?.metadata?.sporades_team_billing_operation;
+  if (UUID.test(String(operationId ?? ""))) {
+    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operationId);
+    if (row?.teamId) return row.teamId;
+  }
+  const subscriptionId = object2?.object === "subscription" ? object2.id : object2?.parent?.subscription_details?.subscription;
+  if (SUBSCRIPTION_ID.test(String(subscriptionId ?? ""))) {
+    const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
+    if (row?.teamId) return row.teamId;
+  }
+  return null;
+}
+async function assertCustomerAssociation(tx, teamId, mode, customerId) {
+  const sql2 = tx.dialect.sql;
+  const byTeam = await tx.prepare(sql2("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
+  const byProvider = await tx.prepare(sql2("SELECT [teamId], [mode] FROM [sporades_team_billing_customers] WHERE [providerCustomerId] = ?")).get(customerId);
+  if (byTeam && (byTeam.mode !== mode || byTeam.providerCustomerId !== customerId) || byProvider && (byProvider.teamId !== teamId || byProvider.mode !== mode)) throw new Quarantine("provider-state-ambiguous", teamId);
+}
+async function bindCustomer(tx, teamId, mode, customerId, now2) {
+  await assertCustomerAssociation(tx, teamId, mode, customerId);
+  await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_billing_customers] ([teamId], [mode], [providerCustomerId], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT ([teamId]) DO UPDATE SET [updatedAt] = excluded.[updatedAt]"
+  )).run(teamId, mode, customerId, now2, now2);
+}
+async function recordObservation(database, event, digest3, teamId, objectId, rank, outcome, safeReason) {
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
+  )).run(
+    randomUUID5(),
+    teamId,
+    event.livemode ? "live" : "sandbox",
+    event.providerEventId,
+    objectId,
+    digest3,
+    event.occurredAt,
+    database.clock?.now?.().toISOString?.() ?? event.occurredAt,
+    event.type,
+    rank,
+    outcome,
+    safeReason
+  );
+}
+function winsRatchet(periodStart, occurredAt, rank, previousPeriodStart, previousAt, previousRank) {
+  if (!canonicalTimestamp(previousPeriodStart)) return true;
+  if (periodStart !== previousPeriodStart) return periodStart > previousPeriodStart;
+  if (!canonicalTimestamp(previousAt)) return true;
+  return occurredAt > previousAt || occurredAt === previousAt && rank > previousRank;
+}
+function unixTimestamp(value) {
+  if (!Number.isInteger(value) || value < 1) return null;
+  const date = new Date(value * 1e3);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+function canonicalTimestamp(value) {
+  if (typeof value !== "string" || !CANONICAL_TIME.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
+}
+function boundedObjectId(value) {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{1,240}$/.test(value) ? value : null;
+}
+function safeDigest(raw) {
+  try {
+    return createHash7("sha256").update(JSON.stringify(raw)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+function isRecord2(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+// src/team-billing-runtime.ts
+var TEAM_BILLING_PRODUCT_MAX = 32;
+var TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
+var TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
+var TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
+var TEAM_BILLING_PORTAL_JOB = "_sporades.team-billing-portal";
+var TEAM_BILLING_PORTAL_EXPIRY_JOB = "_sporades.team-billing-portal-expiry";
+var TEAM_BILLING_PORTAL_MAX_ATTEMPTS = 4;
+var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
+var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
+var PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
+var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
+var PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
+var PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
+var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
+var FIXED_QUANTITY_MAX = 999999;
+var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function createTeamBillingTables(adapter) {
+  const sql2 = adapter.dialect.sql;
+  return chainMaybePromise([
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_replay] ([providerEventId] TEXT PRIMARY KEY, [payloadDigest] TEXT NOT NULL, [settledAt] TEXT NOT NULL, [retainedUntil] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    () => adapter.exec(sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
+    )),
+    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
+    ...["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
+    ...["lastEventRank", "terminalLatch"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
+    ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT")
+  ]);
+}
+function normalizeTeamBillingDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout", "portal"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
+    throw invalidDeclaration();
+  }
+  const entries = Object.entries(value.catalogue);
+  if (entries.length === 0 || entries.length > TEAM_BILLING_PRODUCT_MAX) throw invalidDeclaration();
+  const prices = /* @__PURE__ */ new Set();
+  const catalogue = {};
+  for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product) || Object.keys(product).some((key) => !["quantity", "stripe"].includes(key))) throw invalidDeclaration();
+    const quantity = normalizeQuantity(product.quantity);
+    const stripe = product.stripe;
+    if (!stripe || typeof stripe !== "object" || Array.isArray(stripe) || Object.keys(stripe).sort().join(",") !== "live,sandbox") throw invalidDeclaration();
+    const sandbox = normalizeModeBinding(stripe.sandbox);
+    const live = normalizeModeBinding(stripe.live);
+    if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId) throw invalidDeclaration();
+    prices.add(sandbox.priceId);
+    prices.add(live.priceId);
+    catalogue[productKey] = Object.freeze({
+      quantity,
+      stripe: Object.freeze({ sandbox, live })
+    });
+  }
+  const checkout = value.checkout === void 0 ? null : normalizeCheckoutDefinition(value.checkout);
+  const portal = value.portal === void 0 ? null : normalizePortalDefinition(value.portal, catalogue);
+  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout, portal });
+}
+function normalizePortalDefinition(value, catalogue) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
+  const returnPath = canonicalReturnPath(value.returnPath);
+  const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
+  if (!returnPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
+  const configurationPolicies = /* @__PURE__ */ new Map();
+  const configurationModes = /* @__PURE__ */ new Map();
+  for (const product of Object.values(catalogue)) {
+    const policy = teamBillingQuantityPolicyFingerprint(product.quantity);
+    for (const mode of ["sandbox", "live"]) {
+      const binding = product.stripe[mode];
+      if (!binding.productId || !binding.portalConfigurationId) throw invalidDeclaration();
+      const existingPolicy = configurationPolicies.get(`${mode}:${binding.portalConfigurationId}`);
+      if (existingPolicy && existingPolicy !== policy) throw invalidDeclaration();
+      configurationPolicies.set(`${mode}:${binding.portalConfigurationId}`, policy);
+      const existingMode = configurationModes.get(binding.portalConfigurationId);
+      if (existingMode && existingMode !== mode) throw invalidDeclaration();
+      configurationModes.set(binding.portalConfigurationId, mode);
+    }
+  }
+  return Object.freeze({ returnPath, continuationTtlSeconds });
+}
+function normalizeCheckoutDefinition(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["successPath", "cancelPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
+  const successPath = canonicalReturnPath(value.successPath);
+  const cancelPath = canonicalReturnPath(value.cancelPath);
+  const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
+  if (!successPath || !cancelPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
+  return Object.freeze({ successPath, cancelPath, continuationTtlSeconds });
+}
+function normalizeQuantity(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
+  if (value.kind === "team-members" && Object.keys(value).every((key) => key === "kind" || key === "minimum") && (value.minimum === void 0 || Number.isSafeInteger(value.minimum) && value.minimum >= 1 && value.minimum <= FIXED_QUANTITY_MAX)) {
+    return Object.freeze({ kind: "team-members", ...value.minimum === void 0 ? {} : { minimum: value.minimum } });
+  }
+  if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value" && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
+    return Object.freeze({ kind: "fixed", value: value.value });
+  }
+  throw invalidDeclaration();
+}
+function normalizeModeBinding(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["priceId", "productId", "portalConfigurationId"].includes(key)) || typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId) || value.productId !== void 0 && (typeof value.productId !== "string" || !PRODUCT_ID_PATTERN.test(value.productId)) || value.portalConfigurationId !== void 0 && (typeof value.portalConfigurationId !== "string" || !PORTAL_CONFIGURATION_ID_PATTERN.test(value.portalConfigurationId))) throw invalidDeclaration();
+  return Object.freeze({ priceId: value.priceId, ...value.productId ? { productId: value.productId } : {}, ...value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {} });
+}
+function invalidDeclaration() {
+  return commandError(
+    "Invalid Team Billing declaration.",
+    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.",
+    "INVALID_TEAM_BILLING_DECLARATION"
+  );
+}
+async function readCurrentUserTeamBilling(database, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
+  return database.adapter.withTransaction(async (transaction) => {
+    await admitTeamBillingReader(database, transaction, auth, teamId);
+    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+  });
+}
+async function admitTeamBillingReader(database, transaction, auth, teamId) {
+  await lockTeamLifecycle(transaction, teamId, teamBillingDenied);
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: "read",
+    teamId,
+    teamRole: membership.role
+  }));
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
+}
+async function readCapsuleTeamBillingProjection(database, transaction, auth, teamId) {
+  requireAuth({ auth }, { linked: true });
+  if (!database.teamBillingDefinition || !TEAM_ID_PATTERN2.test(String(teamId ?? ""))) throw teamBillingDenied();
+  const membership = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, auth.userId);
+  if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
+  return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+}
+async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
+  requireAuth({ auth }, { linked: true });
+  const definition = database.teamBillingDefinition;
+  if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
+  let enqueued = false;
+  const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
+    const sql2 = transaction.dialect.sql;
+    const existing = await transaction.prepare(sql2(
+      "SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+    )).get(teamId, requestId);
+    if (existing) {
+      if (existing.productKey !== productKey) throw checkoutConflict();
+      return checkoutOperationResult(database, transaction, teamId, requestId, existing);
+    }
+    const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
+    const now2 = database.clock.now().toISOString();
+    const active = await transaction.prepare(sql2(
+      "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
+    )).get(teamId);
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
+      await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
+      )).run(now2, active.id);
+    } else if (active) {
+      throw checkoutActive();
+    }
+    const operationId = randomUUID6();
+    const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
+    const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
+    await transaction.prepare(sql2(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
+    )).run(now2, teamId);
+    await transaction.prepare(sql2(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
+    if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
+    await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
+  });
+  if (enqueued) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function startTeamBillingPortal(database, auth, teamId, requestId) {
+  requireAuth({ auth }, { linked: true });
+  const definition = database.teamBillingDefinition;
+  if (!definition?.portal || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? ""))) throw teamBillingDenied();
+  let enqueued = false;
+  const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
+    const sql2 = transaction.dialect.sql;
+    const existing = await transaction.prepare(sql2(
+      "SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+    )).get(teamId, requestId);
+    if (existing) {
+      if (existing.kind !== "portal") throw checkoutConflict();
+      return portalOperationResult(database, transaction, teamId, requestId, existing);
+    }
+    const desired = await portalDesiredState(database, transaction, teamId);
+    const now2 = database.clock.now().toISOString();
+    const active = await transaction.prepare(sql2(
+      "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'portal' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1"
+    )).get(teamId);
+    if (active?.status === "ready" && (!canonicalTimestamp2(active.continuationExpiresAt) || active.continuationExpiresAt <= now2)) {
+      await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
+      )).run(now2, active.id);
+    } else if (active) throw checkoutActive();
+    const operationId = randomUUID6();
+    const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
+    await transaction.prepare(sql2(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
+    )).run(now2, teamId);
+    await transaction.prepare(sql2(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [providerCustomerId], [configurationId], [returnPath]) VALUES (?, ?, ?, ?, 'portal', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, desired.productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.customerId, desired.configurationId, desired.returnPath);
+    if (typeof database.enqueueTeamBillingPortalJob !== "function") throw checkoutUnavailable();
+    await database.enqueueTeamBillingPortalJob(transaction, { operationId }, `team-billing-portal:${operationId}`);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
+  });
+  if (enqueued) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function withTeamBillingAdmissionTransaction(database, callback) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await database.adapter.withTransaction(callback);
+    } catch (error) {
+      if (!transientSqliteLock(error) || attempt >= 5) throw error;
+      await new Promise((resolve2) => setTimeout(resolve2, 5 * 2 ** attempt));
+    }
+  }
+}
+function transientSqliteLock(error) {
+  return error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""));
+}
+async function performTeamBillingCheckout(database, context2, payload, attempt = 1) {
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  if (!operationId) throw checkoutUnavailable();
+  let providerInput = null;
+  let providerLane = null;
+  try {
+    providerInput = await database.adapter.withTransaction(async (transaction) => {
+      const sql2 = transaction.dialect.sql;
+      const operation = await transaction.prepare(sql2(
+        "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+      )).get(operationId);
+      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
+      const actor = await transaction.prepare(sql2(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(operation.actorUserId);
+      if (!actor) throw teamBillingDenied();
+      const auth = {
+        userId: actor.id,
+        displayName: actor.displayName,
+        email: actor.email,
+        picture: actor.picture,
+        isAuthenticated: Boolean(actor.isAuthenticated),
+        isGuest: Boolean(actor.isGuest),
+        provider: actor.provider,
+        ...actor.userKind === "service" ? { userKind: "service" } : {}
+      };
+      await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
+      const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
+      if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
+        await transaction.prepare(sql2(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
+        )).run(database.clock.now().toISOString(), operationId);
+        return null;
+      }
+      if (!Number.isSafeInteger(operation.providerExpiresAt) || operation.providerExpiresAt <= Math.floor(database.clock.now().getTime() / 1e3)) {
+        await transaction.prepare(sql2(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? WHERE [id] = ?"
+        )).run(database.clock.now().toISOString(), operationId);
+        return null;
+      }
+      const customer = await transaction.prepare(sql2(
+        "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
+      )).get(operation.teamId);
+      if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
+      const attemptedAt = database.clock.now().toISOString();
+      const claimToken = randomUUID6();
+      const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
+      await transaction.prepare(sql2(
+        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
+      )).run(operation.teamId, attemptedAt);
+      const claimed = await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+      )).run(claimToken, claimExpiresAt, attemptedAt, operation.teamId, attemptedAt);
+      if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw providerLaneBusy();
+      providerLane = { teamId: operation.teamId, claimToken };
+      await transaction.prepare(sql2(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
+      )).run(attemptedAt, attemptedAt, operationId);
+      return {
+        operationId,
+        teamId: operation.teamId,
+        productKey: operation.productKey,
+        mode: "subscription",
+        priceId: desired.priceId,
+        quantity: desired.quantity,
+        successPath: database.teamBillingDefinition.checkout.successPath,
+        cancelPath: database.teamBillingDefinition.checkout.cancelPath,
+        idempotencyKey: operation.idempotencyKey,
+        businessReference: operationId,
+        providerExpiresAt: operation.providerExpiresAt,
+        ...customer ? { customerId: customer.providerCustomerId } : {}
+      };
+    });
+  } catch (error) {
+    if (error?.code === "ERR_SQLITE_ERROR" && /(?:locked|busy)/i.test(String(error?.message ?? ""))) {
+      error.retryable = true;
+      throw error;
+    }
+    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") throw error;
+    await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
+    const failure2 = checkoutUnavailable();
+    failure2.retryable = false;
+    throw failure2;
+  }
+  if (!providerInput) return null;
+  try {
+    if (typeof database.createStripeTeamBillingProvider !== "function") throw checkoutUnavailable();
+    const provider = database.createStripeTeamBillingProvider({
+      enabled: true,
+      config: database.paymentsConfig.stripe,
+      env: database.serverEnv,
+      signal: context2?.signal,
+      ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
+    });
+    const result = await provider.create(providerInput);
+    if (!result?.ok || !validCheckoutContinuation(result.url, result.sessionId)) throw checkoutUnavailable();
+    const now2 = database.clock.now();
+    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3).toISOString();
+    let expiryEnqueued = false;
+    const settled = await database.adapter.withTransaction(async (transaction) => {
+      const outcome = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
+      )).run(result.sessionId, result.url, expiresAt, now2.toISOString(), operationId);
+      if (Number(outcome?.changes ?? 0) === 1) {
+        if (typeof database.enqueueTeamBillingCheckoutExpiryJob !== "function") throw checkoutUnavailable();
+        await database.enqueueTeamBillingCheckoutExpiryJob(transaction, { operationId }, `team-billing-checkout-expiry:${operationId}`, expiresAt);
+        expiryEnqueued = true;
+      }
+      return outcome;
+    });
+    if (expiryEnqueued) database.scheduleTeamBillingJobDispatch?.();
+    if (Number(settled?.changes ?? 0) !== 1) {
+      const terminal = await database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [status], [providerObjectId] FROM [sporades_team_billing_operations] WHERE [id] = ?"
+      )).get(operationId);
+      if (!["completed", "expired"].includes(terminal?.status) || terminal.providerObjectId !== result.sessionId) throw checkoutUnavailable();
+      return { observed: true };
+    }
+    return { ready: true };
+  } catch (error) {
+    const retryable3 = error?.retryable !== false;
+    const willRetry = retryable3 && attempt < TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS;
+    await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
+    if (!willRetry) error.retryable = false;
+    throw error;
+  } finally {
+    if (providerLane) {
+      await database.adapter.prepare(database.adapter.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(database.clock.now().toISOString(), providerLane.teamId, providerLane.claimToken);
+    }
+  }
+}
+async function performTeamBillingPortal(database, context2, payload, attempt = 1) {
+  const operationId = exactOperationId(payload);
+  if (!operationId) throw checkoutUnavailable();
+  let providerInput = null;
+  try {
+    providerInput = await database.adapter.withTransaction(async (transaction) => {
+      const operation = await readPortalOperation(transaction, operationId);
+      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      const desired = await reauthorizePortalOperation(database, transaction, operation);
+      if (!portalOperationMatches(operation, desired)) {
+        await supersedeBillingOperation(database, transaction, operationId);
+        return null;
+      }
+      const now2 = database.clock.now().toISOString();
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?"
+      )).run(now2, now2, operationId);
+      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
+    });
+  } catch (error) {
+    if (transientSqliteLock(error)) {
+      error.retryable = true;
+      throw error;
+    }
+    await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
+    const failure2 = checkoutUnavailable();
+    failure2.retryable = false;
+    throw failure2;
+  }
+  if (!providerInput) return null;
+  try {
+    if (typeof database.createStripeTeamBillingProvider !== "function") throw checkoutUnavailable();
+    const provider = database.createStripeTeamBillingProvider({
+      enabled: true,
+      config: database.paymentsConfig.stripe,
+      env: database.serverEnv,
+      signal: context2?.signal,
+      ...database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}
+    });
+    const attestation = await provider.retrievePortalConfiguration(providerInput);
+    if (!attestation || typeof attestation !== "object" || Array.isArray(attestation) || Object.keys(attestation).join(",") !== "ok" || attestation.ok !== true) throw checkoutUnavailable();
+    let createInput = null;
+    try {
+      createInput = await database.adapter.withTransaction(async (transaction) => {
+        const operation = await readPortalOperation(transaction, operationId);
+        if (!operation || !["running", "retrying"].includes(operation.status)) return null;
+        const desired = await reauthorizePortalOperation(database, transaction, operation);
+        if (!portalOperationMatches(operation, desired)) {
+          await supersedeBillingOperation(database, transaction, operationId);
+          return null;
+        }
+        return {
+          customerId: desired.customerId,
+          configurationId: desired.configurationId,
+          returnPath: desired.returnPath,
+          idempotencyKey: operation.idempotencyKey
+        };
+      });
+    } catch (error) {
+      if (transientSqliteLock(error)) {
+        error.retryable = true;
+        throw error;
+      }
+      await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
+      const failure2 = checkoutUnavailable();
+      failure2.retryable = false;
+      throw failure2;
+    }
+    if (!createInput) return null;
+    const response = await provider.createPortal(createInput);
+    if (!response?.ok || !validPortalContinuation(response.url, response.sessionId)) throw checkoutUnavailable();
+    const now2 = database.clock.now();
+    const expiresAt = new Date(now2.getTime() + database.teamBillingDefinition.portal.continuationTtlSeconds * 1e3).toISOString();
+    let expiryEnqueued = false;
+    const settled = await database.adapter.withTransaction(async (transaction) => {
+      const outcome = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('running', 'retrying')"
+      )).run(response.sessionId, response.url, expiresAt, now2.toISOString(), operationId);
+      if (Number(outcome?.changes ?? 0) === 1) {
+        if (typeof database.enqueueTeamBillingPortalExpiryJob !== "function") throw checkoutUnavailable();
+        await database.enqueueTeamBillingPortalExpiryJob(transaction, { operationId }, `team-billing-portal-expiry:${operationId}`, expiresAt);
+        expiryEnqueued = true;
+      }
+      return outcome;
+    });
+    if (expiryEnqueued) database.scheduleTeamBillingJobDispatch?.();
+    if (Number(settled?.changes ?? 0) !== 1) throw checkoutUnavailable();
+    return { ready: true };
+  } catch (error) {
+    const retryable3 = error?.retryable !== false;
+    const willRetry = retryable3 && attempt < TEAM_BILLING_PORTAL_MAX_ATTEMPTS;
+    await settleCheckoutFailure(database, operationId, willRetry ? "PROVIDER_RETRY" : "PROVIDER_REJECTED", willRetry ? "retrying" : "failed");
+    if (!willRetry) error.retryable = false;
+    throw error;
+  }
+}
+async function expireTeamBillingCheckout(database, _context, payload) {
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  if (!operationId) throw checkoutUnavailable();
+  const now2 = database.clock.now().toISOString();
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
+  )).run(now2, operationId, now2);
+  return null;
+}
+async function expireTeamBillingPortal(database, _context, payload) {
+  const operationId = exactOperationId(payload);
+  if (!operationId) throw checkoutUnavailable();
+  const now2 = database.clock.now().toISOString();
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = 'portal' AND [status] = 'ready' AND [continuationExpiresAt] <= ?"
+  )).run(now2, operationId, now2);
+  return null;
+}
+async function settleExhaustedTeamBillingCheckoutJob(transaction, handler, payloadJson, now2) {
+  const kind = handler === TEAM_BILLING_CHECKOUT_JOB ? "checkout" : handler === TEAM_BILLING_PORTAL_JOB ? "portal" : null;
+  if (!kind || typeof payloadJson !== "string") return;
+  let payload;
+  try {
+    payload = JSON.parse(payloadJson);
+  } catch {
+    return;
+  }
+  const operationId = payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+  if (!operationId) return;
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_REJECTED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [kind] = ? AND [status] IN ('queued', 'running', 'retrying')"
+  )).run(now2, operationId, kind);
+}
+async function admitTeamBillingActor(database, transaction, auth, input) {
+  requireAuth({ auth }, { linked: true });
+  await lockTeamLifecycle(transaction, input.teamId, teamBillingDenied);
+  const sql2 = transaction.dialect.sql;
+  const membership = await transaction.prepare(sql2(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(input.teamId, auth.userId);
+  if (membership?.role !== "admin") throw teamBillingDenied();
+  const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    operation: input.operation,
+    teamId: input.teamId,
+    teamRole: "admin",
+    ...input.productKey === void 0 ? {} : { productKey: input.productKey }
+  }));
+  if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
+  return Object.freeze({ admitted: true });
+}
+function teamBillingErasureKey(database, teamId) {
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure\0${teamId}`).digest("hex");
+}
+function teamBillingErasureObjectKey(database, providerObjectId) {
+  return createHash8("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0team-billing-erasure-object\0${providerObjectId}`).digest("hex");
+}
+async function assertTeamBillingErasureInactive(database, transaction, teamId) {
+  const active = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [teamId] FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?"
+  )).get(teamId);
+  const erased = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
+  )).get(teamBillingErasureKey(database, teamId));
+  if (active || erased) throw teamBillingDenied();
+}
+async function safeTeamBillingProjection(transaction, definition, teamId) {
+  const sql2 = transaction.dialect.sql;
+  const desired = await transaction.prepare(sql2(
+    "SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+  )).get(teamId);
+  if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
+    const requestedAt = canonicalTimestamp2(desired.createdAt);
+    if (!requestedAt) return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    return Object.freeze({
+      state: "pending",
+      teamId,
+      operation: desired.kind === "plan-transition" ? "plan-transition" : "reconciliation",
+      ...typeof desired.targetProductKey === "string" && definition.catalogue[desired.targetProductKey] ? { productKey: desired.targetProductKey } : {},
+      requestedAt
+    });
+  }
+  if (desired?.kind === "seat-convergence" && ["failed", "attention-required"].includes(desired.status)) {
+    return Object.freeze({
+      state: "attention-required",
+      teamId,
+      reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous"
+    });
+  }
+  const operation = await transaction.prepare(sql2(
+    "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  if (operation) {
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
+    if (!requestedAt) {
+      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
+    const kind = ["checkout", "portal", "plan-transition", "erasure"].includes(operation.kind) ? operation.kind : "reconciliation";
+    return Object.freeze({
+      state: "pending",
+      teamId,
+      operation: kind,
+      ...typeof operation.productKey === "string" && definition.catalogue[operation.productKey] ? { productKey: operation.productKey } : {},
+      requestedAt
+    });
+  }
+  const currentRows = await transaction.prepare(sql2(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
+  )).all(teamId);
+  if (currentRows.length > 1) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  const row = currentRows[0] ?? await transaction.prepare(sql2(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  const quarantine = await transaction.prepare(sql2(
+    "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
+  )).get(teamId);
+  if (quarantine && (!row || !canonicalTimestamp2(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt || quarantine.observedAt === row.lastEventOccurredAt && Number(quarantine.eventRank ?? 0) >= Number(row.lastEventRank ?? 0))) {
+    return Object.freeze({
+      state: "attention-required",
+      teamId,
+      reason: quarantine.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
+    });
+  }
+  if (!row) return Object.freeze({ state: "inactive", teamId });
+  const product = definition.catalogue[row.productKey];
+  const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
+  const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
+  if (!product || !binding || row.providerPriceId !== binding.priceId || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind === "team-members" && quantity < (product.quantity.minimum ?? 1)) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
+  }
+  if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  const occurredAt = canonicalTimestamp2(row.lastEventOccurredAt);
+  const semantics = teamBillingStoredSubscriptionSemantics(row.state, row.cancelAtPeriodEnd === 1);
+  if (!occurredAt || !semantics || row.lastEventKind !== semantics.kind || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
+    return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  const common = { teamId, productKey: row.productKey, quantity };
+  if (row.state === "active") {
+    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
+    if (!currentPeriodEnd) {
+      return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
+    return Object.freeze(row.cancelAtPeriodEnd === 1 ? { state: "cancelling", ...common, endsAt: currentPeriodEnd } : { state: "active", ...common, renewsAt: currentPeriodEnd });
+  }
+  if (row.state === "past-due") {
+    const currentPeriodEnd = canonicalTimestamp2(row.currentPeriodEnd);
+    return Object.freeze(currentPeriodEnd ? { state: "past-due", ...common, currentPeriodEnd } : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+  }
+  if (row.state === "cancelled") return Object.freeze({ state: "cancelled", ...common });
+  return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+}
+function createPrivilegedTeamBillingApi(database, contextGetter) {
+  return Object.freeze({
+    async listQuarantines(options = {}) {
+      const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
+      assertActive();
+      if (!isRecord3(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
+      const limit = options.limit ?? 50;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalidTeamBillingInspection();
+      if (!database.teamBillingDefinition) return Object.freeze({ quarantines: Object.freeze([]) });
+      let rows;
+      try {
+        rows = await database.adapter.prepare(database.adapter.dialect.sql(
+          "SELECT [teamId], [mode], [eventType], [observedAt], [safeReason] FROM [sporades_team_billing_observations] WHERE [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [id] DESC LIMIT ?"
+        )).all(limit);
+      } catch (error) {
+        assertActive();
+        throw error;
+      }
+      assertActive();
+      return Object.freeze({ quarantines: Object.freeze(rows.map((row) => Object.freeze({
+        teamId: typeof row.teamId === "string" ? row.teamId : null,
+        associatedTeam: typeof row.teamId === "string",
+        mode: row.mode === "live" ? "live" : "sandbox",
+        eventType: typeof row.eventType === "string" ? row.eventType : "unknown",
+        occurredAt: canonicalTimestamp2(row.observedAt),
+        reason: row.safeReason === "catalogue-mismatch" ? "catalogue-mismatch" : "provider-state-ambiguous"
+      }))) });
+    }
+  });
+}
+function assertActivePrivilegedTeamBillingAccess(contextGetter) {
+  const context2 = contextGetter?.();
+  if (context2?.__privilegedRunActive && !context2.signal?.aborted) return;
+  throw commandError(
+    "Privileged Team Billing access is no longer active.",
+    "Start a new ctx.privileged.run callback before inspecting Team Billing quarantine.",
+    "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE"
+  );
+}
+function invalidTeamBillingInspection() {
+  return commandError(
+    "Invalid Team Billing inspection options.",
+    "Pass only an integer limit from 1 through 100.",
+    "INVALID_TEAM_BILLING_INSPECTION"
+  );
+}
+function isRecord3(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function canonicalTimestamp2(value) {
+  if (typeof value !== "string" || !CANONICAL_TIMESTAMP_PATTERN.test(value)) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value ? value : null;
+}
+function canonicalReturnPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || value.includes("\\") || value.includes("?") || value.includes("#") || /\s/.test(value)) return null;
+  try {
+    const pathname = new URL(value, "https://sporades.invalid").pathname;
+    return pathname === value ? value : null;
+  } catch {
+    return null;
+  }
+}
+async function checkoutDesiredState(database, transaction, teamId, productKey) {
+  const product = database.teamBillingDefinition.catalogue[productKey];
+  const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
+  const quantity = product.quantity.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product.quantity, Number((await transaction.prepare(transaction.dialect.sql(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId))?.count ?? 0));
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
+  return { mode, quantity, priceId: product.stripe[mode].priceId };
+}
+async function portalDesiredState(database, transaction, teamId) {
+  const sql2 = transaction.dialect.sql;
+  const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
+  const customer = await transaction.prepare(sql2(
+    "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
+  )).get(teamId);
+  const subscriptions = await transaction.prepare(sql2(
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC"
+  )).all(teamId);
+  const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
+  const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
+  const binding = product?.stripe?.[mode];
+  const expectedQuantity = product?.quantity?.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql2(
+    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
+  )).get(teamId))?.count ?? 0));
+  if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? "")) || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state) || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity) throw checkoutUnavailable();
+  const grouped = /* @__PURE__ */ new Map();
+  for (const candidate of Object.values(database.teamBillingDefinition.catalogue)) {
+    const candidateBinding = candidate.stripe[mode];
+    if (candidateBinding.portalConfigurationId !== binding.portalConfigurationId) continue;
+    const prices = grouped.get(candidateBinding.productId) ?? /* @__PURE__ */ new Set();
+    prices.add(candidateBinding.priceId);
+    grouped.set(candidateBinding.productId, prices);
+  }
+  const expectedProducts = [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([productId, prices]) => ({ productId, priceIds: [...prices].sort() }));
+  return {
+    mode,
+    productKey: subscription.productKey,
+    quantity: subscription.quantity,
+    customerId: customer.providerCustomerId,
+    configurationId: binding.portalConfigurationId,
+    returnPath: database.teamBillingDefinition.portal.returnPath,
+    expectedProducts
+  };
+}
+async function readPortalOperation(transaction, operationId) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerCustomerId], [configurationId], [returnPath] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'portal'"
+  )).get(operationId);
+}
+async function reauthorizePortalOperation(database, transaction, operation) {
+  const actor = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?"
+  )).get(operation.actorUserId);
+  if (!actor) throw teamBillingDenied();
+  const auth = {
+    userId: actor.id,
+    displayName: actor.displayName,
+    email: actor.email,
+    picture: actor.picture,
+    isAuthenticated: Boolean(actor.isAuthenticated),
+    isGuest: Boolean(actor.isGuest),
+    provider: actor.provider,
+    ...actor.userKind === "service" ? { userKind: "service" } : {}
+  };
+  await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId: operation.teamId });
+  return portalDesiredState(database, transaction, operation.teamId);
+}
+function portalOperationMatches(operation, desired) {
+  return operation.mode === desired.mode && operation.productKey === desired.productKey && operation.quantity === desired.quantity && operation.providerCustomerId === desired.customerId && operation.configurationId === desired.configurationId && operation.returnPath === desired.returnPath;
+}
+async function supersedeBillingOperation(database, transaction, operationId) {
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?"
+  )).run(database.clock.now().toISOString(), operationId);
+}
+async function checkoutOperationResult(database, transaction, teamId, requestId, operation) {
+  const common = { teamId, requestId, productKey: operation.productKey };
+  if (["queued", "running", "retrying"].includes(operation.status)) {
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
+    return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
+  }
+  if (operation.status === "ready") {
+    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
+    if (expiresAt && expiresAt > database.clock.now().toISOString() && validCheckoutContinuation(operation.continuationUrl, operation.providerObjectId)) {
+      return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
+    }
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [status] = 'ready'"
+    )).run(database.clock.now().toISOString(), teamId, requestId);
+    return Object.freeze({ state: "expired", ...common });
+  }
+  if (operation.status === "expired") return Object.freeze({ state: "expired", ...common });
+  if (operation.status === "superseded") return Object.freeze({ state: "superseded", ...common });
+  if (operation.status === "completed") return Object.freeze({ state: "completed", ...common });
+  return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
+}
+function checkoutIdempotencyKey(capsuleIdentity, teamId, requestId) {
+  return teamBillingOperationIdempotencyKey(capsuleIdentity, "checkout", teamId, requestId);
+}
+function teamBillingOperationIdempotencyKey(capsuleIdentity, kind, teamId, requestId) {
+  const digest3 = createHash8("sha256").update(`${String(capsuleIdentity)}\0${kind}\0${teamId}\0${requestId}`).digest("base64url");
+  return `sporades:team-${kind}:${digest3}`;
+}
+function exactOperationId(payload) {
+  return payload && typeof payload === "object" && !Array.isArray(payload) && Object.keys(payload).join(",") === "operationId" && TEAM_ID_PATTERN2.test(String(payload.operationId ?? "")) ? payload.operationId : null;
+}
+function validCheckoutContinuation(urlValue, sessionIdValue) {
+  if (typeof sessionIdValue !== "string" || !/^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
+  try {
+    const url = new URL(urlValue);
+    return url.protocol === "https:" && url.hostname === "checkout.stripe.com" && (url.pathname === `/c/pay/${sessionIdValue}` || url.pathname === `/pay/${sessionIdValue}`) && !url.username && !url.password && !url.port;
+  } catch {
+    return false;
+  }
+}
+function validPortalContinuation(urlValue, sessionIdValue) {
+  if (typeof sessionIdValue !== "string" || !/^bps_[A-Za-z0-9_]{1,240}$/.test(sessionIdValue) || typeof urlValue !== "string") return false;
+  try {
+    const url = new URL(urlValue);
+    if (url.protocol !== "https:" || url.hostname !== "billing.stripe.com" || url.username || url.password || url.port) return false;
+    if (/^\/p\/session\/[A-Za-z0-9_-]{8,1024}$/.test(url.pathname)) {
+      return !url.search && (!url.hash || /^#[A-Za-z0-9_-]{1,1024}$/.test(url.hash));
+    }
+    const query = [...url.searchParams];
+    return url.pathname === "/p/session" && !url.hash && query.length === 1 && query[0][0] === "secret" && /^[A-Za-z0-9_-]{32,1024}$/.test(query[0][1]);
+  } catch {
+    return false;
+  }
+}
+async function portalOperationResult(database, transaction, teamId, requestId, operation) {
+  const common = { teamId, requestId };
+  if (["queued", "running", "retrying"].includes(operation.status)) {
+    const requestedAt = canonicalTimestamp2(operation.createdAt);
+    return requestedAt ? Object.freeze({ state: "pending", ...common, requestedAt }) : Object.freeze({ state: "failed", ...common, reason: "unavailable" });
+  }
+  if (operation.status === "ready") {
+    let desired = null;
+    try {
+      desired = await portalDesiredState(database, transaction, teamId);
+    } catch (error) {
+      if (error?.code !== "TEAM_BILLING_CHECKOUT_UNAVAILABLE") throw error;
+    }
+    if (!desired || !portalOperationMatches(operation, desired)) {
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'"
+      )).run(database.clock.now().toISOString(), teamId, requestId);
+      return Object.freeze({ state: "superseded", ...common });
+    }
+    const expiresAt = canonicalTimestamp2(operation.continuationExpiresAt);
+    if (expiresAt && expiresAt > database.clock.now().toISOString() && validPortalContinuation(operation.continuationUrl, operation.providerObjectId)) {
+      return Object.freeze({ state: "ready", ...common, url: operation.continuationUrl, expiresAt });
+    }
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [requestId] = ? AND [kind] = 'portal' AND [status] = 'ready'"
+    )).run(database.clock.now().toISOString(), teamId, requestId);
+    return Object.freeze({ state: "expired", ...common });
+  }
+  if (operation.status === "expired") return Object.freeze({ state: "expired", ...common });
+  if (operation.status === "superseded") return Object.freeze({ state: "superseded", ...common });
+  return Object.freeze({ state: "failed", ...common, reason: operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
+}
+async function settleCheckoutFailure(database, operationId, safeFailureCode, status = "failed") {
+  await database.adapter.prepare(database.adapter.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')"
+  )).run(status, safeFailureCode, database.clock.now().toISOString(), operationId);
+}
+function checkoutConflict() {
+  return commandError("Team Checkout request conflicts with existing work.", "Use a new request identifier for a different product.", "TEAM_BILLING_REQUEST_CONFLICT");
+}
+function checkoutActive() {
+  return commandError(
+    "A Team Checkout is already active.",
+    "Finish, abandon, or allow the current Team Checkout to expire before starting another.",
+    "TEAM_BILLING_CHECKOUT_ACTIVE"
+  );
+}
+function checkoutUnavailable() {
+  const error = commandError("Team Checkout is unavailable.", "Retry from the Team billing settings later.", "TEAM_BILLING_CHECKOUT_UNAVAILABLE");
+  error.retryable = false;
+  return error;
+}
+function providerLaneBusy() {
+  const error = checkoutUnavailable();
+  error.code = "TEAM_BILLING_PROVIDER_LANE_BUSY";
+  error.retryable = true;
+  return error;
+}
+function teamBillingDenied() {
+  return commandError(
+    "Team Billing is unavailable.",
+    "Sign in as the current policy-approved billing administrator for this Team and retry.",
+    "TEAM_BILLING_DENIED"
+  );
+}
+
+// src/team-billing-erasure.ts
+import { createHash as createHash9, randomUUID as randomUUID7 } from "node:crypto";
+var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
+var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
+var SUBSCRIPTION_ID2 = /^sub_[A-Za-z0-9_]{1,240}$/;
+var CUSTOMER_ID2 = /^cus_[A-Za-z0-9_]{1,120}$/;
+var CLAIM_TTL_MS2 = 5 * 6e4;
+async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
+  if (!TEAM_ID.test(String(teamId ?? "")) || !TEAM_ID.test(String(requestId ?? ""))) throw unavailable();
+  let dispatch = false;
+  const result = await database.adapter.withTransaction(async (transaction) => {
+    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId });
+    const key = teamBillingErasureKey(database, teamId);
+    if (await tombstone(transaction, key)) return Object.freeze({ state: "authorized", teamId, requestId });
+    const existing = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [e].[operationId], [e].[status], [o].[requestId], [o].[createdAt] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[teamId] = ?"
+    )).get(teamId);
+    if (existing) {
+      return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
+    }
+    const operationId = randomUUID7();
+    const generationId = randomUUID7();
+    const now2 = database.clock.now().toISOString();
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
+    )).run(now2, teamId);
+    await transaction.prepare(transaction.dialect.sql(
+      "DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?"
+    )).run(teamId);
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'erasure', NULL, 'queued', NULL, ?, NULL, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, providerIdempotency(database, key), now2, now2);
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_erasure_state] ([teamId], [erasureKey], [operationId], [activeJobGenerationId], [status], [safeFailureCode], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?)"
+    )).run(teamId, key, operationId, generationId, now2, now2);
+    if (typeof database.enqueueTeamBillingErasureJob !== "function") throw unavailable();
+    await database.enqueueTeamBillingErasureJob(
+      transaction,
+      { operationId, generationId },
+      `team-billing-erasure:${operationId}:${generationId}`
+    );
+    dispatch = true;
+    return Object.freeze({ state: "pending", teamId, requestId, requestedAt: now2 });
+  });
+  if (dispatch) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function performTeamBillingErasure(database, context2, payload) {
+  if (!exactPayload(payload)) return { superseded: true };
+  const claimToken = randomUUID7();
+  const snapshot = await database.adapter.withTransaction(async (transaction) => {
+    const state = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
+    )).get(payload.operationId);
+    if (!state || state.activeJobGenerationId !== payload.generationId) return null;
+    const auth = await database.readTeamBillingActorAuth?.(transaction, state.actorUserId);
+    await admitTeamBillingActor(database, transaction, auth, { operation: "erasure", teamId: state.teamId });
+    await ensureLane2(transaction, state.teamId, database);
+    const expiresAt = new Date(database.clock.now().getTime() + CLAIM_TTL_MS2).toISOString();
+    const claimed = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+    )).run(claimToken, expiresAt, now(database), state.teamId, now(database));
+    if (Number(claimed?.changes ?? claimed?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_BUSY");
+    const customer = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
+    )).get(state.teamId);
+    const subscriptions = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]"
+    )).all(state.teamId);
+    const checkouts = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]"
+    )).all(state.teamId);
+    const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
+    if (!["sandbox", "live"].includes(mode) || customer && customer.mode !== mode || subscriptions.some((row) => row.mode !== mode) || checkouts.some((row) => row.mode && row.mode !== mode)) throw unavailable();
+    const checkoutSessionIds = checkouts.map((row) => row.providerObjectId).filter(Boolean);
+    const checkoutRecoveries = checkouts.filter((row) => row.attemptedAt && !row.providerObjectId).map((row) => ({
+      operationId: row.id,
+      teamId: state.teamId,
+      productKey: row.productKey,
+      mode: "subscription",
+      priceId: row.providerPriceId,
+      quantity: Number(row.quantity),
+      successPath: database.teamBillingDefinition?.checkout?.successPath,
+      cancelPath: database.teamBillingDefinition?.checkout?.cancelPath,
+      idempotencyKey: row.idempotencyKey,
+      businessReference: row.id,
+      providerExpiresAt: Number(row.providerExpiresAt),
+      ...customer ? { customerId: customer.providerCustomerId } : {}
+    }));
+    const subscriptionIds = subscriptions.map((row) => row.providerSubscriptionId);
+    if (!checkoutSessionIds.every((id2) => CHECKOUT_ID2.test(id2)) || !subscriptionIds.every((id2) => SUBSCRIPTION_ID2.test(id2)) || customer && !CUSTOMER_ID2.test(customer.providerCustomerId)) throw unavailable();
+    await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+    )).run(now(database), state.operationId, payload.generationId);
+    return {
+      teamId: state.teamId,
+      erasureKey: state.erasureKey,
+      operationId: state.operationId,
+      generationId: payload.generationId,
+      provider: {
+        mode,
+        ...customer ? { customerId: customer.providerCustomerId } : {},
+        checkoutSessionIds,
+        ...checkoutRecoveries.length ? { checkoutRecoveries } : {},
+        subscriptionIds,
+        idempotencyKey: providerIdempotency(database, state.erasureKey)
+      }
+    };
+  });
+  if (!snapshot) return { superseded: true };
+  try {
+    if (typeof database.quiesceTeamBillingProvider !== "function") throw retryable2("TEAM_BILLING_PROVIDER_UNAVAILABLE");
+    const evidence = await database.quiesceTeamBillingProvider(context2, Object.freeze(snapshot.provider));
+    const canonical = validateEvidence(evidence, snapshot.provider);
+    const settled = await database.adapter.withTransaction(async (transaction) => {
+      const laneOwned = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [updatedAt] = [updatedAt] WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(snapshot.teamId, claimToken);
+      if (Number(laneOwned?.changes ?? laneOwned?.changesCount ?? 0) !== 1) return false;
+      const current2 = await transaction.prepare(transaction.dialect.sql(
+        "SELECT [teamId], [erasureKey] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+      )).get(snapshot.operationId, snapshot.generationId);
+      if (!current2) {
+        await transaction.prepare(transaction.dialect.sql(
+          "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+        )).run(now(database), snapshot.teamId, claimToken);
+        return false;
+      }
+      const digest3 = createHash9("sha256").update(JSON.stringify(canonical)).digest("hex");
+      await transaction.prepare(transaction.dialect.sql(
+        "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)"
+      )).run(current2.erasureKey, digest3, canonical.providerObservedAt, now(database));
+      for (const entry of [
+        ...canonical.checkouts.map((item) => ({ ...item, kind: "checkout" })),
+        ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" }))
+      ]) {
+        await transaction.prepare(transaction.dialect.sql(
+          "INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING"
+        )).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
+      }
+      for (const table of [
+        "sporades_team_billing_observations",
+        "sporades_team_billing_subscriptions",
+        "sporades_team_billing_customers",
+        "sporades_team_billing_desired_state",
+        "sporades_team_billing_operations"
+      ]) await transaction.prepare(transaction.dialect.sql(`DELETE FROM [${table}] WHERE [teamId] = ?`)).run(current2.teamId);
+      await transaction.prepare(transaction.dialect.sql("DELETE FROM [sporades_team_billing_erasure_state] WHERE [teamId] = ?")).run(current2.teamId);
+      const released = await transaction.prepare(transaction.dialect.sql(
+        "DELETE FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(current2.teamId, claimToken);
+      if (Number(released?.changes ?? released?.changesCount ?? 0) !== 1) throw retryable2("TEAM_BILLING_PROVIDER_LANE_LOST");
+      return true;
+    });
+    return settled ? { providerQuiesced: true } : { superseded: true };
+  } catch (error) {
+    await database.adapter.withTransaction(async (transaction) => {
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?"
+      )).run(now(database), snapshot.teamId, claimToken);
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'queued', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ?"
+      )).run(safeCode2(error?.code), now(database), snapshot.operationId, snapshot.generationId);
+    });
+    error.retryable ??= true;
+    throw error;
+  }
+}
+async function repairTeamBillingErasureStateAtStartup(database) {
+  let queued = 0;
+  await database.adapter.withTransaction(async (transaction) => {
+    const rows = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
+    )).all();
+    for (const row of rows) {
+      const generationId = randomUUID7();
+      const changed = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
+      )).run(generationId, now(database), row.operationId);
+      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) continue;
+      await database.enqueueTeamBillingErasureJob(
+        transaction,
+        { operationId: row.operationId, generationId },
+        `team-billing-erasure:${row.operationId}:${generationId}`
+      );
+      queued += 1;
+    }
+  });
+  if (queued) database.scheduleTeamBillingJobDispatch?.();
+  return { queued };
+}
+async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailureCode = "RETRY_EXHAUSTED") {
+  if (!exactPayload(payload)) return { settled: false };
+  const failureCode = safeCode2(safeFailureCode);
+  let replacementScheduled = false;
+  const result = await inTransaction2(database, async (transaction) => {
+    const state = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [teamId], [operationId], [activeJobGenerationId], [status] FROM [sporades_team_billing_erasure_state] WHERE [operationId] = ?"
+    )).get(payload.operationId);
+    if (!state || state.activeJobGenerationId !== payload.generationId || !["queued", "running"].includes(state.status)) return { settled: false };
+    const lane = await transaction.prepare(transaction.dialect.sql(
+      "SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?"
+    )).get(state.teamId);
+    const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now(database) ? lane.claimExpiresAt : null;
+    if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
+      const generationId = randomUUID7();
+      const availableAt = liveClaimExpiry ?? now(database);
+      const changed = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+      )).run(generationId, now(database), payload.operationId, payload.generationId);
+      if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return { settled: false };
+      await database.enqueueTeamBillingErasureJob(
+        transaction,
+        { operationId: payload.operationId, generationId },
+        `team-billing-erasure:${payload.operationId}:${generationId}`,
+        availableAt
+      );
+      replacementScheduled = true;
+      return { settled: false, busy: true, replacementScheduled: true, availableAt };
+    }
+    const settled = await transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_team_billing_erasure_state] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
+    )).run(failureCode, now(database), payload.operationId, payload.generationId);
+    return { settled: Number(settled?.changes ?? settled?.changesCount ?? 0) === 1 };
+  });
+  if (replacementScheduled && !database.__transactionActive) database.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = () => null, isCurrentContext = () => false, trackOperation = (operation) => operation()) {
+  const requireActiveContext = () => {
+    const context2 = contextGetter();
+    if (!context2 || !isCurrentContext(context2) || context2.signal?.aborted) {
+      throw inactiveContext();
+    }
+    return context2;
+  };
+  const requireContext = () => {
+    const context2 = requireActiveContext();
+    if (!database.__transactionActive) throw inactiveContext();
+    return context2;
+  };
+  return Object.freeze({
+    async get(teamId) {
+      requireActiveContext();
+      const result = database.__transactionActive ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId) : await database.adapter.withTransaction((transaction) => readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
+      requireActiveContext();
+      return result;
+    },
+    admitLocalErasure(teamId) {
+      return trackOperation(async () => {
+        requireContext();
+        if (!TEAM_ID.test(String(teamId ?? ""))) throw unavailable();
+        await admitTeamBillingActor(database, database.adapter, auth, { operation: "erasure", teamId });
+        requireContext();
+        if (!await tombstone(database.adapter, teamBillingErasureKey(database, teamId))) throw unavailable();
+        requireContext();
+        return Object.freeze({ allowed: true });
+      });
+    }
+  });
+}
+async function tombstone(transaction, key) {
+  return transaction.prepare(transaction.dialect.sql(
+    "SELECT [erasureKey] FROM [sporades_team_billing_erasure_tombstones] WHERE [erasureKey] = ?"
+  )).get(key);
+}
+async function ensureLane2(transaction, teamId, database) {
+  await transaction.prepare(transaction.dialect.sql(
+    "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
+  )).run(teamId, now(database));
+}
+async function inTransaction2(database, callback) {
+  if (database.__transactionActive || typeof database.adapter?.withTransaction !== "function") return callback(database.adapter);
+  return database.adapter.withTransaction(callback);
+}
+function validateEvidence(value, expected) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0subscriptions" || value.ok !== true || value.outcome !== "quiesced" || !canonicalTimestamp3(value.providerObservedAt) || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions)) throw unavailable();
+  const checkouts = value.checkouts.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !CHECKOUT_ID2.test(entry.id) || !["complete", "expired", "safely-closed"].includes(entry.state)) throw unavailable();
+    return { id: entry.id, state: entry.state };
+  }).sort(byId);
+  const subscriptions = value.subscriptions.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || Object.keys(entry).sort().join("\0") !== "id\0state" || !SUBSCRIPTION_ID2.test(entry.id) || !["cancelled", "safely-closed"].includes(entry.state)) throw unavailable();
+    return { id: entry.id, state: entry.state };
+  }).sort(byId);
+  if (new Set(checkouts.map((entry) => entry.id)).size !== checkouts.length || new Set(subscriptions.map((entry) => entry.id)).size !== subscriptions.length || checkouts.length < expected.checkoutSessionIds.length + (expected.checkoutRecoveries?.length ?? 0) || expected.checkoutSessionIds.some((id2) => !checkouts.some((entry) => entry.id === id2)) || expected.subscriptionIds.some((id2) => !subscriptions.some((entry) => entry.id === id2))) throw unavailable();
+  return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
+}
+function providerIdempotency(database, key) {
+  return `sporades-team-billing-erasure-${createHash9("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;
+}
+function exactPayload(value) {
+  return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join("\0") === "generationId\0operationId" && TEAM_ID.test(value.operationId) && TEAM_ID.test(value.generationId);
+}
+function canonicalTimestamp3(value) {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && !Number.isNaN(Date.parse(value));
+}
+function byId(left, right) {
+  return left.id.localeCompare(right.id);
+}
+function now(database) {
+  return database.clock.now().toISOString();
+}
+function safeCode2(value) {
+  return String(value ?? "PROVIDER_UNAVAILABLE").replace(/[^A-Z0-9_]/gi, "_").toUpperCase().slice(0, 64);
+}
+function retryable2(code2) {
+  const error = unavailable();
+  error.code = code2;
+  error.retryable = true;
+  return error;
+}
+function inactiveContext() {
+  const error = unavailable();
+  error.code = "TEAM_BILLING_ERASURE_CONTEXT_INACTIVE";
+  return error;
+}
+function unavailable() {
+  const error = new Error("Team Billing erasure is unavailable.");
+  error.code = "TEAM_BILLING_ERASURE_UNAVAILABLE";
+  return error;
+}
+
+// src/jobs-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var RESERVED_JOB_NAME_PREFIX = "_sporades";
+var STRIPE_EVENT_JOB = "_sporades.stripe-event";
+var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
+var STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE = 100;
+var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+var STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY = "stripe-event-payload-retention-sentinel-cursor-v1";
+var STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE = "~";
+var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
+var STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS = 1e3;
+var STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS = 2147483647;
+function parseStripeEventPayloadSentinelMaintenance(value) {
+  if (typeof value !== "string") return { afterId: "", recheckAt: null };
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && typeof parsed.afterId === "string") {
+      return {
+        afterId: parsed.afterId,
+        recheckAt: isCanonicalJobTimestamp(parsed.recheckAt) ? parsed.recheckAt : null
+      };
+    }
+  } catch {
+  }
+  return { afterId: value, recheckAt: null };
+}
+function serializeStripeEventPayloadSentinelMaintenance(afterId, recheckAt) {
+  return JSON.stringify({ afterId, recheckAt });
+}
+function stripeEventPayloadRetentionDeadline(settledAt) {
+  if (!isCanonicalJobTimestamp(settledAt)) return null;
+  return jobTimestampAfter(new Date(settledAt), STRIPE_EVENT_PAYLOAD_RETENTION_MS);
+}
+function stripeEventPayloadRetentionStorageValue(settledAt) {
+  const deadline = stripeEventPayloadRetentionDeadline(settledAt);
+  if (deadline !== null) return deadline;
+  return isCanonicalJobTimestamp(settledAt) ? STRIPE_EVENT_PAYLOAD_UNREPRESENTABLE_DEADLINE : "";
+}
+async function cleanupExpiredStripeEventPayloads(database, options = {}) {
+  const batchSize = options.batchSize ?? STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE;
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE) {
+    throw jobError("STRIPE_EVENT_PAYLOAD_CLEANUP_INVALID", "Invalid Stripe Event payload cleanup batch.", "Use the runtime-owned bounded cleanup batch.");
+  }
+  const adapter = database.adapter;
+  const sql2 = adapter.dialect.sql;
+  const nowIso2 = database.clock.now().toISOString();
+  let assignedCount = 0;
+  let classifiedCount = 0;
+  let redactedCount = 0;
+  let remaining = batchSize;
+  let sentinelScanPending = false;
+  let sentinelRecheckAt = null;
+  const due = await adapter.prepare(sql2(
+    "SELECT [id], [completedAt], [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' AND [payloadRetentionUntil] <= ? ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, nowIso2, remaining);
+  for (const row of due) {
+    const changed = await adapter.prepare(sql2(
+      "UPDATE [sporades_jobs] SET [payload]=?, [result]=NULL, [payloadRedactedAt]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]=? AND [payloadRetentionUntil] <= ? AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+    )).run(REDACTED_STRIPE_EVENT_PAYLOAD, nowIso2, row.id, STRIPE_EVENT_JOB, row.completedAt, row.payloadRetentionUntil, nowIso2);
+    const mutations = Number(changed?.changes ?? 0);
+    redactedCount += mutations;
+    remaining -= mutations;
+  }
+  const cursorRow = await adapter.prepare(sql2(
+    "SELECT [value] FROM [sporades] WHERE [key]=?"
+  )).get(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY);
+  let observedMaintenanceValue = typeof cursorRow?.value === "string" ? cursorRow.value : serializeStripeEventPayloadSentinelMaintenance("", null);
+  let sentinelMaintenance = parseStripeEventPayloadSentinelMaintenance(observedMaintenanceValue);
+  const recheckIsWaiting = sentinelMaintenance.afterId === "" && isCanonicalJobTimestamp(sentinelMaintenance.recheckAt) && String(sentinelMaintenance.recheckAt) > nowIso2;
+  if (recheckIsWaiting) sentinelRecheckAt = sentinelMaintenance.recheckAt;
+  const sentinelCandidates = remaining === 0 || recheckIsWaiting ? [] : await adapter.prepare(sql2(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [id]>? ORDER BY [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, sentinelMaintenance.afterId, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE + 1);
+  let processedSentinelCount = 0;
+  let processedSentinelCursor = sentinelMaintenance.afterId;
+  for (const observed of sentinelCandidates.slice(0, STRIPE_EVENT_PAYLOAD_CLEANUP_BATCH_SIZE)) {
+    if (remaining === 0) break;
+    processedSentinelCount += 1;
+    processedSentinelCursor = String(observed.id);
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      if (deadline === null) break;
+      const changed = await adapter.prepare(sql2(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [completedAt]=? AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      row = await adapter.prepare(sql2(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
+  }
+  if (remaining === 0 && processedSentinelCount === 0) {
+    sentinelScanPending = recheckIsWaiting ? false : Boolean(await adapter.prepare(sql2(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+  } else if (processedSentinelCount > 0) {
+    const pageHasMore = sentinelCandidates.length > processedSentinelCount;
+    const unresolvedSentinel = pageHasMore || Boolean(await adapter.prepare(sql2(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+    const nextCursor = pageHasMore ? processedSentinelCursor : "";
+    const nextRecheckAt = !pageHasMore && unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance(nextCursor, nextRecheckAt);
+    const advanced = await adapter.prepare(sql2(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(advanced?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: nextCursor, recheckAt: nextRecheckAt };
+      sentinelScanPending = pageHasMore;
+      sentinelRecheckAt = nextRecheckAt;
+    }
+  } else if (!recheckIsWaiting && (sentinelMaintenance.afterId !== "" || sentinelMaintenance.recheckAt !== null)) {
+    const unresolvedSentinel = Boolean(await adapter.prepare(sql2(
+      "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil]='' LIMIT 1"
+    )).get(STRIPE_EVENT_JOB));
+    const nextRecheckAt = unresolvedSentinel ? jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS) : null;
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
+    const wrapped = await adapter.prepare(sql2(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(wrapped?.changes ?? 0) === 0) sentinelScanPending = true;
+    else {
+      observedMaintenanceValue = nextMaintenanceValue;
+      sentinelMaintenance = { afterId: "", recheckAt: nextRecheckAt };
+      sentinelRecheckAt = nextRecheckAt;
+    }
+  }
+  const unassigned = remaining === 0 ? [] : await adapter.prepare(sql2(
+    "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL ORDER BY [completedAt] ASC, [id] ASC LIMIT ?"
+  )).all(STRIPE_EVENT_JOB, remaining);
+  for (const observed of unassigned) {
+    if (remaining === 0) break;
+    let row = observed;
+    let retried = false;
+    while (row && remaining > 0) {
+      const deadline = stripeEventPayloadRetentionDeadline(row.completedAt);
+      const unresolvedDeadline = stripeEventPayloadRetentionStorageValue(row.completedAt);
+      const changed = deadline === null ? await adapter.prepare(sql2(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(unresolvedDeadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt) : await adapter.prepare(sql2(
+        "UPDATE [sporades_jobs] SET [payloadRetentionUntil]=? WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND ([completedAt]=? OR ([completedAt] IS NULL AND ? IS NULL)) AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).run(deadline, row.id, STRIPE_EVENT_JOB, row.completedAt, row.completedAt);
+      const mutations = Number(changed?.changes ?? 0);
+      if (mutations > 0) {
+        if (deadline === null) classifiedCount += mutations;
+        else assignedCount += mutations;
+        remaining -= mutations;
+        break;
+      }
+      if (retried) break;
+      row = await adapter.prepare(sql2(
+        "SELECT [id], [completedAt] FROM [sporades_jobs] WHERE [id]=? AND [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL AND [claimToken] IS NULL AND [leaseExpiresAt] IS NULL"
+      )).get(observed.id, STRIPE_EVENT_JOB);
+      retried = true;
+    }
+  }
+  const moreUnassigned = await adapter.prepare(sql2(
+    "SELECT [id] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NULL LIMIT 1"
+  )).get(STRIPE_EVENT_JOB);
+  if (!sentinelScanPending && sentinelMaintenance.afterId === "" && sentinelRecheckAt === null && classifiedCount > 0) {
+    const nextRecheckAt = jobTimestampAfter(database.clock.now(), STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS);
+    const nextMaintenanceValue = serializeStripeEventPayloadSentinelMaintenance("", nextRecheckAt);
+    const scheduled = await adapter.prepare(sql2(
+      "UPDATE [sporades] SET [value]=? WHERE [key]=? AND [value]=?"
+    )).run(nextMaintenanceValue, STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, observedMaintenanceValue);
+    if (Number(scheduled?.changes ?? 0) === 0) sentinelScanPending = true;
+    else sentinelRecheckAt = nextRecheckAt;
+  }
+  const next = await adapter.prepare(sql2(
+    "SELECT [payloadRetentionUntil] FROM [sporades_jobs] WHERE [handler]=? AND [status]='succeeded' AND [payloadRedactedAt] IS NULL AND [payloadRetentionUntil] IS NOT NULL AND [payloadRetentionUntil] <> '' ORDER BY [payloadRetentionUntil] ASC, [id] ASC LIMIT 1"
+  )).get(STRIPE_EVENT_JOB);
+  const nextDeadline = isCanonicalJobTimestamp(next?.payloadRetentionUntil) ? String(next.payloadRetentionUntil) : null;
+  const scheduledCleanupAt = sentinelRecheckAt !== null && nextDeadline !== null ? sentinelRecheckAt < nextDeadline ? sentinelRecheckAt : nextDeadline : sentinelRecheckAt ?? nextDeadline;
+  const nextCleanupAt = moreUnassigned || sentinelScanPending ? nowIso2 : scheduledCleanupAt;
+  return Object.freeze({ assignedCount, classifiedCount, redactedCount, nextCleanupAt });
+}
+function scheduleStripeEventPayloadCleanup(database, dueAt) {
+  if (database.__jobStopped) return;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    if (dueAt !== null) {
+      database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? dueAt : Math.min(database.__stripeEventPayloadCleanupRequestedAt, dueAt);
+    }
+    return;
+  }
+  if (dueAt !== null && database.__stripeEventPayloadCleanupTimer && database.__stripeEventPayloadCleanupDueAt !== null && database.__stripeEventPayloadCleanupDueAt <= dueAt) return;
+  installStripeEventPayloadCleanupTimer(database, dueAt);
+}
+function installStripeEventPayloadCleanupTimer(database, dueAt) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = dueAt;
+  if (dueAt === null) return;
+  database.__stripeEventPayloadCleanupTimer = database.clock.setTimer(async () => {
+    database.__stripeEventPayloadCleanupTimer = null;
+    database.__stripeEventPayloadCleanupDueAt = null;
+    if (!database.__jobStopped) await startStripeEventPayloadCleanup(database);
+  }, Math.min(STRIPE_EVENT_PAYLOAD_TIMER_CHUNK_MS, Math.max(0, dueAt - database.clock.now().getTime())));
+}
+function startStripeEventPayloadCleanup(database) {
+  if (database.__jobStopped) return void 0;
+  if (database.__stripeEventPayloadCleanupPromise) {
+    const now2 = database.clock.now().getTime();
+    database.__stripeEventPayloadCleanupRequestedAt = database.__stripeEventPayloadCleanupRequestedAt === null ? now2 : Math.min(database.__stripeEventPayloadCleanupRequestedAt, now2);
+    return database.__stripeEventPayloadCleanupPromise;
+  }
+  const cleanup = runStripeEventPayloadCleanupChain(database);
+  database.__stripeEventPayloadCleanupPromise = cleanup;
+  cleanup.finally(() => {
+    if (database.__stripeEventPayloadCleanupPromise === cleanup) database.__stripeEventPayloadCleanupPromise = null;
+  }).catch(() => {
+  });
+  return cleanup;
+}
+async function runStripeEventPayloadCleanupChain(database) {
+  while (!database.__jobStopped) {
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    let nextDueAt;
+    try {
+      const result = await cleanupExpiredStripeEventPayloads(database);
+      nextDueAt = result.nextCleanupAt === null ? null : Date.parse(result.nextCleanupAt);
+    } catch (error) {
+      try {
+        await database.log.emit({
+          category: "platform",
+          event: "stripe.event_payload_cleanup.failed",
+          level: "error",
+          message: "Stripe Event payload cleanup failed",
+          data: { code: String(error?.code ?? "STRIPE_EVENT_PAYLOAD_CLEANUP_FAILED").slice(0, 80) }
+        });
+      } catch {
+      }
+      nextDueAt = database.clock.now().getTime() + STRIPE_EVENT_PAYLOAD_CLEANUP_RETRY_MS;
+    }
+    if (database.__jobStopped) return;
+    const requestedAt = database.__stripeEventPayloadCleanupRequestedAt;
+    database.__stripeEventPayloadCleanupRequestedAt = null;
+    if (requestedAt !== null && requestedAt <= database.clock.now().getTime()) continue;
+    const dueAt = requestedAt === null ? nextDueAt : nextDueAt === null ? requestedAt : Math.min(nextDueAt, requestedAt);
+    installStripeEventPayloadCleanupTimer(database, dueAt);
+    return;
+  }
+}
+function stopStripeEventPayloadCleanup(database) {
+  if (database.__stripeEventPayloadCleanupTimer) database.clock.clearTimer(database.__stripeEventPayloadCleanupTimer);
+  database.__stripeEventPayloadCleanupTimer = null;
+  database.__stripeEventPayloadCleanupDueAt = null;
+  database.__stripeEventPayloadCleanupRequestedAt = null;
+  return database.__stripeEventPayloadCleanupPromise ? Promise.resolve(database.__stripeEventPayloadCleanupPromise).then(() => void 0) : void 0;
+}
+function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
+  const schedules = [];
+  for (const [name2, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name2)) throw commandError(`Invalid Schedule name: ${name2}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "payloadVersion", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name2}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, payloadVersion?, retry?, missedRun?, enabled? }).");
+    if (schedules.some((candidate) => candidate.name === name2)) throw commandError(`Duplicate Schedule declaration: ${name2}`, "Use one unique Schedule name per Capsule.");
+    if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name2}`, "Reference a Job declared in the Capsule jobs map.");
+    const expression = parseScheduleExpression(definition.expression);
+    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
+    const payload = definition.payload === void 0 ? null : definition.payload;
+    let payloadFingerprint;
+    let payloadVersion;
+    if (typeof payload === "function") {
+      if (definition.payloadVersion !== void 0 && (typeof definition.payloadVersion !== "string" || definition.payloadVersion.length < 1 || definition.payloadVersion.length > 128 || definition.payloadVersion.trim() !== definition.payloadVersion)) {
+        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "When supplied, give a payload factory a stable non-empty payloadVersion of at most 128 characters, and change it whenever captured inputs change.");
+      }
+      payloadFingerprint = definition.payloadVersion === void 0 ? String(payload) : null;
+      payloadVersion = definition.payloadVersion;
+    } else {
+      if (definition.payloadVersion !== void 0) {
+        throw commandError(`Invalid Schedule payloadVersion: ${name2}`, "Use payloadVersion only with a Schedule payload factory; static payload values are fingerprinted directly.");
+      }
+      boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+      payloadFingerprint = payload;
+    }
+    const retry = normalizeJobRetry(definition.retry);
+    const missedRun = definition.missedRun ?? "skip";
+    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name2}`, "Use `skip` or `latest`.");
+    if (definition.enabled !== void 0 && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name2}`, "Pass true or false for enabled.");
+    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
+    const enabled = definition.enabled ?? true;
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: payloadFingerprint, retry, missedRun, ...payloadVersion === void 0 ? {} : { payloadVersion } });
+    schedules.push({ name: name2, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, payloadVersion: definition.payloadVersion, retry, missedRun, enabled, fingerprint });
+  }
+  return schedules;
+}
+function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
+  const scheduling = config.scheduling;
+  if (scheduling === void 0) return 3e4;
+  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
+    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  return seconds * 1e3;
+}
+function parseScheduleExpression(value) {
+  if (typeof value !== "string") throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
+  const parts = value.trim().split(/\s+/);
+  if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
+  const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+  const fields = parts.map((part, index) => {
+    const values = /* @__PURE__ */ new Set();
+    for (const item of part.split(",")) {
+      const [base, stepText] = item.split("/");
+      if (item.split("/").length > 2 || stepText !== void 0 && (!/^\d+$/.test(stepText) || Number(stepText) < 1)) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
+      const step = stepText === void 0 ? 1 : Number(stepText);
+      let start, end;
+      if (base === "*") [start, end] = ranges[index];
+      else if (/^\d+$/.test(base)) start = end = Number(base);
+      else {
+        const match = /^(\d+)-(\d+)$/.exec(base);
+        if (!match) throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
+        start = Number(match[1]);
+        end = Number(match[2]);
+      }
+      if (start < ranges[index][0] || end > ranges[index][1] || start > end) throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
+      for (let current2 = start; current2 <= end; current2 += step) values.add(index === 4 && current2 === 7 ? 0 : current2);
+    }
+    return values;
+  });
+  fields.restricted = parts.map((part) => part !== "*");
+  return fields;
+}
+function resolveScheduleTimezone(value) {
+  if (value !== void 0 && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
+  const requested = value === void 0 ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
+  } catch {
+    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
+  }
+}
+function scheduleWallClockParts(formatter, instant) {
+  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
+  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
+}
+function nextScheduleOccurrence(fields, after, timezone) {
+  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: timezone,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  const candidate = new Date(after.getTime());
+  candidate.setUTCSeconds(0, 0);
+  candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+  for (let count = 0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
+    const local = scheduleWallClockParts(formatter, candidate);
+    const dom = fields[2].has(local.day);
+    const dow = fields[4].has(local.weekday);
+    const domRestricted = fields.restricted?.[2] ?? fields[2].size !== 31;
+    const dowRestricted = fields.restricted?.[4] ?? fields[4].size !== 7;
+    const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) {
+      const occurrence = new Date(candidate);
+      if (!isCanonicalJobTimestamp(occurrence.toISOString())) {
+        throw commandError(
+          "Stored Schedule state is invalid.",
+          "Repair or remove the malformed Schedule before restarting the Capsule.",
+          "SCHEDULE_STATE_INVALID"
+        );
+      }
+      return occurrence;
+    }
+  }
+  throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
+}
+async function ensureScheduleStorage(sqlite, scheduleStorageFault) {
+  const sql2 = sqlite.dialect.sql;
+  await sqlite.exec(
+    sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedules] ([name] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [generationToken] TEXT NOT NULL, [expression] TEXT NOT NULL, [effectiveTimezone] TEXT NOT NULL, [missedRunPolicy] TEXT NOT NULL, [enabled] INTEGER NOT NULL, [exhausted] INTEGER NOT NULL DEFAULT 0, [nextOccurrence] TEXT, [latestScheduledFor] TEXT, [latestOutcome] TEXT, [latestJobId] TEXT, [latestErrorCode] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_legacy_adoption] ([scheduleName] TEXT PRIMARY KEY, [definitionFingerprint] TEXT NOT NULL, [adoptionOpen] INTEGER NOT NULL)"
+    )
+  );
+  await sqlite.exec(
+    sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_schedule_occurrences] ([id] TEXT PRIMARY KEY, [scheduleName] TEXT NOT NULL, [definitionFingerprint] TEXT, [generationToken] TEXT, [scheduledFor] TEXT NOT NULL, [status] TEXT NOT NULL, [claimToken] TEXT, [claimExpiresAt] TEXT, [jobId] TEXT, [errorCode] TEXT, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
+    )
+  );
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "generationToken", "TEXT");
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedules", "exhausted", "INTEGER NOT NULL DEFAULT 0");
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "definitionFingerprint", "TEXT");
+  await sqlite.dialect.addMissingColumn(sqlite, "sporades_schedule_occurrences", "generationToken", "TEXT");
+  await sqlite.prepare(sql2(
+    "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-reconciliation-lock', 'v1') ON CONFLICT ([key]) DO NOTHING"
+  )).run();
+  const migrateLegacyScheduleIdentity = async (adapter) => {
+    const migrationSql = adapter.dialect.sql;
+    await adapter.prepare(migrationSql(
+      "UPDATE [sporades] SET [value]=[value] WHERE [key]='schedule-reconciliation-lock'"
+    )).run();
+    const lineageMigration = await adapter.prepare(migrationSql(
+      "SELECT [value] FROM [sporades] WHERE [key]='schedule-legacy-adoption-lineage-v1'"
+    )).get();
+    const initializeLegacyLineage = !lineageMigration;
+    const schedules = await adapter.prepare(migrationSql(
+      "SELECT [name], [definitionFingerprint], [generationToken] FROM [sporades_schedules] ORDER BY [name] ASC"
+    )).all();
+    const scheduleByName = /* @__PURE__ */ new Map();
+    for (const row of schedules) {
+      await adapter.prepare(migrationSql(
+        "UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=?"
+      )).run(row.name);
+      let generationToken = row.generationToken;
+      const wasLegacySchedule = typeof generationToken !== "string" || generationToken.length === 0;
+      if (typeof generationToken !== "string" || generationToken.length === 0) {
+        const proposed = nodeCryptoModule3.randomUUID();
+        await adapter.prepare(migrationSql(
+          "UPDATE [sporades_schedules] SET [generationToken]=? WHERE [name]=? AND ([generationToken] IS NULL OR [generationToken]='')"
+        )).run(proposed, row.name);
+        const current2 = await adapter.prepare(migrationSql(
+          "SELECT [definitionFingerprint], [generationToken] FROM [sporades_schedules] WHERE [name]=?"
+        )).get(row.name);
+        generationToken = current2?.generationToken ?? proposed;
+        row.definitionFingerprint = current2?.definitionFingerprint ?? row.definitionFingerprint;
+      }
+      if (initializeLegacyLineage) {
+        await adapter.prepare(migrationSql(
+          "INSERT INTO [sporades_schedule_legacy_adoption] ([scheduleName], [definitionFingerprint], [adoptionOpen]) VALUES (?, ?, ?) ON CONFLICT ([scheduleName]) DO NOTHING"
+        )).run(row.name, row.definitionFingerprint, wasLegacySchedule ? 1 : 0);
+      }
+      const lineage = await adapter.prepare(migrationSql(
+        "SELECT [definitionFingerprint], [adoptionOpen] FROM [sporades_schedule_legacy_adoption] WHERE [scheduleName]=?"
+      )).get(row.name);
+      scheduleByName.set(String(row.name), {
+        definitionFingerprint: row.definitionFingerprint,
+        generationToken,
+        legacyAdoptionOpen: Number(lineage?.adoptionOpen) === 1 && lineage?.definitionFingerprint === row.definitionFingerprint
+      });
+    }
+    const pending = await adapter.prepare(migrationSql(
+      "SELECT [id], [scheduleName], [definitionFingerprint], [generationToken] FROM [sporades_schedule_occurrences] WHERE [status]='pending' AND ([definitionFingerprint] IS NULL OR [generationToken] IS NULL OR [generationToken]='') ORDER BY [scheduledFor] ASC, [id] ASC"
+    )).all();
+    await scheduleStorageFault?.("after-legacy-pending-scan", { adapter });
+    for (const row of pending) {
+      const schedule = scheduleByName.get(String(row.scheduleName));
+      if (!schedule) continue;
+      if (row.definitionFingerprint !== null && row.definitionFingerprint !== void 0 && row.definitionFingerprint !== schedule.definitionFingerprint) continue;
+      if ((row.definitionFingerprint === null || row.definitionFingerprint === void 0) && !schedule.legacyAdoptionOpen) continue;
+      await adapter.prepare(migrationSql(
+        "UPDATE [sporades_schedule_occurrences] SET [definitionFingerprint]=?, [generationToken]=? WHERE [id]=? AND [status]='pending' AND ([definitionFingerprint] IS NULL OR [definitionFingerprint]=?) AND ([generationToken] IS NULL OR [generationToken]='')"
+      )).run(schedule.definitionFingerprint, schedule.generationToken, row.id, schedule.definitionFingerprint);
+    }
+    if (initializeLegacyLineage) {
+      await adapter.prepare(migrationSql(
+        "INSERT INTO [sporades] ([key], [value]) VALUES ('schedule-legacy-adoption-lineage-v1', 'complete') ON CONFLICT ([key]) DO NOTHING"
+      )).run();
+    }
+  };
+  if (typeof sqlite.withTransaction === "function") {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await sqlite.withTransaction(migrateLegacyScheduleIdentity);
+        break;
+      } catch (error) {
+        if (sqlite.engine !== "sqlite" || attempt >= 100 || String(error?.message ?? "") !== "database is locked") throw error;
+        await new Promise((resolve2) => setTimeout(resolve2, Math.min(25, attempt + 1)));
+      }
+    }
+  } else await migrateLegacyScheduleIdentity(sqlite);
+  await sqlite.exec(
+    sql2(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_schedule_occurrence_identity] ON [sporades_schedule_occurrences]([scheduleName], [scheduledFor])"
+    )
+  );
+  await sqlite.exec(
+    sql2(
+      "CREATE INDEX IF NOT EXISTS [sporades_schedule_legacy_pending_discovery] ON [sporades_schedule_occurrences]([status], [definitionFingerprint], [generationToken], [scheduledFor], [scheduleName])"
+    )
+  );
+}
+async function finishFailedScheduledOccurrence(database, definition, occurrence, error, claimToken) {
+  const scheduledFor = occurrence.toISOString();
+  const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+  const completedAt = database.clock.now().toISOString();
+  const code2 = "SCHEDULE_ENQUEUE_FAILED";
+  const sql2 = database.adapter.dialect.sql;
+  const generation2 = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [name]=[name] WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(definition.name, definition.fingerprint, definition.generationToken);
+  if (Number(generation2.changes) !== 1) {
+    await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [jobId]=NULL, [errorCode]='SCHEDULE_OCCURRENCE_SUPERSEDED', [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
+    return { finished: false, nextOccurrence: null, superseded: true };
+  }
+  const terminal = await database.adapter.prepare(sql2("UPDATE [sporades_schedule_occurrences] SET [status]='enqueue-failed', [claimToken]=NULL, [claimExpiresAt]=NULL, [errorCode]=?, [updatedAt]=? WHERE [id]=? AND [status]='pending' AND [claimToken]=? AND [definitionFingerprint]=? AND [generationToken]=?")).run(code2, completedAt, id2, claimToken, definition.fingerprint, definition.generationToken);
+  if (Number(terminal.changes) !== 1) return { finished: false, nextOccurrence: null };
+  const successor = nextScheduleCursor(definition, occurrence);
+  const summary = await database.adapter.prepare(sql2("UPDATE [sporades_schedules] SET [nextOccurrence]=?, [exhausted]=?, [latestScheduledFor]=?, [latestOutcome]='payload-failed', [latestJobId]=NULL, [latestErrorCode]=? WHERE [name]=? AND [enabled]=1 AND [definitionFingerprint]=? AND [generationToken]=?")).run(successor.nextOccurrence, successor.exhausted ? 1 : 0, scheduledFor, code2, definition.name, definition.fingerprint, definition.generationToken);
+  if (Number(summary.changes) !== 1) throw new Error("Schedule definition changed during occurrence failure finalization.");
+  return { finished: true, ...successor };
+}
+function nextScheduleCursor(definition, occurrence) {
+  try {
+    return {
+      nextOccurrence: nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString(),
+      exhausted: false
+    };
+  } catch (error) {
+    if (error?.code !== "SCHEDULE_STATE_INVALID") throw error;
+    return { nextOccurrence: null, exhausted: true };
+  }
+}
+function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
+  return nodeCryptoModule3.createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
+}
+function schedulePayloadFactoryAbortError() {
+  const error = new Error("Schedule payload factory aborted.");
+  error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+  return error;
+}
+async function acquireSchedulePayloadFactorySlot(database, signal) {
+  if (signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+  if (database.schedulePayloadFactoryActive < 4 && database.schedulePayloadFactoryWaiters.length === 0) {
+    database.schedulePayloadFactoryActive += 1;
+  } else {
+    await new Promise((resolve2, reject) => {
+      const waiter = {};
+      const remove = () => {
+        const index = database.schedulePayloadFactoryWaiters.indexOf(waiter);
+        if (index >= 0) database.schedulePayloadFactoryWaiters.splice(index, 1);
+      };
+      const onAbort = () => {
+        remove();
+        reject(schedulePayloadFactoryAbortError());
+      };
+      waiter.grant = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve2();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      database.schedulePayloadFactoryWaiters.push(waiter);
+      if (signal.aborted || database.__scheduleStopped) onAbort();
+    });
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const waiter = database.schedulePayloadFactoryWaiters.shift();
+    if (waiter) waiter.grant();
+    else database.schedulePayloadFactoryActive -= 1;
+  };
+}
+async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
+  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
+  let unlock = () => {
+  };
+  const current2 = new Promise((resolve2) => {
+    unlock = resolve2;
+  });
+  database.schedulePayloadFactoryLanes.set(scheduleName, current2);
+  if (previous) await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unlock();
+    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current2) database.schedulePayloadFactoryLanes.delete(scheduleName);
+  };
+}
+async function resolveSchedulePayload(database, definition, scheduledFor, context2) {
+  if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
+  let releaseLane2;
+  let releaseSlot;
+  const controller = new AbortController();
+  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? /* @__PURE__ */ new Set();
+  controllers.add(controller);
+  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
+  const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
+  const factoryContext = Object.freeze({
+    app: database.app,
+    signal: controller.signal,
+    privileged: context2.privileged
+  });
+  let timeout;
+  let removeAbortListener;
+  try {
+    releaseLane2 = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database, controller.signal);
+    if (controller.signal.aborted || database.__scheduleStopped) throw schedulePayloadFactoryAbortError();
+    const timeoutFailure = new Promise((_resolve, reject) => {
+      timeout = database.clock.setTimer(() => {
+        controller.abort();
+        const error = new Error("Schedule payload factory timed out.");
+        error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
+        reject(error);
+      }, database.schedulePayloadFactoryTimeoutMs);
+    });
+    const aborted = new Promise((_resolve, reject) => {
+      const onAbort = () => reject(schedulePayloadFactoryAbortError());
+      removeAbortListener = () => controller.signal.removeEventListener("abort", onAbort);
+      if (controller.signal.aborted) onAbort();
+      else controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
+    database.clock.clearTimer(timeout);
+    boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+    return { ok: true, value };
+  } catch (error) {
+    database.clock.clearTimer(timeout);
+    const code2 = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}` : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
+    await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code: code2 } });
+    return { ok: false };
+  } finally {
+    removeAbortListener?.();
+    controllers.delete(controller);
+    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
+    releaseSlot?.();
+    releaseLane2?.();
+  }
+}
+function abortSchedulePayloadFactories(database) {
+  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
+}
+function createRuntimeClock(clock) {
+  const source = clock ?? {
+    now: () => /* @__PURE__ */ new Date(),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer)
+  };
+  return {
+    now: () => source.now(),
+    setTimer: (callback, delayMs) => withoutRuntimeRequestIdentity(() => source.setTimer(
+      () => withoutRuntimeRequestIdentity(callback),
+      delayMs
+    )),
+    clearTimer: (timer) => source.clearTimer(timer)
+  };
+}
+function runtimeOwnedJobHandlers(runtime) {
+  return [
+    {
+      name: TEAM_BILLING_CHECKOUT_JOB,
+      handler: runtime.performTeamBillingCheckout
+    },
+    {
+      name: TEAM_BILLING_CHECKOUT_EXPIRY_JOB,
+      handler: runtime.expireTeamBillingCheckout
+    },
+    { name: TEAM_BILLING_PORTAL_JOB, handler: runtime.performTeamBillingPortal },
+    { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
+    { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
+    { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
+    { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
+    {
+      name: STRIPE_EVENT_JOB,
+      handler: runtime.dispatchStripeEvent
+    },
+    {
+      name: PASSWORD_RESET_MAIL_JOB,
+      handler: async (ctx, payload) => {
+        return await ctx.mail.send({
+          to: payload.to,
+          subject: payload.subject,
+          textBody: payload.textBody,
+          htmlBody: payload.htmlBody
+        });
+      }
+    },
+    {
+      name: PASSWORD_RESET_REQUEST_JOB,
+      handler: async (ctx, payload) => {
+        const delivery = await runtime.prepareEmailPasswordResetDelivery(ctx, payload);
+        if (!delivery) return;
+        return await ctx.mail.send(delivery);
+      }
+    }
+  ];
+}
+function isReservedJobName(name2) {
+  return name2.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
+}
+function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
+  const handlers = [];
+  for (const [name2, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name2) || definition?.kind !== "job" || typeof definition.handler !== "function") {
+      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    if (isReservedJobName(name2)) {
+      throw commandError(
+        `Reserved Job handler name: ${name2}`,
+        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
+        "RESERVED_JOB_NAME"
+      );
+    }
+    if (handlers.some((handler) => handler.name === name2)) {
+      throw commandError(`Duplicate Job handler: ${name2}`, "Use one unique Job handler name per Capsule.");
+    }
+    handlers.push({ name: name2, handler: definition.handler });
+  }
+  return handlers;
+}
+async function ensureJobStorage(sqlite) {
+  const sql2 = sqlite.dialect.sql;
+  await sqlite.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades] ([key] TEXT PRIMARY KEY, [value] TEXT NOT NULL)"));
+  await sqlite.prepare(sql2(
+    "INSERT INTO [sporades] ([key], [value]) VALUES (?, ?) ON CONFLICT ([key]) DO NOTHING"
+  )).run(STRIPE_EVENT_PAYLOAD_SENTINEL_CURSOR_KEY, serializeStripeEventPayloadSentinelMaintenance("", null));
+  await sqlite.exec(
+    sql2(
+      "CREATE TABLE IF NOT EXISTS [sporades_jobs] ([id] TEXT PRIMARY KEY, [handler] TEXT NOT NULL, [enqueuedByUserId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [actorProvider] TEXT, [payload] TEXT NOT NULL, [status] TEXT NOT NULL, [availableAt] TEXT NOT NULL, [attempts] INTEGER NOT NULL, [idempotencyKey] TEXT, [result] TEXT, [failure] TEXT, [createdAt] TEXT NOT NULL, [startedAt] TEXT, [completedAt] TEXT, [failedAt] TEXT)"
+    )
+  );
+  await sqlite.exec(
+    sql2(
+      "CREATE UNIQUE INDEX IF NOT EXISTS [sporades_jobs_idempotency] ON [sporades_jobs]([handler], [actorUserId], [idempotencyKey]) WHERE [idempotencyKey] IS NOT NULL"
+    )
+  );
+  await sqlite.exec(
+    sql2("CREATE INDEX IF NOT EXISTS [sporades_jobs_runnable] ON [sporades_jobs]([status], [availableAt], [id])")
+  );
+  for (const [name2, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["claimToken", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"], ["authSnapshotJson", "TEXT"], ["credentialJson", "TEXT"], ["payloadRetentionUntil", "TEXT"], ["payloadRedactedAt", "TEXT"], ["enqueueTraceContext", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name2, type);
+  await sqlite.exec(sql2(
+    "CREATE INDEX IF NOT EXISTS [sporades_jobs_stripe_payload_retention] ON [sporades_jobs]([handler], [status], [payloadRetentionUntil], [id])"
+  ));
+  await sqlite.exec(
+    sql2("UPDATE [sporades_jobs] SET [actorProvider] = 'anonymous' WHERE [actorProvider] IS NULL OR [actorProvider] = ''")
+  );
+  const legacyRows = await sqlite.prepare(sqlite.dialect.sql(
+    "SELECT [id], [actorUserId], [enqueuedByUserId], [actorProvider] FROM [sporades_jobs] WHERE [scheduleName] IS NULL AND [actorUserId] <> ? AND ([authSnapshotJson] IS NULL OR [credentialJson] IS NULL)"
+  )).all(privilegedAuthUserId());
+  for (const row of legacyRows) {
+    let user = null;
+    try {
+      user = await sqlite.prepare(sqlite.dialect.sql(
+        "SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest] FROM [sporades_auth_users] WHERE [id] = ?"
+      )).get(row.actorUserId);
+    } catch (error) {
+      if (!/no such table|does not exist|unknown table/i.test(String(error?.message ?? error))) throw error;
+    }
+    const provider = jobActorProvider({ provider: row.actorProvider, isGuest: user ? Boolean(user.isGuest) : row.actorProvider === "anonymous" });
+    const authSnapshot = captureJobAuthSnapshot(user ? {
+      userId: user.id,
+      displayName: user.displayName,
+      email: user.email,
+      picture: user.picture,
+      isAuthenticated: Boolean(user.isAuthenticated),
+      isGuest: Boolean(user.isGuest),
+      provider
+    } : legacyJobAuthFallback(row.actorUserId, provider));
+    await sqlite.prepare(sqlite.dialect.sql(
+      "UPDATE [sporades_jobs] SET [authSnapshotJson] = COALESCE([authSnapshotJson], ?), [credentialJson] = COALESCE([credentialJson], ?) WHERE [id] = ?"
+    )).run(JSON.stringify(authSnapshot), JSON.stringify({ kind: "session" }), row.id);
+  }
+}
+async function scheduleSummary(sqlite, row) {
+  const invalid4 = (field) => {
+    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
+    error.scheduleName = typeof row?.name === "string" ? row.name : null;
+    error.field = field;
+    return error;
+  };
+  if (typeof row.name !== "string" || !row.name) throw invalid4("name");
+  if (typeof row.expression !== "string" || !row.expression) throw invalid4("expression");
+  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid4("timezone");
+  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid4("missedRun");
+  if (![0, 1, false, true].includes(row.enabled)) throw invalid4("enabled");
+  const exhausted = row.exhausted ?? 0;
+  if (![0, 1, false, true].includes(exhausted) || !scheduleCursorStateIsConsistent(row.enabled, exhausted, row.nextOccurrence)) throw invalid4("exhausted");
+  if (row.nextOccurrence != null && !isCanonicalJobTimestamp(row.nextOccurrence)) throw invalid4("nextOccurrence");
+  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
+  let latestOccurrence = null;
+  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid4("latestOccurrence");
+  if (latestOutcome !== null && !isCanonicalJobTimestamp(row.latestScheduledFor)) throw invalid4("latestOccurrence.scheduledFor");
+  if (latestOutcome === "enqueued") {
+    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid4("latestOccurrence.jobId");
+    if (row.latestErrorCode != null) throw invalid4("latestOccurrence.errorCode");
+    const job = await sqlite.prepare(sqlite.dialect.sql("SELECT [id] FROM [sporades_jobs] WHERE [id]=? AND [scheduleName]=? AND [scheduledFor]=?")).get(row.latestJobId, row.name, row.latestScheduledFor);
+    if (!job) throw invalid4("latestOccurrence.jobId");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
+  } else if (latestOutcome === "payload-failed") {
+    if (row.latestJobId != null) throw invalid4("latestOccurrence.jobId");
+    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid4("latestOccurrence.errorCode");
+    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid4("latestOccurrence.errorCode");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
+  } else if (latestOutcome !== null) throw invalid4("latestOccurrence.outcome");
+  return {
+    name: String(row.name),
+    expression: String(row.expression),
+    timezone: String(row.effectiveTimezone),
+    missedRun: String(row.missedRunPolicy),
+    enabled: Boolean(row.enabled),
+    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
+    latestOccurrence
+  };
+}
+function scheduleCursorStateIsConsistent(enabled, exhausted, nextOccurrence) {
+  if (![0, 1, false, true].includes(enabled) || ![0, 1, false, true].includes(exhausted)) return false;
+  const hasNextOccurrence = nextOccurrence !== null && nextOccurrence !== void 0;
+  return Boolean(enabled) ? hasNextOccurrence !== Boolean(exhausted) : !Boolean(exhausted) && !hasNextOccurrence;
+}
+function assertJobScheduleProvenance(row, expected) {
+  if (!expected) return;
+  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
+    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
+  }
+}
+function jobError(code2, message, hint) {
+  const error = new Error(message);
+  error.code = code2;
+  error.hint = hint;
+  return error;
+}
+function boundedJobJson(value, limit, code2, label) {
+  let serialized2;
+  try {
+    assertJsonCompatible(value);
+    serialized2 = JSON.stringify(value);
+  } catch {
+    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
+  }
+  if (Buffer.byteLength(serialized2, "utf8") > limit) throw jobError(code2, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
+  return serialized2;
+}
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+function boundedJobIdentityString(value, field, maximum, nullable = false) {
+  if (nullable && value === null) return null;
+  if (typeof value !== "string" || value.length > maximum) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", `Keep ${field} within its runtime-owned bound.`);
+  }
+  return value;
+}
+function canonicalJobAuthSnapshot(auth) {
+  const baseSnapshot = {
+    userId: boundedJobIdentityString(auth?.userId, "userId", 256),
+    displayName: boundedJobIdentityString(auth?.displayName, "displayName", 512),
+    email: boundedJobIdentityString(auth?.email, "email", 320, true),
+    picture: boundedJobIdentityString(auth?.picture, "picture", 4096, true),
+    isAuthenticated: auth?.isAuthenticated,
+    isGuest: auth?.isGuest,
+    provider: boundedJobIdentityString(auth?.provider, "provider", 64)
+  };
+  if (typeof baseSnapshot.isAuthenticated !== "boolean" || typeof baseSnapshot.isGuest !== "boolean") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  if (auth?.userKind !== void 0 && auth.userKind !== "service") {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is invalid.", "Use a runtime-issued AuthContext when enqueueing a Job.");
+  }
+  const snapshot = auth?.userKind === "service" ? { ...baseSnapshot, userKind: "service" } : baseSnapshot;
+  const serialized2 = JSON.stringify(snapshot);
+  if (Buffer.byteLength(serialized2, "utf8") > JOB_AUTH_SNAPSHOT_MAX_BYTES) {
+    throw jobError("INVALID_JOB_IDENTITY", "Job identity provenance is too large.", "Reduce bounded profile metadata before enqueueing the Job.");
+  }
+  return snapshot;
+}
+function truncateJobDisplayName(value) {
+  let truncated = value.slice(0, 512);
+  const finalCodeUnit = truncated.charCodeAt(truncated.length - 1);
+  if (finalCodeUnit >= 55296 && finalCodeUnit <= 56319) truncated = truncated.slice(0, -1);
+  return truncated || "Job enqueuer";
+}
+function captureJobAuthSnapshot(auth) {
+  if (typeof auth?.displayName !== "string" || !(auth?.email === null || typeof auth?.email === "string") || !(auth?.picture === null || typeof auth?.picture === "string")) return canonicalJobAuthSnapshot(auth);
+  boundedJobIdentityString(auth?.userId, "userId", 256);
+  boundedJobIdentityString(auth?.provider, "provider", 64);
+  if (typeof auth?.isAuthenticated !== "boolean" || typeof auth?.isGuest !== "boolean") {
+    return canonicalJobAuthSnapshot(auth);
+  }
+  const bounded = {
+    ...auth,
+    displayName: auth.displayName.length > 512 ? truncateJobDisplayName(auth.displayName) : auth.displayName,
+    email: auth.email !== null && auth.email.length > 320 ? null : auth.email,
+    picture: auth.picture !== null && auth.picture.length > 4096 ? null : auth.picture
+  };
+  try {
+    return canonicalJobAuthSnapshot(bounded);
+  } catch (error) {
+    if (error?.code !== "INVALID_JOB_IDENTITY") throw error;
+    return canonicalJobAuthSnapshot({ ...bounded, displayName: "Job enqueuer", email: null, picture: null });
+  }
+}
+function canonicalJobCredentialProvenance(credential) {
+  if (credential?.kind === "session" && Object.keys(credential).every((key) => key === "kind")) return { kind: "session" };
+  if (credential?.kind === "access-key" && Object.keys(credential).every((key) => ["kind", "id", "name"].includes(key))) {
+    return {
+      kind: "access-key",
+      id: boundedJobIdentityString(credential.id, "credential.id", 256),
+      name: boundedJobIdentityString(credential.name, "credential.name", 256)
+    };
+  }
+  throw jobError("INVALID_JOB_CREDENTIAL", "Job Credential provenance is invalid.", "Enqueue from a runtime-issued Session or Access-key context.");
+}
+function legacyJobAuthFallback(userId, provider) {
+  const normalizedProvider = jobActorProvider({ provider, isGuest: provider === "anonymous" });
+  return {
+    userId: boundedJobIdentityString(userId, "userId", 256),
+    displayName: "Job enqueuer",
+    email: null,
+    picture: null,
+    isAuthenticated: normalizedProvider !== "anonymous",
+    isGuest: normalizedProvider === "anonymous",
+    provider: normalizedProvider
+  };
+}
+function readJobAuthSnapshot(row) {
+  let snapshot;
+  if (row?.authSnapshotJson) {
+    try {
+      snapshot = canonicalJobAuthSnapshot(JSON.parse(String(row.authSnapshotJson)));
+    } catch {
+      throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+    }
+  } else {
+    snapshot = canonicalJobAuthSnapshot(legacyJobAuthFallback(row?.actorUserId, row?.actorProvider));
+  }
+  if (snapshot.userId !== row?.actorUserId) {
+    throw jobError("JOB_ACTOR_SNAPSHOT_INVALID", "Stored Job actor provenance is invalid.", "Repair the mismatched Job actor snapshot before retrying execution.");
+  }
+  return snapshot;
+}
+function readJobCredentialProvenance(row) {
+  if (row?.credentialJson) {
+    try {
+      return canonicalJobCredentialProvenance(JSON.parse(String(row.credentialJson)));
+    } catch {
+      throw jobError("JOB_CREDENTIAL_INVALID", "Stored Job Credential provenance is invalid.", "Repair or remove the malformed Job before retrying execution.");
+    }
+  }
+  return { kind: "session" };
+}
+function jobState(row, includeDetail) {
+  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
+  const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId, credential: readJobCredentialProvenance(row) };
+  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
+  if (includeDetail && row.result) state.result = JSON.parse(row.result);
+  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
+  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
+  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
+  return state;
+}
+function jobActorProvider(auth) {
+  const provider = auth?.provider;
+  if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)) return provider;
+  return auth?.isGuest ? "anonymous" : "authenticated";
+}
+var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
+function normalizeJobAvailableAt(value) {
+  let milliseconds = Number.NaN;
+  try {
+    if (typeof value === "string") {
+      if (/^[+-]?\d+(?:\.\d+)?$/.test(value.trim())) throw new TypeError("Unsupported Job availability value.");
+      milliseconds = new Date(value).getTime();
+    } else {
+      milliseconds = Date.prototype.getTime.call(value);
+    }
+  } catch {
+  }
+  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) {
+    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an availableAt value in the supported four-digit UTC timestamp range.");
+  }
+  return new Date(milliseconds).toISOString();
+}
+function isCanonicalJobTimestamp(value) {
+  if (typeof value !== "string") return false;
+  try {
+    return normalizeJobAvailableAt(value) === value;
+  } catch {
+    return false;
+  }
+}
+function normalizeJobRetry(value) {
+  if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
+  let maxAttempts;
+  let delayMs;
+  let hasMaxAttempts = false;
+  let keys = [];
+  try {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("Invalid Job retry policy.");
+    keys = Reflect.ownKeys(value);
+    hasMaxAttempts = Object.prototype.hasOwnProperty.call(value, "maxAttempts");
+    maxAttempts = value.maxAttempts;
+    delayMs = Object.prototype.hasOwnProperty.call(value, "delayMs") ? value.delayMs : 0;
+  } catch {
+  }
+  if (!hasMaxAttempts || keys.some((key) => typeof key !== "string" || !["maxAttempts", "delayMs"].includes(key)) || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 20 || !Number.isInteger(delayMs) || delayMs < 0 || delayMs > MAX_JOB_TIMESTAMP_MS) {
+    throw jobError(
+      "INVALID_JOB_OPTIONS",
+      "Invalid Job retry policy.",
+      "Pass retry.maxAttempts (1-20) and retry.delayMs within the supported Job timestamp range."
+    );
+  }
+  return { maxAttempts, delayMs };
+}
+function parsePersistedJobRetry(value) {
+  try {
+    return normalizeJobRetry(value ? JSON.parse(value) : void 0);
+  } catch {
+    return null;
+  }
+}
+function jobTimestampAfter(instant, delayMs) {
+  const milliseconds = instant.getTime() + delayMs;
+  if (!Number.isFinite(milliseconds) || milliseconds < MIN_JOB_TIMESTAMP_MS || milliseconds > MAX_JOB_TIMESTAMP_MS) return null;
+  return new Date(milliseconds).toISOString();
+}
+function invalidJobRetryPolicyFailure() {
+  return { code: "JOB_RETRY_POLICY_INVALID", message: "The stored Job retry policy is invalid." };
+}
+async function cancelJob(database, context2, id2) {
+  const sql2 = database.adapter.dialect.sql;
+  const read = () => context2.__privilegedJobAccess ? database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ?")).get(id2) : database.adapter.prepare(sql2("SELECT * FROM [sporades_jobs] WHERE [id] = ? AND [actorUserId] = ?")).get(id2, context2.auth.userId);
+  for (let transition = 0; transition < 8; transition += 1) {
+    const row = await read();
+    if (!row) return null;
+    const now2 = database.clock.now().toISOString();
+    if (["queued", "delayed"].includes(row.status)) {
+      const changed = await database.adapter.prepare(sql2(
+        "UPDATE [sporades_jobs] SET [status]='cancelled', [completedAt]=?, [startedAt]=NULL, [leaseExpiresAt]=NULL, [claimToken]=NULL WHERE [id]=? AND [status]=?"
+      )).run(now2, id2, row.status);
+      if (Number(changed?.changes ?? 0) === 1) return jobState({ ...row, status: "cancelled", completedAt: now2, startedAt: null, leaseExpiresAt: null }, true);
+      continue;
+    }
+    if (row.status === "running") {
+      const hasClaimToken = typeof row.claimToken === "string" && row.claimToken.length > 0;
+      const changed = await database.adapter.prepare(sql2(
+        "UPDATE [sporades_jobs] SET [cancelRequestedAt]=? WHERE [id]=? AND [status]='running' AND " + (hasClaimToken ? "[claimToken]=?" : "[claimToken] IS NULL")
+      )).run(now2, id2, ...hasClaimToken ? [row.claimToken] : []);
+      if (Number(changed?.changes ?? 0) !== 1) continue;
+      const runtimeDatabase = database.__rootDatabase ?? database;
+      if (database.__transactionActive) {
+        const pendingContext = context2.__jobParentContext ?? context2;
+        const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+        pendingOwner.__pendingJobCancellationAborts ??= /* @__PURE__ */ new Map();
+        pendingOwner.__pendingJobCancellationAborts.set(id2, { runtimeDatabase, claimToken: row.claimToken });
+      } else {
+        abortRuntimeJobClaim(runtimeDatabase, id2, row.claimToken);
+      }
+      return jobState({ ...row, cancelRequestedAt: now2 }, true);
+    }
+    throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
+  }
+  throw jobError("JOB_STATE_CHANGED", "Job state changed while cancellation was requested.", "Retry the Job cancellation.");
+}
+function commitPendingJobCancellationAborts(context2) {
+  if (!context2) return;
+  const pendingContext = context2.__jobParentContext ?? context2;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  const pending = pendingOwner.__pendingJobCancellationAborts;
+  if (!(pending instanceof Map)) return;
+  delete pendingOwner.__pendingJobCancellationAborts;
+  for (const [id2, claim] of pending) abortRuntimeJobClaim(claim.runtimeDatabase, id2, claim.claimToken);
+}
+function dropPendingJobCancellationAborts(context2) {
+  if (!context2) return;
+  const pendingContext = context2.__jobParentContext ?? context2;
+  const pendingOwner = pendingContext.__sporadesContextHolder ?? pendingContext;
+  delete pendingOwner.__pendingJobCancellationAborts;
+}
+function abortRuntimeJobClaim(runtimeDatabase, id2, claimToken) {
+  const activeClaim = runtimeDatabase.__jobAbortControllers?.get(id2);
+  const controller = activeClaim?.controller ?? activeClaim;
+  if (!activeClaim?.claimToken || activeClaim.claimToken === claimToken) controller?.abort?.();
+}
+function jobSummary(row) {
+  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
+}
+function encodeJobCursor(row) {
+  return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url");
+}
+function decodeJobCursor(value) {
+  if (value === void 0) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
+    return cursor;
+  } catch {
+    throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call.");
+  }
+}
+function safeJobFailure(error) {
+  const knownCodes = /* @__PURE__ */ new Set([
+    "JOB_ACTOR_UNAVAILABLE",
+    "UNKNOWN_JOB_HANDLER",
+    "JOB_RESULT_TOO_LARGE",
+    "INVALID_JOB_PAYLOAD",
+    "STRIPE_CHECKOUT_REJECTED",
+    "STRIPE_CHECKOUT_RESPONSE_INVALID",
+    "STRIPE_PORTAL_REJECTED",
+    "STRIPE_PORTAL_RESPONSE_INVALID",
+    "PAYMENT_PORTAL_UNAVAILABLE",
+    "RESOURCE_BUSY",
+    "RESOURCE_INVALID_INPUT",
+    "RESOURCE_CONTEXT_UNSUPPORTED",
+    "RESOURCE_ADAPTER_UNSUPPORTED",
+    "RESOURCE_OPERATION_CONFLICT",
+    "RESOURCE_SCOPE_INACTIVE",
+    "RESOURCE_EFFECT_UNSUPPORTED",
+    "RESOURCE_DEADLINE_EXCEEDED",
+    "RESOURCE_CLAIM_LOST",
+    "RESOURCE_COMMIT_UNKNOWN",
+    "RESOURCE_STORAGE_ERROR"
+  ]);
+  const code2 = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
+  const messages = {
+    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
+    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
+    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
+    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    STRIPE_CHECKOUT_REJECTED: "Stripe rejected the Checkout request.",
+    STRIPE_CHECKOUT_RESPONSE_INVALID: "Stripe returned an invalid Checkout Session.",
+    STRIPE_PORTAL_REJECTED: "Stripe rejected the Customer Portal request.",
+    STRIPE_PORTAL_RESPONSE_INVALID: "Stripe returned an invalid Customer Portal Session.",
+    PAYMENT_PORTAL_UNAVAILABLE: "Customer Portal is not available for this billing holder.",
+    RESOURCE_BUSY: "Resource transaction is busy.",
+    JOB_FAILED: "Job handler failed."
+  };
+  return { code: code2, message: messages[code2] ?? "Resource operation could not complete." };
+}
+
+// src/resource-runtime.ts
+import { createHash as createHash11 } from "node:crypto";
+
+// src/notification-intent-runtime.ts
+import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID8, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+var NOTIFICATION_RESERVATION_MS = 3e4;
+var NOTIFICATION_RECOVERY_SCAN_MS = 3e4;
+var NOTIFICATION_MAX_BACKOFF_MS = 36e5;
+var NOTIFICATION_SMTP_ROUNDTRIP_MARGIN = 12;
+var notificationIntentSchemas = [
+  {
+    table: "sporades_notification_intents",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "payloadDigest", "payloadJson", "messageId", "acceptedAt"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [payloadDigest] TEXT NOT NULL, [payloadJson] TEXT NOT NULL, [messageId] TEXT NOT NULL, [acceptedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
+  },
+  {
+    table: "sporades_notification_recipients",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "state", "attemptCount", "currentAttemptToken", "currentAttemptDeadline", "nextAttemptAt", "lastOutcomeCategory", "updatedAt"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient"],
+    indexes: [
+      { name: "sporades_notification_recipients_due", columns: ["state", "nextAttemptAt", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] },
+      { name: "sporades_notification_recipients_reservations", columns: ["state", "currentAttemptDeadline", "resourceTable", "resourceId", "operationId", "intentId", "recipient"] }
+    ],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [state] TEXT NOT NULL, [attemptCount] TEXT NOT NULL, [currentAttemptToken] TEXT NOT NULL, [currentAttemptDeadline] TEXT NOT NULL, [nextAttemptAt] TEXT NOT NULL, [lastOutcomeCategory] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient])"
+  },
+  {
+    table: "sporades_notification_attempts",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken", "sequence", "reservedAt", "deadline", "completedAt", "outcomeCategory"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId", "recipient", "attemptToken"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [recipient] TEXT NOT NULL, [attemptToken] TEXT NOT NULL, [sequence] TEXT NOT NULL, [reservedAt] TEXT NOT NULL, [deadline] TEXT NOT NULL, [completedAt] TEXT NOT NULL, [outcomeCategory] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId], [recipient], [attemptToken])"
+  },
+  {
+    table: "sporades_notification_attempt_keys",
+    columns: ["resourceTable", "resourceId", "operationId", "intentId", "attemptKey"],
+    primaryKey: ["resourceTable", "resourceId", "operationId", "intentId"],
+    indexes: [],
+    definition: "[resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [intentId] TEXT NOT NULL, [attemptKey] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId], [intentId])"
+  }
+];
+var sql = (adapter, statement) => adapter.dialect.sql(statement);
+async function ensureNotificationIntentStorage(adapter) {
+  if (adapter.engine === "postgres") {
+    const bootstrap = adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+    if (typeof bootstrap !== "function") throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_ADAPTER_UNSUPPORTED" });
+    await bootstrap();
+    return;
+  }
+  for (const schema of notificationIntentSchemas) {
+    await adapter.exec(sql(adapter, `CREATE TABLE IF NOT EXISTS [${schema.table}] (${schema.definition})`));
+    for (const index of schema.indexes) {
+      await adapter.exec(sql(adapter, `CREATE INDEX IF NOT EXISTS [${index.name}] ON [${schema.table}] (${index.columns.map((column) => `[${column}]`).join(", ")})`));
+    }
+  }
+}
+async function notificationIntentStorageExists(adapter) {
+  if (adapter.engine === "postgres") {
+    const row2 = await adapter.prepare("SELECT to_regclass('sporades_notification_intents') AS present").get();
+    return Boolean(row2?.present);
+  }
+  const row = await adapter.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='table' AND name='sporades_notification_intents'").get();
+  return Number(row?.n ?? 0) === 1;
+}
+function exactPlainObject(input, allowed) {
+  return input && Object.getPrototypeOf(input) === Object.prototype && Object.getOwnPropertySymbols(input).length === 0 && Object.values(Object.getOwnPropertyDescriptors(input)).every((descriptor) => Object.hasOwn(descriptor, "value")) && Object.keys(input).sort().join(",") === allowed.sort().join(",");
+}
+async function stageNotificationIntent(adapter, database, identity, input, canonicalJson) {
+  const invalid4 = () => {
+    throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_INVALID_INPUT" });
+  };
+  if (!database.mail?.enabled) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
+  const allowed = Object.hasOwn(input ?? {}, "html") ? ["html", "id", "subject", "text", "to"] : ["id", "subject", "text", "to"];
+  if (!exactPlainObject(input, allowed)) invalid4();
+  if (typeof input.id !== "string" || input.id.length === 0 || input.id.includes("\0") || Buffer.byteLength(input.id, "utf8") > 128 || Buffer.from(input.id, "utf8").toString("utf8") !== input.id) invalid4();
+  if (!Array.isArray(input.to) || input.to.length < 1 || input.to.length > 100 || input.to.some((value) => typeof value !== "string")) invalid4();
+  if (typeof input.subject !== "string" || typeof input.text !== "string" || input.html !== void 0 && typeof input.html !== "string") invalid4();
+  if (input.text.length === 0 && (input.html === void 0 || input.html.length === 0)) invalid4();
+  let normalized;
+  try {
+    normalized = database.mail.validateIntent(input);
+  } catch (error) {
+    if (error?.code === "MAIL_DISABLED" || error?.code === "MAIL_CREDENTIAL_MISSING") {
+      throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_EFFECT_UNSUPPORTED" });
+    }
+    invalid4();
+  }
+  if (normalized.to.length !== input.to.length) invalid4();
+  const recipients = normalized.to.map((entry) => entry.email);
+  if (new Set(recipients).size !== recipients.length) invalid4();
+  const payload = {
+    id: input.id,
+    to: recipients,
+    subject: normalized.subject,
+    text: input.text,
+    ...input.html === void 0 ? {} : { html: input.html }
+  };
+  const payloadJson = canonicalJson(payload);
+  if (Buffer.byteLength(payloadJson, "utf8") > 65536) invalid4();
+  const payloadDigest = createHash10("sha256").update(payloadJson).digest("hex");
+  const key = [identity.table, identity.id, identity.operationId, input.id];
+  const existing = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
+  if (existing) {
+    const digest3 = existing.payloadDigest ?? existing.payloaddigest;
+    if (digest3 !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
+    return { id: input.id, state: "staged" };
+  }
+  const acceptedAt = database.clock.now().toISOString();
+  const messageId = `<${randomUUID8()}@sporades.local>`;
+  const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
+  if (inserted.changes === 0) {
+    const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
+    const digest3 = raced?.payloadDigest ?? raced?.payloaddigest;
+    if (digest3 !== payloadDigest) throw Object.assign(new Error("Resource operation could not complete."), { code: "RESOURCE_OPERATION_CONFLICT" });
+    return { id: input.id, state: "staged" };
+  }
+  await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?)")).run(...key, randomBytes6(32).toString("hex"));
+  for (const recipient of payload.to) {
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_recipients] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[state],[attemptCount],[currentAttemptToken],[currentAttemptDeadline],[nextAttemptAt],[lastOutcomeCategory],[updatedAt]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")).run(...key, recipient, "accepted", "0", "", "", acceptedAt, "", acceptedAt);
+  }
+  return { id: input.id, state: "staged" };
+}
+async function readNotificationIntentStatuses(adapter, identity, intentIds) {
+  const intents = [];
+  for (const intentId of intentIds) {
+    const recipients = await adapter.prepare(sql(adapter, "SELECT [recipient],[state],[attemptCount],[nextAttemptAt],[lastOutcomeCategory] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? ORDER BY [recipient]")).all(identity.table, identity.id, identity.operationId, intentId);
+    const publicRecipients = recipients.map((row) => ({
+      recipient: row.recipient,
+      state: row.state,
+      attemptCount: Number(row.attemptCount ?? row.attemptcount ?? 0),
+      nextAttemptAt: (row.nextAttemptAt ?? row.nextattemptat) || null,
+      lastOutcomeCategory: (row.lastOutcomeCategory ?? row.lastoutcomecategory) || null
+    }));
+    const pending = publicRecipients.some((row) => ["accepted", "submitting", "unknown", "retry-wait"].includes(row.state));
+    const allAcknowledged = publicRecipients.length > 0 && publicRecipients.every((row) => row.state === "acknowledged");
+    intents.push({ id: intentId, state: pending ? "pending" : allAcknowledged ? "acknowledged" : "rejected", recipients: publicRecipients });
+  }
+  return intents;
+}
+function notificationRetryDelay(attemptNumber) {
+  return Math.min(3e4 * 2 ** Math.min(Math.max(1, attemptNumber) - 1, 7), NOTIFICATION_MAX_BACKOFF_MS);
+}
+var recipientKey = (row) => [
+  row.resourceTable ?? row.resourcetable,
+  row.resourceId ?? row.resourceid,
+  row.operationId ?? row.operationid,
+  row.intentId ?? row.intentid,
+  row.recipient
+];
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID8()) {
+  const authenticator = createHmac2("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
+  return `${nonce}.${authenticator}`;
+}
+function notificationAttemptTokenIsValid(attemptKey, reservation, messageId) {
+  const token = String(reservation.token ?? "");
+  const separator = token.indexOf(".");
+  if (separator < 1 || token.indexOf(".", separator + 1) !== -1) return false;
+  const nonce = token.slice(0, separator);
+  const actual = token.slice(separator + 1);
+  if (!/^[0-9a-f-]{36}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(actual)) return false;
+  const expected = notificationAttemptToken(attemptKey, reservation.key, reservation.sequence, messageId, nonce).slice(separator + 1);
+  return timingSafeEqual3(Buffer.from(actual, "hex"), Buffer.from(expected, "hex"));
+}
+async function notificationAttemptKey(adapter, key) {
+  const select = () => adapter.prepare(sql(adapter, "SELECT [attemptKey] FROM [sporades_notification_attempt_keys] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+  let row = await select();
+  if (!row) {
+    await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_attempt_keys] ([resourceTable],[resourceId],[operationId],[intentId],[attemptKey]) VALUES (?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key.slice(0, 4), randomBytes6(32).toString("hex"));
+    row = await select();
+  }
+  const attemptKey = row?.attemptKey ?? row?.attemptkey;
+  if (typeof attemptKey !== "string" || !/^[0-9a-f]{64}$/.test(attemptKey)) throw new Error("notification attempt key missing");
+  return attemptKey;
+}
+async function recoverExpiredReservations(database, now2) {
+  await database.adapter.withTransaction(async (tx) => {
+    const expired = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state]='submitting' AND [currentAttemptDeadline]<>'' AND [currentAttemptDeadline]<=? ORDER BY [currentAttemptDeadline]")).all(now2.toISOString());
+    for (const row of expired) {
+      const key = recipientKey(row);
+      const token = row.currentAttemptToken ?? row.currentattempttoken;
+      const attempt = Number(row.attemptCount ?? row.attemptcount);
+      const next = new Date(now2.getTime() + notificationRetryDelay(attempt)).toISOString();
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]='unknown' WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=? AND [outcomeCategory]='submitting'")).run(now2.toISOString(), ...key, token);
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='retry-wait',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]='unknown',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(next, now2.toISOString(), ...key, token);
+    }
+  });
+}
+function notificationReservationWindowMs(database) {
+  const connectionTimeoutMs = Number(database.mail?.connectionTimeoutMs) || 0;
+  const socketTimeoutMs = Number(database.mail?.socketTimeoutMs) || 0;
+  return Math.max(NOTIFICATION_RESERVATION_MS, connectionTimeoutMs + socketTimeoutMs * NOTIFICATION_SMTP_ROUNDTRIP_MARGIN);
+}
+async function reserveDueRecipient(database, now2) {
+  return database.adapter.withTransaction(async (tx) => {
+    const row = await tx.prepare(sql(tx, "SELECT * FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=? ORDER BY [nextAttemptAt],[resourceTable],[resourceId],[operationId],[intentId],[recipient] LIMIT 1")).get(now2.toISOString());
+    if (!row) return null;
+    const key = recipientKey(row);
+    const sequence = Number(row.attemptCount ?? row.attemptcount) + 1;
+    const deadline = new Date(now2.getTime() + notificationReservationWindowMs(database)).toISOString();
+    const intent = await tx.prepare(sql(tx, "SELECT [payloadJson],[messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key.slice(0, 4));
+    if (!intent) throw new Error("notification intent missing");
+    const messageId = intent.messageId ?? intent.messageid;
+    const attemptKey = await notificationAttemptKey(tx, key);
+    const token = notificationAttemptToken(attemptKey, key, sequence, messageId);
+    const changed = await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='submitting',[attemptCount]=?,[currentAttemptToken]=?,[currentAttemptDeadline]=?,[nextAttemptAt]='',[lastOutcomeCategory]='',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state] IN ('accepted','retry-wait','unknown') AND [nextAttemptAt]<=?")).run(String(sequence), token, deadline, now2.toISOString(), ...key, now2.toISOString());
+    if (Number(changed?.changes ?? 0) !== 1) return null;
+    await tx.prepare(sql(tx, "INSERT INTO [sporades_notification_attempts] ([resourceTable],[resourceId],[operationId],[intentId],[recipient],[attemptToken],[sequence],[reservedAt],[deadline],[completedAt],[outcomeCategory]) VALUES (?,?,?,?,?,?,?,?,?,?,?)")).run(...key, token, String(sequence), now2.toISOString(), deadline, "", "submitting");
+    await tx.prepare(sql(tx, "DELETE FROM [sporades_notification_attempts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [completedAt]<>'' AND [attemptToken]<>?")).run(...key, token);
+    return {
+      key,
+      token,
+      sequence,
+      deadline,
+      recipient: row.recipient,
+      payload: JSON.parse(intent.payloadJson ?? intent.payloadjson),
+      messageId
+    };
+  });
+}
+async function reservationIsCurrent(database, reservation) {
+  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [state],[currentAttemptToken] FROM [sporades_notification_recipients] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=?")).get(...reservation.key);
+  return row?.state === "submitting" && (row.currentAttemptToken ?? row.currentattempttoken) === reservation.token;
+}
+async function settleAttempt(database, reservation, outcome) {
+  const now2 = database.clock.now();
+  await database.adapter.withTransaction(async (tx) => {
+    if (outcome === "acknowledged") {
+      const intent = await tx.prepare(sql(tx, "SELECT [messageId] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...reservation.key.slice(0, 4));
+      const messageId = intent?.messageId ?? intent?.messageid;
+      const attemptKey = await notificationAttemptKey(tx, reservation.key);
+      if (typeof messageId !== "string" || typeof attemptKey !== "string" || !notificationAttemptTokenIsValid(attemptKey, reservation, messageId)) return;
+    }
+    const unfinishedOnly = outcome === "acknowledged" ? "" : " AND [outcomeCategory]='submitting'";
+    await tx.prepare(sql(tx, `UPDATE [sporades_notification_attempts] SET [completedAt]=?,[outcomeCategory]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [attemptToken]=?${unfinishedOnly}`)).run(now2.toISOString(), outcome, ...reservation.key, reservation.token);
+    if (outcome === "acknowledged") {
+      await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]='acknowledged',[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]='',[lastOutcomeCategory]='acknowledged',[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]<>'acknowledged' AND CAST([attemptCount] AS INTEGER)>=?")).run(now2.toISOString(), ...reservation.key, reservation.sequence);
+      return;
+    }
+    const state = outcome === "rejected" ? "rejected" : "retry-wait";
+    const next = outcome === "unknown" ? new Date(now2.getTime() + notificationRetryDelay(reservation.sequence)).toISOString() : "";
+    await tx.prepare(sql(tx, "UPDATE [sporades_notification_recipients] SET [state]=?,[currentAttemptToken]='',[currentAttemptDeadline]='',[nextAttemptAt]=?,[lastOutcomeCategory]=?,[updatedAt]=? WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=? AND [recipient]=? AND [state]='submitting' AND [currentAttemptToken]=?")).run(state, next, outcome, now2.toISOString(), ...reservation.key, reservation.token);
+  });
+}
+async function runNotificationIntentDeliveryPass(database) {
+  await recoverExpiredReservations(database, database.clock.now());
+  const reservation = await reserveDueRecipient(database, database.clock.now());
+  if (!reservation) return false;
+  await database.notificationIntentFault?.("after-reservation", reservation);
+  if (!await reservationIsCurrent(database, reservation)) return true;
+  await database.notificationIntentFault?.("before-submit", reservation);
+  if (database.__notificationIntentShutdownAborting) return true;
+  try {
+    await database.mail.sendIntent(
+      { ...reservation.payload, to: [reservation.recipient] },
+      reservation.messageId,
+      (event) => database.log?.emit(event)
+    );
+    await database.notificationIntentFault?.("after-submit", reservation);
+    await settleAttempt(database, reservation, "acknowledged");
+  } catch (error) {
+    if (error?.notificationIntentCrash === true) throw error;
+    if (database.__notificationIntentShutdownAborting) return true;
+    const outcome = error?.smtpOutcome === "rejected" ? "rejected" : "unknown";
+    await settleAttempt(database, reservation, outcome);
+  }
+  return true;
+}
+async function nextWakeAt(database) {
+  const row = await database.adapter.prepare(sql(database.adapter, "SELECT [nextAttemptAt],[currentAttemptDeadline] FROM [sporades_notification_recipients] WHERE [state] IN ('accepted','retry-wait','unknown','submitting') ORDER BY CASE WHEN [state]='submitting' THEN [currentAttemptDeadline] ELSE [nextAttemptAt] END LIMIT 1")).get();
+  return row ? (row.currentAttemptDeadline ?? row.currentattemptdeadline) || (row.nextAttemptAt ?? row.nextattemptat) : null;
+}
+function startNotificationIntentWorker(database) {
+  database.__notificationIntentShutdownAborting = false;
+  database.__notificationIntentStopped = false;
+  const scheduleRecoveryScan = () => {
+    if (database.__notificationIntentStopped || database.__notificationIntentTimer) return;
+    const timer = setTimeout(() => {
+      database.__notificationIntentTimer = null;
+      void run2().catch(() => {
+      });
+    }, NOTIFICATION_RECOVERY_SCAN_MS);
+    timer.unref?.();
+    database.__notificationIntentTimer = timer;
+    database.__notificationIntentNativeTimer = true;
+  };
+  const run2 = async () => {
+    if (database.__notificationIntentStopped || database.__notificationIntentWorkerPromise) return;
+    const work = (async () => {
+      try {
+        if (database.__notificationIntentStorageVerified !== true) {
+          await ensureNotificationIntentStorage(database.adapter);
+          database.__notificationIntentStorageVerified = true;
+        }
+        while (!database.__notificationIntentStopped && await runNotificationIntentDeliveryPass(database)) {
+        }
+        if (database.__notificationIntentStopped) return;
+        const wakeAt = await nextWakeAt(database);
+        if (database.__notificationIntentStopped) return;
+        const delay = wakeAt ? Math.max(0, Date.parse(wakeAt) - database.clock.now().getTime()) : null;
+        if (delay === null || !Number.isFinite(delay) || delay >= NOTIFICATION_RECOVERY_SCAN_MS) scheduleRecoveryScan();
+        else {
+          database.__notificationIntentTimer = database.clock.setTimer(() => {
+            database.__notificationIntentTimer = null;
+            void run2().catch(() => {
+            });
+          }, delay);
+          database.__notificationIntentNativeTimer = false;
+        }
+      } catch (error) {
+        scheduleRecoveryScan();
+        throw error;
+      }
+    })();
+    database.__notificationIntentWorkerPromise = work;
+    try {
+      await work;
+    } finally {
+      if (database.__notificationIntentWorkerPromise === work) database.__notificationIntentWorkerPromise = null;
+    }
+  };
+  return run2();
+}
+function stopNotificationIntentWorker(database) {
+  database.__notificationIntentStopped = true;
+  if (database.__notificationIntentTimer) {
+    if (database.__notificationIntentNativeTimer) clearTimeout(database.__notificationIntentTimer);
+    else database.clock.clearTimer(database.__notificationIntentTimer);
+  }
+  database.__notificationIntentTimer = null;
+  database.__notificationIntentNativeTimer = false;
+  return database.__notificationIntentWorkerPromise;
+}
+
+// src/resource-runtime.ts
+var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
+  sqlite: "supported",
+  postgres: "supported",
+  libsql: "unsupported"
+});
+function resourceAdapterSupported(adapter) {
+  return RESOURCE_ADAPTER_SUPPORT[adapter.engine] === "supported";
+}
+var resourceAbort = Symbol("resourceAbort");
+function resourceAbortError() {
+  return Object.assign(new Error("Job aborted."), { name: "AbortError", code: "ABORTED", [resourceAbort]: true });
+}
+function isResourceAbortError(error) {
+  return error?.[resourceAbort] === true;
+}
+function resourceError(code2) {
+  return Object.assign(new Error(code2 === "RESOURCE_BUSY" ? "Resource transaction is busy." : "Resource operation could not complete."), {
+    code: code2,
+    ...code2 === "RESOURCE_BUSY" ? { retryable: true } : {}
+  });
+}
+async function acquirePostgresResourceBootstrapLock(adapter) {
+  if (adapter.engine !== "postgres") return;
+  try {
+    const row = await adapter.prepare(adapter.dialect.sql("SELECT pg_try_advisory_xact_lock(hashtext(?)) AS [acquired]")).get("sporades.resource.bootstrap.v1");
+    const acquired = row?.acquired ?? row?.pg_try_advisory_xact_lock;
+    if (acquired !== true && acquired !== "t" && acquired !== 1) throw resourceError("RESOURCE_BUSY");
+  } catch (error) {
+    if (error?.code === "RESOURCE_BUSY" || error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+    throw error;
+  }
+}
+function resourceCanonicalJson(value) {
+  const ancestors = /* @__PURE__ */ new Set();
+  const visit = (input, depth2) => {
+    if (depth2 > 64) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (input === null || typeof input === "boolean" || typeof input === "string") return input;
+    if (typeof input === "number" && Number.isFinite(input)) return input === 0 ? 0 : input;
+    if (typeof input !== "object" || ancestors.has(input)) throw resourceError("RESOURCE_INVALID_INPUT");
+    const prototype = Object.getPrototypeOf(input);
+    if (!Array.isArray(input) && prototype !== Object.prototype && prototype !== null) throw resourceError("RESOURCE_INVALID_INPUT");
+    if (Object.getOwnPropertySymbols(input).length) throw resourceError("RESOURCE_INVALID_INPUT");
+    ancestors.add(input);
+    const output = Array.isArray(input) ? [] : /* @__PURE__ */ Object.create(null);
+    const keys = Array.isArray(input) ? Array.from({ length: input.length }, (_2, i) => String(i)) : Object.keys(input).sort();
+    if (Array.isArray(input) && Object.keys(input).length !== input.length) throw resourceError("RESOURCE_INVALID_INPUT");
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !Object.hasOwn(descriptor, "value")) throw resourceError("RESOURCE_INVALID_INPUT");
+      output[key] = visit(descriptor.value, depth2 + 1);
+    }
+    ancestors.delete(input);
+    return output;
+  };
+  const json2 = JSON.stringify(visit(value, 0));
+  if (Buffer.byteLength(json2, "utf8") > 65536) throw resourceError("RESOURCE_INVALID_INPUT");
+  return json2;
+}
+function boundedIdentity(value) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || Buffer.from(value, "utf8").toString("utf8") !== value) throw resourceError("RESOURCE_INVALID_INPUT");
+  return value;
+}
+function optionsSnapshot(options, status) {
+  if (!options || Object.getPrototypeOf(options) !== Object.prototype || Object.getOwnPropertySymbols(options).length || Object.values(Object.getOwnPropertyDescriptors(options)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options).sort().join(",") !== (status ? "operationId,resource" : "input,operationId,resource") || !options.resource || Object.getPrototypeOf(options.resource) !== Object.prototype || Object.getOwnPropertySymbols(options.resource).length || Object.values(Object.getOwnPropertyDescriptors(options.resource)).some((descriptor) => !Object.hasOwn(descriptor, "value")) || Object.keys(options.resource).sort().join(",") !== "id,table") throw resourceError("RESOURCE_INVALID_INPUT");
+  const table = boundedIdentity(options.resource.table);
+  const id2 = boundedIdentity(options.resource.id);
+  const operationId = boundedIdentity(options.operationId);
+  return { table, id: id2, operationId, digest: status ? null : createHash11("sha256").update(resourceCanonicalJson(options.input)).digest("hex") };
+}
+function resourceReceiptRow(adapter, row) {
+  if (!row || adapter.engine !== "postgres") return row;
+  return {
+    ...row,
+    inputDigest: row.inputDigest ?? row.inputdigest,
+    actorDigest: row.actorDigest ?? row.actordigest,
+    resultJson: row.resultJson ?? row.resultjson,
+    intentIdsJson: row.intentIdsJson ?? row.intentidsjson
+  };
+}
+async function upgradeFoldedResourceColumns(adapter, table, columns) {
+  if (adapter.engine !== "postgres") return;
+  const readColumns = async () => new Set((await adapter.prepare(adapter.dialect.sql(
+    "SELECT [column_name] FROM [information_schema].[columns] WHERE [table_schema]=current_schema() AND [table_name]=?"
+  )).all(table)).map((row) => row.column_name));
+  let existing = await readColumns();
+  if (!columns.some((column) => existing.has(column.toLowerCase()) && !existing.has(column))) return;
+  await adapter.exec("SAVEPOINT sporades_resource_schema_upgrade");
+  try {
+    await adapter.exec(`LOCK TABLE ${adapter.dialect.quoteIdentifier(table)} IN ACCESS EXCLUSIVE MODE`);
+    existing = await readColumns();
+    for (const column of columns) {
+      const folded = column.toLowerCase();
+      if (existing.has(folded) && !existing.has(column)) {
+        await adapter.exec(`ALTER TABLE ${adapter.dialect.quoteIdentifier(table)} RENAME COLUMN ${adapter.dialect.quoteIdentifier(folded)} TO ${adapter.dialect.quoteIdentifier(column)}`);
+        existing.delete(folded);
+        existing.add(column);
+      }
+    }
+    await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+  } catch (error) {
+    try {
+      await adapter.exec("ROLLBACK TO SAVEPOINT sporades_resource_schema_upgrade");
+      await adapter.exec("RELEASE SAVEPOINT sporades_resource_schema_upgrade");
+    } catch {
+    }
+    if (error?.code === "55P03" || error?.code === "57014") throw resourceError("RESOURCE_BUSY");
+    throw error;
+  }
+}
+var unsupportedResources = Object.freeze({
+  async run() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  },
+  async status() {
+    throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+  }
+});
+function bindOuterResources(database, context2, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeActive = false;
+  let admission = false;
+  let touched = false;
+  let terminalError;
+  let outerDeadline = 0;
+  let watchdog;
+  let rejectOuterAbort = () => {
+  };
+  const outerAborted = new Promise((_2, reject) => {
+    rejectOuterAbort = reject;
+  });
+  void outerAborted.catch(() => {
+  });
+  const parentDb = context2.db;
+  const parentJobs = context2.jobs;
+  const pending = /* @__PURE__ */ new Set();
+  const executions = /* @__PURE__ */ new Set();
+  const normalizeStorageError = (error) => error?.code === "RESOURCE_BUSY" || error?.code === "SQLITE_BUSY" || error?.errcode === 5 || error?.errcode === 6 ? resourceError("RESOURCE_BUSY") : error?.code === "ERR_SQLITE_ERROR" || error?.errcode !== void 0 ? resourceError("RESOURCE_STORAGE_ERROR") : error;
+  const normalizeDatabaseOperationError = (error, definiteStorageOperation = false) => {
+    if (typeof error?.code === "string" && error.code.startsWith("RESOURCE_")) return normalizeStorageError(error);
+    if (error?.code === "55P03" || error?.code === "57014") return resourceError("RESOURCE_BUSY");
+    const normalized = normalizeStorageError(error);
+    if (normalized !== error) return normalized;
+    if (database.adapter.engine === "postgres" && (definiteStorageOperation || typeof error?.code === "string" && (/^[0-9A-Z]{5}$/.test(error.code) || ["ECONNRESET", "ECONNREFUSED", "EPIPE", "ETIMEDOUT"].includes(error.code)) || error?.message === "database is not open")) return resourceError("RESOURCE_STORAGE_ERROR");
+    return error;
+  };
+  const track = (operation) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      terminalError ??= normalizeDatabaseOperationError(error);
+      throw error;
+    }
+    if (!value || typeof value.then !== "function") return value;
+    const promise = Promise.resolve(value).catch((error) => {
+      const normalized = normalizeDatabaseOperationError(error);
+      terminalError ??= normalized;
+      throw normalized;
+    });
+    pending.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
+  const trackExecution = (operation, poison = true) => {
+    let value;
+    try {
+      value = operation();
+    } catch (error) {
+      if (poison) terminalError ??= error;
+      throw error;
+    }
+    const promise = Promise.resolve(value);
+    executions.add(promise);
+    void promise.catch(() => {
+    });
+    return promise;
+  };
+  const actorDigest = resourceActorDigest(context2, false);
+  const guardCapability = (name2, value) => wrapCapability(value, (path26) => {
+    if (used) throw resourceError(!invocationActive || !scopeActive || !admission ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+    if (!["where", "orderBy", "limit"].includes(path26.at(-1))) touched = true;
+  });
+  for (const name2 of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context2[name2]) continue;
+    context2[name2] = guardCapability(name2, context2[name2]);
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+    if (used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true) throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeActive = true;
+    admission = true;
+    hooks.resourceEntered?.();
+    (database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter)[Symbol.for("sporades.database.resourceOuterTransaction")] = true;
+    const deadline = hooks.startedAt + 3e4;
+    outerDeadline = deadline;
+    const beforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
+    const checks = database.adapter[beforeCommitChecks] ?? (database.adapter[beforeCommitChecks] = []);
+    checks.push(() => {
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    });
+    const controller = new AbortController();
+    const revoke = (error) => {
+      terminalError ??= error;
+      scopeActive = false;
+      admission = false;
+      controller.abort(terminalError);
+      rejectOuterAbort(terminalError);
+    };
+    const expire = () => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = database.adapter[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    };
+    const assertLive = (requireAdmission = false) => {
+      if (!invocationActive || !scopeActive || requireAdmission && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (database.clock.now().getTime() >= deadline - (admission ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    watchdog ??= database.clock.setTimer(expire, Math.max(0, deadline - database.clock.now().getTime()));
+    let acquired = false;
+    try {
+      assertLive(true);
+      try {
+        if (database.adapter.engine === "postgres") {
+          await database.adapter.exec("SET LOCAL lock_timeout = '100ms'");
+          const bootstrap = database.adapter[Symbol.for("sporades.database.resourceBootstrapMechanics")];
+          if (typeof bootstrap !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          if (database.adapter[Symbol.for("sporades.database.resourceSchemaPublished")] !== true) {
+            await bootstrap(controller.signal);
+          }
+          const consume = database.adapter[Symbol.for("sporades.database.resourceConsumptionMechanics")];
+          if (typeof consume !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+          await Reflect.apply(consume, database.adapter, []);
+          await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_locks] ([resourceTable], [resourceId]) VALUES (?, ?) ON CONFLICT ([resourceTable], [resourceId]) DO NOTHING")).run(identity.table, identity.id);
+          const resourceLock = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [resourceTable] FROM [sporades_resource_locks] WHERE [resourceTable]=? AND [resourceId]=? FOR UPDATE NOWAIT")).get(identity.table, identity.id);
+          if (!resourceLock) throw resourceError("RESOURCE_STORAGE_ERROR");
+          const anchor = await database.adapter.prepare(
+            `SELECT ${database.adapter.dialect.quoteIdentifier("id")} FROM ${database.adapter.dialect.quoteIdentifier(identity.table)} WHERE ${database.adapter.dialect.quoteIdentifier("id")}=? FOR UPDATE NOWAIT`
+          ).get(identity.id);
+          if (!anchor) throw resourceError("RESOURCE_STORAGE_ERROR");
+        } else {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_outer_fence] ([id] INTEGER PRIMARY KEY, [epoch] INTEGER NOT NULL)"));
+          await database.adapter.prepare(database.adapter.dialect.sql("INSERT OR IGNORE INTO [sporades_resource_outer_fence] ([id], [epoch]) VALUES (1, 0)")).run();
+          await database.adapter.prepare(database.adapter.dialect.sql("UPDATE [sporades_resource_outer_fence] SET [epoch]=[epoch]+1 WHERE [id]=1")).run();
+        }
+      } catch (error) {
+        if (terminalError) throw terminalError;
+        const normalized = error?.code === "RESOURCE_BUSY" || error?.errcode === 5 || error?.errcode === 6 || error?.code === "SQLITE_BUSY" || error?.code === "55P03" || error?.code === "57014" ? resourceError("RESOURCE_BUSY") : resourceError("RESOURCE_STORAGE_ERROR");
+        if (database.adapter.engine === "postgres") terminalError ??= normalized;
+        throw normalized;
+      }
+      acquired = true;
+      assertLive(true);
+      try {
+        await hooks.authorize(context2, parentDb, identity);
+      } catch (error) {
+        throw database.adapter.engine === "postgres" ? normalizeDatabaseOperationError(error) : error;
+      }
+      if (database.adapter.engine === "postgres") {
+        await database.adapter.exec("SET LOCAL lock_timeout = DEFAULT");
+      }
+      assertLive(true);
+      let receipt2;
+      try {
+        if (database.adapter.engine !== "postgres") {
+          await database.adapter.exec(database.adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(database.adapter, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(database.adapter);
+        }
+        receipt2 = resourceReceiptRow(database.adapter, await database.adapter.prepare(database.adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
+      } catch (error) {
+        throw normalizeDatabaseOperationError(error, true);
+      }
+      if (receipt2) {
+        if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+        if (!status) return JSON.parse(receipt2.resultJson);
+        const intentIds2 = JSON.parse(receipt2.intentIdsJson);
+        return {
+          state: "committed",
+          result: JSON.parse(receipt2.resultJson),
+          intentIds: intentIds2,
+          ...intentIds2.length ? { intents: await readNotificationIntentStatuses(database.adapter, identity, intentIds2) } : {}
+        };
+      }
+      if (status) return { state: "absent" };
+      const scopeDb = wrapCapability(parentDb, () => assertLive(true), [], /* @__PURE__ */ new WeakMap(), track);
+      const logs = [];
+      const intentIds = [];
+      const scope = Object.freeze({
+        app: database.app,
+        db: scopeDb,
+        jobs: Object.freeze({ enqueue: (...args) => track(() => {
+          assertLive(true);
+          return parentJobs.enqueue(...args);
+        }) }),
+        log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+          assertLive(true);
+          if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+          logs.push(level);
+        }]))),
+        signal: controller.signal,
+        notifications: Object.freeze({ accept: (input) => {
+          assertLive(true);
+          return track(async () => {
+            const staged = await stageNotificationIntent(database.adapter, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          });
+        } })
+      });
+      let result;
+      try {
+        result = await Promise.race([Promise.resolve().then(() => callback(scope)), outerAborted]);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      if (terminalError) throw terminalError;
+      admission = false;
+      let resultJson;
+      try {
+        resultJson = resourceCanonicalJson(result);
+        await Promise.all([...pending]);
+        if (terminalError) throw terminalError;
+        await hooks.drain(context2);
+        await hooks.stageLogs?.(logs);
+      } catch (error) {
+        terminalError ??= error;
+        throw error;
+      }
+      assertLive();
+      try {
+        intentIds.sort();
+        await database.adapter.prepare(database.adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
+      } catch (error) {
+        throw normalizeDatabaseOperationError(error, true);
+      }
+      assertLive();
+      return JSON.parse(resultJson);
+    } catch (error) {
+      const normalized = normalizeStorageError(error);
+      if (acquired || normalized?.code === "RESOURCE_STORAGE_ERROR") terminalError ??= normalized;
+      throw normalized;
+    } finally {
+      scopeActive = false;
+      admission = false;
+      if (!controller.signal.aborted) controller.abort();
+    }
+  };
+  context2.resources = Object.freeze({ run: (options, callback) => trackExecution(() => execute(options, callback, false)), status: (options) => trackExecution(() => execute(options, void 0, true), false) });
+  const release = () => {
+    invocationActive = false;
+    if (watchdog !== void 0) database.clock.clearTimer(watchdog);
+  };
+  release.assertOuterLive = () => {
+    if (terminalError) throw terminalError;
+    if (outerDeadline && database.clock.now().getTime() >= outerDeadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+  };
+  release.aborted = () => outerAborted;
+  release.drain = async () => {
+    await Promise.allSettled([...executions]);
+    if (terminalError) throw terminalError;
+  };
+  release.race = (operation) => Promise.race([operation, outerAborted]);
+  release.guardCapability = guardCapability;
+  return release;
+}
+function wrapCapability(value, before, path26 = [], cache = /* @__PURE__ */ new WeakMap(), afterCall) {
+  if (!value || typeof value !== "object") return value;
+  if (cache.has(value)) return cache.get(value);
+  const functions = /* @__PURE__ */ new Map();
+  const proxy = new Proxy({}, {
+    ownKeys: () => Reflect.ownKeys(value),
+    set: (_target, key, member) => Reflect.set(value, key, member),
+    has: (_target, key) => Reflect.has(value, key),
+    getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+    get(_target, key) {
+      const member = Reflect.get(value, key);
+      if (typeof key !== "string") return member;
+      if (typeof member === "function") {
+        if (functions.has(key)) return functions.get(key);
+        const wrapped = (...args) => {
+          const next = [...path26, key];
+          before(next);
+          const invoke = () => Reflect.apply(member, value, args);
+          const result = afterCall && !["where", "orderBy", "limit"].includes(key) ? afterCall(invoke) : invoke();
+          return ["where", "orderBy", "limit"].includes(key) ? wrapCapability(result, before, path26, cache, afterCall) : result;
+        };
+        functions.set(key, wrapped);
+        return wrapped;
+      }
+      return wrapCapability(member, before, [...path26, key], cache, afterCall);
+    }
+  });
+  cache.set(value, proxy);
+  return proxy;
+}
+function resourceActorDigest(context2, privileged) {
+  const { clientAddress: _requestAddress, ...auth } = context2.auth;
+  return createHash11("sha256").update(resourceCanonicalJson({ auth, credential: context2.credential ?? null, privileged })).digest("hex");
+}
+function bindJobResources(database, context2, claim, hooks) {
+  let invocationActive = true;
+  let used = false;
+  let scopeRunning = false;
+  let touched = false;
+  const privileged = hooks.privileged === true;
+  const actorDigest = resourceActorDigest(context2, privileged);
+  for (const name2 of ["db", "log", "files", "mail", "ai", "payments", "messages", "privileged", "jobs", "schedules", "teams", "teamBilling", "accessKeys", "serviceUsers", "serverAuth", "lifecycle"]) {
+    if (!context2[name2]) continue;
+    context2[name2] = wrapCapability(context2[name2], (path26) => {
+      if (used && (name2 !== "log" || scopeRunning || !invocationActive)) throw resourceError(!invocationActive ? "RESOURCE_SCOPE_INACTIVE" : ["db", "privileged", "jobs"].includes(name2) ? "RESOURCE_CONTEXT_UNSUPPORTED" : "RESOURCE_EFFECT_UNSUPPORTED");
+      if (name2 !== "log" && !["where", "orderBy", "limit"].includes(path26.at(-1))) touched = true;
+    });
+  }
+  const execute = async (options, callback, status) => {
+    if (!invocationActive || used || touched) throw resourceError("RESOURCE_CONTEXT_UNSUPPORTED");
+    if (!resourceAdapterSupported(database.adapter) || database.adapter.engine === "postgres" && database.adapter[Symbol.for("sporades.database.resourceTransactionEligible")] !== true || typeof database.adapter.withResourceTransaction !== "function") throw resourceError("RESOURCE_ADAPTER_UNSUPPORTED");
+    const identity = optionsSnapshot(options, status);
+    if (!status && typeof callback !== "function") throw resourceError("RESOURCE_INVALID_INPUT");
+    if (!database.schema.tables.some((table) => table.name === identity.table)) throw resourceError("RESOURCE_INVALID_INPUT");
+    used = true;
+    scopeRunning = true;
+    let scopeContext;
+    let engineCommitted = false;
+    let active = true;
+    let admission = true;
+    let terminalError;
+    const controller = new AbortController();
+    const deadline = Date.parse(claim.leaseExpiresAt);
+    const pending = /* @__PURE__ */ new Set();
+    const logs = [];
+    let resourceAdapter;
+    let rejectAbort = () => {
+    };
+    const aborted = new Promise((_2, reject) => {
+      rejectAbort = reject;
+    });
+    void aborted.catch(() => {
+    });
+    const revoke = (error) => {
+      terminalError ??= error;
+      active = false;
+      admission = false;
+      controller.abort(terminalError);
+      rejectAbort(terminalError);
+    };
+    const assertLive = (admit = false) => {
+      if (!active || admit && !admission) throw resourceError("RESOURCE_SCOPE_INACTIVE");
+      if (terminalError) throw terminalError;
+      if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+      if (database.clock.now().getTime() >= deadline - (admit ? 1e3 : 0)) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+    };
+    const abort = () => revoke(resourceAbortError());
+    context2.signal?.addEventListener("abort", abort, { once: true });
+    const watchdog = database.clock.setTimer(() => {
+      const error = resourceError("RESOURCE_DEADLINE_EXCEEDED");
+      terminalError ??= error;
+      const cancel = resourceAdapter?.[Symbol.for("sporades.database.resourceCancelActiveQuery")];
+      if (typeof cancel === "function") void Promise.resolve(cancel()).catch(() => {
+      });
+      revoke(error);
+    }, Math.max(0, deadline - database.clock.now().getTime()));
+    const checkClaim = async (adapter, entry = false) => {
+      assertLive(entry);
+      const row = await adapter.prepare(adapter.dialect.sql(database.adapter.engine === "postgres" ? "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT" : "SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
+      if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+      if (row.cancelRequestedAt) throw resourceAbortError();
+      assertLive(entry);
+    };
+    const track = (operation) => {
+      assertLive(true);
+      const promise = Promise.resolve().then(() => {
+        assertLive();
+        return operation();
+      });
+      pending.add(promise);
+      void promise.catch((error) => {
+        terminalError ??= error;
+      });
+      return promise;
+    };
+    try {
+      assertLive(true);
+      const result = await database.adapter.withResourceTransaction(async (adapter) => {
+        resourceAdapter = adapter;
+        const guarded = Object.create(adapter);
+        guarded.prepare = (sql2) => {
+          assertLive();
+          const statement = adapter.prepare(sql2);
+          return Object.fromEntries(["get", "all", "run", "columns"].map((method) => [method, (...args) => {
+            assertLive();
+            return statement[method](...args);
+          }]));
+        };
+        guarded.exec = (sql2) => {
+          assertLive();
+          return adapter.exec(sql2);
+        };
+        await checkClaim(guarded, true);
+        scopeContext = hooks.createContext(guarded, controller.signal, privileged);
+        await Promise.race([hooks.authorize(scopeContext, identity), aborted]);
+        if (database.adapter.engine === "postgres") await guarded.exec("SET LOCAL lock_timeout = DEFAULT");
+        assertLive(true);
+        if (database.adapter.engine !== "postgres") {
+          await guarded.exec(adapter.dialect.sql("CREATE TABLE IF NOT EXISTS [sporades_resource_receipts] ([resourceTable] TEXT NOT NULL, [resourceId] TEXT NOT NULL, [operationId] TEXT NOT NULL, [inputDigest] TEXT NOT NULL, [actorDigest] TEXT NOT NULL, [resultJson] TEXT NOT NULL, [intentIdsJson] TEXT NOT NULL, [committedAt] TEXT NOT NULL, PRIMARY KEY ([resourceTable], [resourceId], [operationId]))"));
+          await upgradeFoldedResourceColumns(guarded, "sporades_resource_receipts", ["resourceTable", "resourceId", "operationId", "inputDigest", "actorDigest", "resultJson", "intentIdsJson", "committedAt"]);
+          await ensureNotificationIntentStorage(guarded);
+        }
+        const receipt2 = resourceReceiptRow(database.adapter, await guarded.prepare(adapter.dialect.sql("SELECT * FROM [sporades_resource_receipts] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=?")).get(identity.table, identity.id, identity.operationId));
+        if (receipt2) {
+          if (receipt2.actorDigest !== actorDigest || !status && receipt2.inputDigest !== identity.digest) throw resourceError("RESOURCE_OPERATION_CONFLICT");
+          await checkClaim(guarded);
+          if (!status) return JSON.parse(receipt2.resultJson);
+          const intentIds2 = JSON.parse(receipt2.intentIdsJson);
+          return {
+            state: "committed",
+            result: JSON.parse(receipt2.resultJson),
+            intentIds: intentIds2,
+            ...intentIds2.length ? { intents: await readNotificationIntentStatuses(guarded, identity, intentIds2) } : {}
+          };
+        }
+        if (status) {
+          await checkClaim(guarded);
+          return { state: "absent" };
+        }
+        const db = Object.fromEntries(Object.entries(scopeContext.db).map(([name2, table]) => {
+          const wrapTable = (api) => Object.fromEntries(Object.keys(api).map((method) => [method, (...args) => {
+            assertLive(true);
+            if (["where", "orderBy", "limit"].includes(method)) return wrapTable(api[method](...args));
+            return track(() => api[method](...args));
+          }]));
+          return [name2, wrapTable(table)];
+        }));
+        const intentIds = [];
+        const scope = Object.freeze({
+          app: database.app,
+          db: Object.freeze(db),
+          signal: controller.signal,
+          jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
+          log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
+            assertLive(true);
+            if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT");
+            logs.push(level);
+          }]))),
+          notifications: Object.freeze({ accept: (input) => track(async () => {
+            const staged = await stageNotificationIntent(guarded, database, identity, input, resourceCanonicalJson);
+            if (!intentIds.includes(staged.id)) intentIds.push(staged.id);
+            return staged;
+          }) })
+        });
+        const value = await Promise.race([Promise.resolve().then(() => callback(scope)), aborted]);
+        admission = false;
+        await Promise.race([Promise.all([...pending]), aborted]);
+        await Promise.race([hooks.drain(scopeContext), aborted]);
+        const resultJson = resourceCanonicalJson(value);
+        await hooks.stageLogs(scopeContext, logs);
+        await checkClaim(guarded);
+        intentIds.sort();
+        await guarded.prepare(adapter.dialect.sql("INSERT INTO [sporades_resource_receipts] VALUES (?,?,?,?,?,?,?,?)")).run(identity.table, identity.id, identity.operationId, identity.digest, actorDigest, resultJson, JSON.stringify(intentIds), database.clock.now().toISOString());
+        await checkClaim(guarded);
+        active = false;
+        return JSON.parse(resultJson);
+      }, database.adapter.engine === "postgres" ? async (adapter) => {
+        if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = await adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? FOR UPDATE NOWAIT")).get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      } : (adapter) => {
+        if (context2.signal?.aborted || database.__jobStopped) throw resourceAbortError();
+        if (database.clock.now().getTime() >= deadline) throw resourceError("RESOURCE_DEADLINE_EXCEEDED");
+        const row = adapter.prepare(adapter.dialect.sql("SELECT [status], [claimToken], [leaseExpiresAt], [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=?")).get(claim.id);
+        if (!row || row.status !== "running" || row.claimToken !== claim.claimToken || row.leaseExpiresAt !== claim.leaseExpiresAt) throw resourceError("RESOURCE_CLAIM_LOST");
+        if (row.cancelRequestedAt) throw resourceAbortError();
+      }, { table: identity.table, id: identity.id }, controller.signal, database.adapter.engine === "postgres");
+      engineCommitted = true;
+      active = false;
+      await hooks.committed(scopeContext, logs);
+      if (database.adapter.engine === "postgres") {
+        const cancellation = await database.adapter.prepare(database.adapter.dialect.sql(
+          // A plain MVCC read could take its snapshot while the cancellation
+          // updater is still queued on the resource transaction's former row
+          // lock. The locking read follows PostgreSQL's row-lock wait order and
+          // rechecks the updated tuple before this worker may publish success.
+          "SELECT [cancelRequestedAt] FROM [sporades_jobs] WHERE [id]=? AND [status]='running' AND [claimToken]=? FOR UPDATE"
+        )).get(claim.id, claim.claimToken);
+        if (cancellation?.cancelRequestedAt) throw resourceAbortError();
+      }
+      return result;
+    } catch (error) {
+      active = false;
+      if (engineCommitted) {
+        if (isResourceAbortError(error)) throw error;
+        throw resourceError("RESOURCE_STORAGE_ERROR");
+      }
+      hooks.rolledBack(scopeContext);
+      throw error;
+    } finally {
+      scopeRunning = false;
+      active = false;
+      admission = false;
+      if (!controller.signal.aborted) controller.abort();
+      resourceAdapter = void 0;
+      database.clock.clearTimer(watchdog);
+      context2.signal?.removeEventListener("abort", abort);
+      hooks.release(scopeContext);
+    }
+  };
+  context2.resources = Object.freeze({
+    run: (options, callback) => execute(options, callback, false),
+    status: (options) => execute(options, void 0, true)
+  });
+  return () => {
+    invocationActive = false;
+  };
+}
+
+// src/runtime-log-policy.ts
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function structuredCredentialEnd(text3, start) {
+  const closers = [];
+  let quote2 = "", quoteSlashes = 0;
+  for (let index = start; index < text3.length; index++) {
+    const char = text3[index];
+    if (char === "\\") {
+      let end = index;
+      while (text3[end] === "\\") end++;
+      const slashes = end - index;
+      if (quoteSlashes) {
+        if (slashes % (2 * (quoteSlashes + 1)) === quoteSlashes && text3[end] === quote2) {
+          quote2 = "";
+          quoteSlashes = 0;
+        }
+      } else if (!quote2 && /["'`]/.test(text3[end] ?? "")) {
+        quote2 = text3[end];
+        quoteSlashes = slashes;
+      }
+      index = quote2 && !quoteSlashes && slashes % 2 === 0 ? end - 1 : end;
+      continue;
+    }
+    if (quote2) {
+      if (!quoteSlashes && char === quote2) quote2 = "";
+    } else if (char === '"' || char === "'" || char === "`") quote2 = char;
+    else if (char === "[") closers.push("]");
+    else if (char === "{") closers.push("}");
+    else if (char === "]" || char === "}") {
+      if (closers.pop() !== char) return text3.length;
+      if (!closers.length) return index + 1;
+    }
+  }
+  return text3.length;
+}
+function stripDiagnosticUrlSuffixes(text3) {
+  let safe = "", copied = 0, scanned = 0;
+  const starts = /(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|(?<![\p{L}\p{M}\p{N}])(?:\/{1,2}|\.\.?\/)/giu;
+  for (const match of text3.matchAll(starts)) {
+    if (match.index < scanned) continue;
+    let end = match.index + match[0].length;
+    while (end < text3.length && !/[\s?#<>"`]/.test(text3[end]) && !(text3[end] === "%" && /^%(?:3f|23)/i.test(text3.slice(end, end + 3)))) end++;
+    scanned = end;
+    if (!/^(?:[?#]|%3f|%23)/i.test(text3.slice(end, end + 3))) continue;
+    safe += text3.slice(copied, end);
+    while (end < text3.length && text3[end] !== "\r" && text3[end] !== "\n") end++;
+    copied = scanned = end;
+  }
+  return safe + text3.slice(copied);
+}
+function redactDiagnosticText(value, serverEnv = {}) {
+  let safe = stripDiagnosticUrlSuffixes(value).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+  for (const secret of Object.values(serverEnv)) {
+    if (typeof secret !== "string" || !secret.length) continue;
+    safe = safe.split(secret).join("[REDACTED]");
+    const stripped = stripDiagnosticUrlSuffixes(secret).replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[REDACTED]@");
+    if (stripped && stripped !== secret) safe = safe.split(stripped).join("[REDACTED]");
+  }
+  if (/-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(safe)) return "[REDACTED]";
+  safe = safe.replace(/\b(?:authorization|cookie)\s*[:=](?![ \t]*["'])[^\r\n]*/gi, "[REDACTED]");
+  let redacted = "", cursor = 0;
+  for (const match of safe.matchAll(/(["']?)([\w-]+)\1\s*[:=]\s*/g)) {
+    if (match.index < cursor || !(isSensitiveLogKey(match[2]) || /^(?:api[_-]?key|request)$/i.test(match[2]))) continue;
+    const start = match.index + match[0].length;
+    const value2 = safe.slice(start).match(/^(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$))|[^\s,;]+)/m);
+    redacted += safe.slice(cursor, match.index) + "[REDACTED]";
+    cursor = safe[start] === "[" || safe[start] === "{" ? structuredCredentialEnd(safe, start) : start + (value2?.[0].length ?? 0);
+  }
+  safe = (redacted + safe.slice(cursor)).replace(/\b(?:Basic|Bearer)\s+[^\s,;"']+/gi, "[REDACTED]");
+  return safe;
+}
+
+// src/stored-value-coding.ts
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
+}
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
+    }
+  }
+  return output;
+}
+function serializeFieldValue(field, value) {
+  if (value === void 0) {
+    return null;
+  }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
+  if (value === null) {
+    return null;
+  }
+  if (field?.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  if (field?.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
+  if (field?.kind === "Date") {
+    return normalizeDateValue(value, field.name);
+  }
+  if (field?.kind === "Reference") {
+    return String(value);
+  }
+  return String(value ?? "");
+}
+function normalizeDateValue(value, fieldName) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw dateValueError(fieldName);
+    }
+    return value.toISOString();
+  }
+  if (typeof value !== "string") {
+    throw dateValueError(fieldName);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw dateValueError(fieldName);
+  }
+  return parsed.toISOString();
+}
+function toSqlNumber(value, fieldName) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
+  }
+  return value;
+}
+function dateValueError(fieldName) {
+  return commandError(
+    `Invalid date value for field: ${fieldName}`,
+    "Pass an ISO 8601 date string or JavaScript Date value."
+  );
+}
+
+// src/acl-runtime.ts
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
+function createPrivilegedAuditEmitter(log) {
+  return {
+    emit(details) {
+      return emitPrivilegedAuditEvent(log, details);
+    }
+  };
+}
+function emitPrivilegedAuditEvent(target, details = {}) {
+  const log = target?.log?.emit ? target.log : target;
+  if (!log?.emit) {
+    throw new Error("Privileged audit events require a runtime log sink.");
+  }
+  return log.emit(createPrivilegedAuditLogInput(details));
+}
+async function emitPrivilegedRunAudit(database, context2, details) {
+  const event = await database.audit.emit(details);
+  recordPrivilegedAuditEventForTransaction(context2, event);
+  return event;
+}
+function recordPrivilegedAuditEventForTransaction(context2, event) {
+  if (!context2 || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
+    return;
+  }
+  if (!Array.isArray(context2.__privilegedAuditEvents)) {
+    Object.defineProperty(context2, "__privilegedAuditEvents", {
+      value: [],
+      enumerable: false,
+      configurable: true
+    });
+  }
+  context2.__privilegedAuditEvents.push(event);
+}
+async function reindexPrivilegedAuditEventsAfterRollback(database, context2) {
+  const events = context2?.__privilegedAuditEvents;
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+  for (const event of events) {
+    try {
+      if (event?.data?.metadata?.actionOwned !== true && await privilegedAuditEventAlreadyIndexed(database, event)) {
+        continue;
+      }
+      await database.adapter.insertLogIndexEvent(event);
+    } catch {
+      return;
+    }
+  }
+  try {
+    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
+  } catch {
+  }
+}
+async function privilegedAuditEventAlreadyIndexed(database, event) {
+  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
+}
+function samePrivilegedAuditLogEvent(left, right) {
+  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
+}
+function normalizePrivilegedRunSignal(value) {
+  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
+    return value;
+  }
+  return new AbortController().signal;
+}
+function createPrivilegedRunAbortError() {
+  return commandError(
+    "Privileged run aborted.",
+    "Retry the privileged operation if cancellation was not intended.",
+    "ABORTED"
+  );
+}
+function createPrivilegedRunAuditDetails(context2, options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
+  }
+  const operation = validatedPrivilegedOperation(options.operation);
+  const metadata2 = validatedPrivilegedMetadata(options.metadata);
+  return {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: auditString(options.surface ?? context2?.kind, "server-handler"),
+    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
+    correlation: options.correlation ?? null,
+    request: options.request ?? null,
+    source: "runtime",
+    metadata: metadata2
+  };
+}
+function validatedPrivilegedOperation(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
+  }
+  const operation = value.trim();
+  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
+    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
+  }
+  return operation;
+}
+function validatedPrivilegedMetadata(value) {
+  if (value === void 0) {
+    return {};
+  }
+  if (!isPlainPrivilegedMetadata(value)) {
+    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
+  }
+  return { ...value };
+}
+function isPlainPrivilegedMetadata(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (typeof value.then === "function") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function invalidPrivilegedRunMetadata(message) {
+  return commandError(
+    message,
+    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
+    "INVALID_PRIVILEGED_RUN_METADATA"
+  );
+}
+function createPrivilegedRunPublicError(cause) {
+  const error = commandError(
+    "Privileged run failed.",
+    "Check the privileged audit events and server logs before exposing a safe response.",
+    "PRIVILEGED_RUN_FAILED"
+  );
+  error.cause = cause;
+  return error;
+}
+function createPrivilegedAuditEmissionPublicError(cause, context2 = void 0) {
+  const error = commandError(
+    "Privileged audit emission failed.",
+    "Check the server audit log configuration before retrying the privileged operation.",
+    "PRIVILEGED_AUDIT_EMISSION_FAILED"
+  );
+  error.cause = cause;
+  if (context2) {
+    error.privilegedAuditContext = context2;
+  }
+  return error;
+}
+function isPrivilegedAuditEmissionPublicError(error) {
+  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+}
+function createPrivilegedScheduleApi(database, contextGetter) {
+  const sqlite = () => database.adapter;
+  return {
+    async get(name2) {
+      assertActivePrivilegedJobAccess(contextGetter);
+      if (typeof name2 !== "string" || !name2) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
+      const row = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] WHERE [name]=?")).get(name2);
+      return row ? await scheduleSummary(sqlite(), row) : null;
+    },
+    async list() {
+      assertActivePrivilegedJobAccess(contextGetter);
+      const rows = await sqlite().prepare(sqlite().dialect.sql("SELECT * FROM [sporades_schedules] ORDER BY [name] ASC")).all();
+      const summaries = [];
+      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
+      return summaries;
+    }
+  };
+}
+function createPrivilegedFileApi(database, contextGetter) {
+  return Object.freeze({
+    async list(options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) return active;
+      let cutoff = null;
+      let after = null;
+      try {
+        if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["createdBefore", "cursor"].includes(key))) throw new Error();
+        if (options.createdBefore !== void 0) {
+          if (!(typeof options.createdBefore === "string" || options.createdBefore instanceof Date)) throw new Error();
+          cutoff = new Date(options.createdBefore).toISOString();
+        }
+        if (options.cursor !== void 0 && options.cursor !== null) {
+          if (typeof options.cursor !== "string" || options.cursor.length > 2048 || !/^[A-Za-z0-9_-]+$/.test(options.cursor)) throw new Error();
+          const decoded = JSON.parse(Buffer.from(options.cursor, "base64url").toString("utf8"));
+          if (decoded.v !== 1 || typeof decoded.id !== "string" || decoded.id.length === 0 || decoded.id.length > 200 || typeof decoded.createdAt !== "string" || new Date(decoded.createdAt).toISOString() !== decoded.createdAt || decoded.cutoff !== null && (typeof decoded.cutoff !== "string" || new Date(decoded.cutoff).toISOString() !== decoded.cutoff)) throw new Error();
+          if (options.createdBefore !== void 0 && cutoff !== decoded.cutoff) throw new Error();
+          cutoff = decoded.cutoff;
+          after = { createdAt: decoded.createdAt, id: decoded.id };
+        }
+      } catch {
+        return { ok: false, error: { message: "Invalid File listing options.", hint: "Use a valid createdBefore date and the cursor from the previous page with the same cutoff.", code: "INVALID_FILE_LIST_OPTIONS" } };
+      }
+      const rows = await database.adapter.selectLiveFilesPage(cutoff, after);
+      const stillActive = activePrivilegedFileAccess(contextGetter);
+      if (!stillActive.ok) return stillActive;
+      const page = rows.slice(0, 100);
+      const last = page.at(-1);
+      return { ok: true, data: {
+        files: page.map((row) => ({ ...fileMetadataFromRow(row), ownerId: row.ownerId, createdAt: row.createdAt, updatedAt: row.updatedAt })),
+        cursor: rows.length > 100 ? Buffer.from(JSON.stringify({ v: 1, createdAt: last.createdAt, id: last.id, cutoff })).toString("base64url") : null
+      }, error: null };
+    },
+    async url(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      const row = resolved.row;
+      if (!row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+          file: {
+            ...fileMetadataFromRow(row),
+            ownerId: row.ownerId
+          }
+        },
+        error: null
+      };
+    },
+    async createPublicUrl(fileReference, options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
+    },
+    async delete(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
+    },
+    unsupported() {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        throw commandError(
+          active.error?.message ?? "Privileged file access is no longer active.",
+          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
+          "PRIVILEGED_FILE_ACCESS_INACTIVE"
+        );
+      }
+      throw commandError(
+        "Unsupported privileged file operation.",
+        "Use one of the approved privileged file operations: list, url, createPublicUrl, or delete.",
+        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
+      );
+    }
+  });
+}
+function activePrivilegedFileAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "Privileged file access is no longer active.",
+      "Start a new ctx.privileged.run callback before using privileged file operations."
+    )
+  };
+}
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data2 = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data2.operation}`),
+    data: data2,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "errored") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
+  const source = value && typeof value === "object" ? "code" in value ? value.code : null : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "errored") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text3 = value === null || value === void 0 ? "" : String(value);
+  return text3.trim() ? text3 : fallback;
+}
+function normalizeTableAcl(tableName, aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "write", "insert", "update", "delete"]);
+  if (aclRules === void 0) {
+    return {
+      allowByDefault: true,
+      resolve(operation) {
+        return resolveEffectiveAclRule(this, operation);
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      `Invalid Capsule table ACL: ${tableName}`,
+      "Pass an object with function rules for read, write, insert, update, and delete."
+    );
+  }
+  const normalized = {
+    allowByDefault: true
+  };
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
+        "Supported ACL operations are read, write, insert, update, and delete."
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule table ACL: ${tableName}.${operation}`,
+        "ACL rules must be functions for read, write, insert, update, and delete."
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve2(operation) {
+    return resolveEffectiveAclRule(this, operation);
+  };
+  return normalized;
+}
+function normalizeFileAcl(aclRules) {
+  const supportedOperations = /* @__PURE__ */ new Set(["read", "publicUrl", "delete", "upload"]);
+  if (aclRules === void 0) {
+    return {
+      resolve() {
+        return void 0;
+      }
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      "Invalid Capsule File ACL.",
+      "Declare files as { acl: { read?, publicUrl?, delete?, upload? } }.",
+      "INVALID_FILE_ACL"
+    );
+  }
+  const normalized = {};
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule File ACL operation: ${operation}.`,
+        "Supported File ACL operations are read, publicUrl, delete, and upload.",
+        "INVALID_FILE_ACL"
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule File ACL: ${operation}.`,
+        "File ACL rules must be functions.",
+        "INVALID_FILE_ACL"
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve2(operation) {
+    return this[operation];
+  };
+  return normalized;
+}
+function resolveEffectiveAclRule(aclRules, operation) {
+  if (!aclRules || typeof aclRules !== "object") {
+    return void 0;
+  }
+  if (operation === "insert" || operation === "update" || operation === "delete") {
+    return aclRules[operation] ?? aclRules.write;
+  }
+  return aclRules[operation];
+}
+function createTableAclContext(context2, database) {
+  return bindAppContext({
+    auth: context2?.auth,
+    credential: context2?.credential,
+    acl: createAclHelpers(database, context2)
+  }, database.app);
+}
+var pendingAclWritesByContext = /* @__PURE__ */ new WeakMap();
+function bindPendingAclWrites(context2, sourceContext) {
+  if (!context2 || typeof context2 !== "object") return context2;
+  const shared = sourceContext && typeof sourceContext === "object" ? pendingAclWritesByContext.get(sourceContext) : void 0;
+  if (sourceContext && !shared) return context2;
+  pendingAclWritesByContext.set(context2, shared ?? []);
+  return context2;
+}
+function trackPendingAclWrite(context2, pending) {
+  const entries = context2 && typeof context2 === "object" ? pendingAclWritesByContext.get(context2) : void 0;
+  if (entries) entries.push(pending);
+  return pending;
+}
+function pendingAclWrites(context2) {
+  return context2 && typeof context2 === "object" ? pendingAclWritesByContext.get(context2) : void 0;
+}
+function createFileAclContext(auth, database, credential = { kind: "session" }) {
+  const context2 = {
+    auth: Object.freeze({ ...auth }),
+    credential: Object.freeze({ ...credential })
+  };
+  return Object.freeze({
+    app: database.app,
+    auth: context2.auth,
+    credential: context2.credential,
+    acl: createAclHelpers(database, context2)
+  });
+}
+async function allowFileUpload(database, auth, meta2) {
+  const rule = database.fileAcl?.resolve?.("upload");
+  if (!rule) return true;
+  const context2 = createFileAclContext(auth, database);
+  try {
+    const result = invokeAclRule(context2, () => rule(context2, Object.freeze(meta2)));
+    const allowed = isPromiseLike(result) ? await result : result;
+    return allowed === true && !aclRuleTouchedAsyncHelperRead(context2, !isPromiseLike(result));
+  } catch {
+    return false;
+  } finally {
+    await settleAclHelperReads(context2);
+  }
+}
+function applyFileAcl(database, operation, row, auth, credential = { kind: "session" }) {
+  const rule = database.fileAcl?.resolve?.(operation);
+  if (!rule) return false;
+  const context2 = createFileAclContext(auth, database, credential);
+  const input = Object.freeze({
+    ctx: context2,
+    operation,
+    file: Object.freeze(aclStorageMetadataFromFileRow(row))
+  });
+  const deny = () => {
+    emitFileAclDeniedLog(database, { context: context2, operation, row });
+    return false;
+  };
+  const result = invokeAclRule(context2, () => rule(input));
+  if (!isPromiseLike(result)) {
+    if (result && !aclRuleTouchedAsyncHelperRead(context2, true)) return true;
+    const settlement = settleAclHelperReads(context2);
+    return settlement ? settlement.then(deny) : deny();
+  }
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(context2)) return true;
+    const settlement = settleAclHelperReads(context2);
+    return settlement ? settlement.then(deny) : deny();
+  });
+}
+function privilegedDbAccessContextSet() {
+  const holder = privilegedDbAccessContextSet;
+  if (!holder.contexts) {
+    Object.defineProperty(holder, "contexts", {
+      value: /* @__PURE__ */ new WeakSet(),
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return holder.contexts;
+}
+function grantPrivilegedDbAccess(context2) {
+  if (context2 && typeof context2 === "object") {
+    privilegedDbAccessContextSet().add(context2);
+  }
+  return context2;
+}
+function revokePrivilegedDbAccess(context2) {
+  if (context2 && typeof context2 === "object") {
+    privilegedDbAccessContextSet().delete(context2);
+  }
+  return context2;
+}
+function hasPrivilegedDbAccess(context2) {
+  return Boolean(context2 && typeof context2 === "object" && privilegedDbAccessContextSet().has(context2));
+}
+function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return write();
+  }
+  const rule = table.acl?.resolve?.(operation);
+  if (!rule) {
+    return write();
+  }
+  const context2 = contextGetter?.();
+  const denialLogData = createAclDenialLogData({
+    context: context2,
+    table,
+    operation,
+    previous,
+    next
+  });
+  const deny = () => {
+    if (!pendingAclWrites(context2)) {
+      emitAclDeniedLog(database, { data: denialLogData });
+    }
+    throw createAclDeniedError(denialLogData);
+  };
+  const aclContext = createTableAclContext(context2, database);
+  const result = invokeAclRule(aclContext, () => rule({
+    ctx: aclContext,
+    operation,
+    table: table.name,
+    previous,
+    next
+  }));
+  if (!isPromiseLike(result)) {
+    if (!result || aclRuleTouchedAsyncHelperRead(aclContext, true)) {
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
+    }
+    return write();
+  }
+  const pending = Promise.resolve(result).then((allowed) => {
+    if (!allowed || aclRuleTouchedAsyncHelperRead(aclContext)) {
+      const settlement = settleAclHelperReads(aclContext);
+      return settlement ? settlement.then(deny) : deny();
+    }
+    return write();
+  });
+  trackPendingAclWrite(context2, pending);
+  return pending;
+}
+function applyReadAcl(database, table, row, context2) {
+  if (hasPrivilegedDbAccess(context2)) {
+    return true;
+  }
+  const rule = table.acl?.resolve?.("read");
+  if (!rule) {
+    return true;
+  }
+  const aclContext = createTableAclContext(context2, database);
+  const result = invokeAclRule(aclContext, () => rule({
+    ctx: aclContext,
+    operation: "read",
+    table: table.name,
+    row
+  }));
+  const deny = () => {
+    emitAclDeniedLog(database, {
+      context: context2,
+      table,
+      operation: "read",
+      row
+    });
+    return false;
+  };
+  if (!isPromiseLike(result)) {
+    if (result && !aclRuleTouchedAsyncHelperRead(aclContext, true)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
+  }
+  return Promise.resolve(result).then((allowed) => {
+    if (allowed && !aclRuleTouchedAsyncHelperRead(aclContext)) return true;
+    const settlement = settleAclHelperReads(aclContext);
+    return settlement ? settlement.then(deny) : deny();
+  });
+}
+function filterRowsByReadAcl(database, table, rows, context2) {
+  const decisions = rows.map((row) => applyReadAcl(database, table, row, context2));
+  if (decisions.some(isPromiseLike)) {
+    return Promise.all(decisions).then((resolved) => rows.filter((_2, index) => resolved[index]));
+  }
+  return rows.filter((_2, index) => decisions[index]);
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+var aclPromiseObserver = {};
+function retainAclPromiseHook(state) {
+  if (state.promiseHookRetained) return;
+  state.promiseHookRetained = true;
+  retainPromiseObserver(aclPromiseObserver);
+}
+function releaseAclPromiseHook(state) {
+  if (!state.promiseHookRetained) return;
+  state.promiseHookRetained = false;
+  releasePromiseObserver(aclPromiseObserver);
+}
+function createAclHelpers(database, context2) {
+  const state = {
+    readCount: 0,
+    maxReads: 32,
+    touchedAsyncRead: false,
+    rulePromise: void 0,
+    promiseHookRetained: false,
+    unconsumedAsyncReads: /* @__PURE__ */ new Set(),
+    pendingAsyncReads: /* @__PURE__ */ new Set(),
+    helperPromiseDependencies: /* @__PURE__ */ new WeakMap()
+  };
+  const helpers = {
+    db: createAclDbHelpers(database, state),
+    storage: createAclStorageHelpers(database, state),
+    teams: createAclTeamHelpers(database, context2, state)
+  };
+  Object.defineProperty(helpers, ACL_HELPER_STATE, {
+    value: state,
+    enumerable: false
+  });
+  return Object.freeze(helpers);
+}
+function createAclTeamHelpers(database, context2, state) {
+  return Object.freeze({
+    isMember(teamId) {
+      const membership = readAclTeamMembership(database, context2, state, teamId);
+      return resolveAclHelperRead(state, membership, (resolved) => resolved?.role === "admin" || resolved?.role === "member");
+    },
+    isAdmin(teamId) {
+      return resolveAclHelperRead(state, readAclTeamMembership(database, context2, state, teamId), (membership) => membership?.role === "admin");
+    },
+    hasRole(teamId, role) {
+      assertAclHelperReadAllowed(state);
+      if (!isActiveAclTeamApplicationRole(database, role)) return false;
+      const actorUserId = aclTeamActorUserId(context2);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
+        "SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] = ?"
+      )).get(teamId, actorUserId, role));
+      return resolveAclHelperRead(state, selected, (resolved) => resolved?.role === role);
+    },
+    hasAnyRole(teamId, roles) {
+      assertAclHelperReadAllowed(state);
+      if (!Array.isArray(roles) || roles.length === 0 || roles.length > 32 || new Set(roles).size !== roles.length) return false;
+      const activeRoles = roles.filter((role) => isActiveAclTeamApplicationRole(database, role));
+      if (activeRoles.length !== roles.length) return false;
+      const actorUserId = aclTeamActorUserId(context2);
+      if (!actorUserId || !isAclTeamId(teamId)) return false;
+      const placeholders = activeRoles.map(() => "?").join(", ");
+      const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships", "sporades_team_membership_application_roles"], () => database.adapter.prepare(database.adapter.dialect.sql(
+        `SELECT [r].[role] FROM [sporades_team_memberships] [m] JOIN [sporades_team_membership_application_roles] [r] ON [r].[teamId] = [m].[teamId] AND [r].[userId] = [m].[userId] WHERE [m].[teamId] = ? AND [m].[userId] = ? AND [r].[role] IN (${placeholders})`
+      )).all(teamId, actorUserId, ...activeRoles));
+      return resolveAclHelperRead(state, selected, (resolved) => Array.isArray(resolved) && resolved.some((row) => activeRoles.includes(row?.role)));
+    }
+  });
+}
+function readAclTeamMembership(database, context2, state, teamId) {
+  assertAclHelperReadAllowed(state);
+  const actorUserId = aclTeamActorUserId(context2);
+  if (!actorUserId || !isAclTeamId(teamId)) return null;
+  const selected = readWithAclHelperDependencies(database, ["sporades_team_memberships"], () => database.adapter.prepare(database.adapter.dialect.sql(
+    "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?"
+  )).get(teamId, actorUserId));
+  return selected;
+}
+function readWithAclHelperDependencies(database, tableNames, read) {
+  const lock = database.lockAclHelperDependencies?.(tableNames);
+  return isPromiseLike(lock) ? Promise.resolve(lock).then(read) : read();
+}
+function bindPostgresAclDependencyLocking(database, adapter) {
+  if (adapter?.engine !== "postgres" || typeof database.lockAclHelperDependencies === "function") return;
+  const lockedTables = /* @__PURE__ */ new Set();
+  database.lockAclHelperDependencies = async (tableNames) => {
+    const pending = [...new Set(tableNames)].filter((tableName) => !lockedTables.has(tableName)).sort();
+    if (pending.length === 0) return;
+    try {
+      await adapter.exec(`LOCK TABLE ${pending.map((tableName) => adapter.dialect.quoteIdentifier(tableName)).join(", ")} IN SHARE ROW EXCLUSIVE MODE NOWAIT`);
+    } catch (error) {
+      if (error?.code === "55P03") throw resourceError("RESOURCE_BUSY");
+      throw error;
+    }
+    for (const tableName of pending) lockedTables.add(tableName);
+  };
+}
+function aclTeamActorUserId(context2) {
+  const auth = context2?.auth;
+  if (!auth?.isAuthenticated || auth?.isGuest || typeof auth?.userId !== "string" || auth.userId.length === 0) return null;
+  return auth.userId;
+}
+function isAclTeamId(value) {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+function isActiveAclTeamApplicationRole(database, role) {
+  return typeof role === "string" && Array.isArray(database.teamApplicationRoles) && database.teamApplicationRoles.includes(role);
+}
+function aclRuleTouchedAsyncHelperRead(aclContext, synchronousRule = false) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!synchronousRule) consumeParticipatingAclHelperReads(state);
+  return synchronousRule ? state?.touchedAsyncRead === true : (state?.unconsumedAsyncReads?.size ?? 0) > 0;
+}
+function consumeParticipatingAclHelperReads(state) {
+  if (!state?.rulePromise) return;
+  const settlementCause = promiseSettlementCause(state.rulePromise);
+  for (const dependency of state.unconsumedAsyncReads ?? []) {
+    if (dependency.settled && [...dependency.assimilationPromises ?? []].some((promise) => !["race", "any"].includes(dependency.compositionKinds?.get(promise)) && (promiseDescendsFrom(promise, state.rulePromise) || promiseDependsOn(settlementCause, promise)))) {
+      state.unconsumedAsyncReads.delete(dependency);
+    }
+  }
+}
+function invokeAclRule(aclContext, invoke) {
+  const state = aclContext?.acl?.[ACL_HELPER_STATE];
+  if (!state) return invoke();
+  retainAclPromiseHook(state);
+  let result;
+  try {
+    result = invoke();
+    state.rulePromise = isPromiseLike(result) ? result : void 0;
+    consumeAclHelperPromiseDependencies(state, result);
+    return result;
+  } finally {
+    if (isPromiseLike(result)) {
+      void Promise.resolve(result).then(
+        () => releaseAclPromiseHook(state),
+        () => releaseAclPromiseHook(state)
+      );
+    } else releaseAclPromiseHook(state);
+  }
+}
+function consumeAclHelperPromiseDependencies(state, promise) {
+  if (!promise || typeof promise !== "object") return;
+  const dependencies = state.helperPromiseDependencies.get(promise);
+  if (!dependencies) return;
+  for (const dependency of dependencies) state.unconsumedAsyncReads.delete(dependency);
+}
+function isPromiseAssimilationContinuation(args) {
+  return args.length === 2 && args.every((callback) => typeof callback === "function" && Function.prototype.toString.call(callback).includes("[native code]"));
+}
+function trackAclHelperPromise(state, promise, dependencies) {
+  let tracked;
+  tracked = new Proxy(promise, {
+    get(target, property) {
+      if (property === "then" || property === "catch" || property === "finally") {
+        if (property === "then") {
+          const compositionRoot = promiseCompositionRootCandidate();
+          if (compositionRoot) {
+            for (const dependency of dependencies) {
+              dependency.assimilationPromises.add(compositionRoot);
+              dependency.compositionKinds.set(compositionRoot, promiseCombinatorKind(compositionRoot));
+            }
+          }
+        }
+        return (...args) => {
+          const active = activePromise();
+          if (property === "then" && isPromiseAssimilationContinuation(args) && active) {
+            for (const dependency of dependencies) dependency.assimilationPromises.add(active);
+          }
+          const derived = target[property](...args);
+          return trackAclHelperPromise(state, derived, dependencies);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+  state.helperPromiseDependencies.set(tracked, dependencies);
+  return tracked;
+}
+function settleAclHelperReads(aclContext) {
+  const pending = [...aclContext?.acl?.[ACL_HELPER_STATE]?.pendingAsyncReads ?? []];
+  return pending.length > 0 ? Promise.allSettled(pending) : null;
+}
+function resolveAclHelperRead(state, result, resolve2) {
+  if (!isPromiseLike(result)) return resolve2(result);
+  state.touchedAsyncRead = true;
+  const pending = Promise.resolve(result).then(resolve2);
+  const dependency = {
+    assimilationPromises: /* @__PURE__ */ new Set(),
+    compositionKinds: /* @__PURE__ */ new WeakMap(),
+    settled: false
+  };
+  const dependencies = /* @__PURE__ */ new Set([dependency]);
+  state.unconsumedAsyncReads.add(dependency);
+  state.pendingAsyncReads.add(pending);
+  void pending.then(
+    () => {
+      dependency.settled = true;
+      state.pendingAsyncReads.delete(pending);
+    },
+    () => {
+      dependency.settled = true;
+      state.pendingAsyncReads.delete(pending);
+    }
+  );
+  pending.catch(() => {
+  });
+  return trackAclHelperPromise(state, pending, dependencies);
+}
+function createAclDbHelpers(database, state) {
+  return Object.freeze({
+    get(tableName, id2) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
+      return resolveAclHelperRead(state, selected, (resolved) => resolved ? deserializeRow(table, resolved) : null);
+    },
+    exists(tableName, id2) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const selected = readWithAclHelperDependencies(database, [table.name], () => database.adapter.selectAppRowById(table, id2));
+      return resolveAclHelperRead(state, selected, Boolean);
+    }
+  });
+}
+function createAclStorageHelpers(database, state) {
+  return Object.freeze({
+    get(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, (resolved) => resolved ? aclStorageMetadataFromFileRow(resolved) : null);
+      }
+      return null;
+    },
+    exists(resourceName, reference) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = readWithAclHelperDependencies(database, ["sporades_files"], () => resolveAclStorageFileReference(database, reference));
+        return resolveAclHelperRead(state, row, Boolean);
+      }
+      return false;
+    }
+  });
+}
+function resolveAclStorageFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path26;
+    try {
+      path26 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return null;
+    }
+    const selected2 = database.adapter.selectLiveFileByPath(path26);
+    return thenIfPromise(selected2, (rows) => {
+      const resolved = rows.length > 1 ? { ambiguous: true } : rows[0] ?? null;
+      return resolved?.ambiguous ? null : resolved;
+    });
+  }
+  const selected = database.adapter.selectFileById(value);
+  return thenIfPromise(selected, (resolved) => {
+    if (!resolved || resolved.deletedAt !== null || resolved.status !== "uploaded") return null;
+    return resolved;
+  });
+}
+function assertAclHelperReadAllowed(state) {
+  state.readCount += 1;
+  if (state.readCount > state.maxReads) {
+    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+  }
+}
+function resolveAclAppTable(database, tableName) {
+  const normalized = String(tableName ?? "");
+  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  if (!table) {
+    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+  }
+  return table;
+}
+function resolveAclStorageResource(resourceName) {
+  const normalized = String(resourceName ?? "");
+  if (normalized === "files") {
+    return normalized;
+  }
+  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+}
+function aclStorageMetadataFromFileRow(row) {
+  const metadata2 = fileMetadataFromRow(row);
+  return {
+    ...metadata2,
+    originalName: row.name,
+    owner: row.ownerId,
+    ownerId: row.ownerId,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt ?? null
+  };
+}
+function emitAclDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied table operation.",
+    data: details.data ?? createAclDenialLogData(details)
+  });
+}
+function emitFileAclDeniedLog(database, { context: context2, operation, row }) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied File operation.",
+    data: {
+      resource: { kind: "file", id: row?.id ?? null },
+      operation,
+      rule: { category: "file", declaredOperation: operation },
+      actor: {
+        userId: context2?.auth?.userId ?? null,
+        provider: context2?.auth?.provider ?? null,
+        isAuthenticated: context2?.auth?.isAuthenticated ?? null,
+        isGuest: context2?.auth?.isGuest ?? null
+      },
+      ...accessKeyCredentialLogAttribution(context2)
+    }
+  });
+}
+function createAclDenialLogData({ context: context2, table, operation, row = null, previous = null, next = null }) {
+  return {
+    resource: {
+      kind: "table",
+      name: table.name
+    },
+    operation,
+    rule: {
+      category: "table",
+      declaredOperation: aclRuleDeclaredOperation(table, operation)
+    },
+    actor: {
+      userId: context2?.auth?.userId ?? null,
+      provider: context2?.auth?.provider ?? null,
+      isAuthenticated: context2?.auth?.isAuthenticated ?? null,
+      isGuest: context2?.auth?.isGuest ?? null
+    },
+    ...accessKeyCredentialLogAttribution(context2),
+    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next })
+  };
+}
+function aclRuleDeclaredOperation(table, operation) {
+  if (operation !== "read" && table.acl?.[operation] === void 0 && table.acl?.write) {
+    return "write";
+  }
+  return operation;
+}
+function aclRowLogSnapshot(input) {
+  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
+    const previous = input.previous ?? null;
+    const next = input.next ?? null;
+    return {
+      previousId: previous?.id ?? null,
+      nextId: next?.id ?? null,
+      previousFields: aclVisibleFieldNames(previous),
+      nextFields: aclVisibleFieldNames(next),
+      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
+      previousPresent: Boolean(previous),
+      nextPresent: Boolean(next)
+    };
+  }
+  return {
+    id: input?.id ?? null,
+    fields: aclVisibleFieldNames(input)
+  };
+}
+function aclVisibleFieldNames(row) {
+  return Object.keys(row ?? {}).filter(
+    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName)
+  );
+}
+function createAclDeniedError(logData = null) {
+  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  if (logData) {
+    error.sporadesAclDenialLogData = logData;
+  }
+  return error;
+}
+function assertActivePrivilegedJobAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) return;
+  throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
+}
+async function drainPendingAclWrites(context2) {
+  let firstError = null;
+  const entries = pendingAclWrites(context2);
+  while (entries && entries.length > 0) {
+    const pending = entries.splice(0);
+    const results = await Promise.allSettled(pending.map((entry) => entry?.promise ?? entry));
+    for (const result of results) {
+      if (result.status === "rejected" && !firstError) {
+        firstError = result.reason;
+      }
+    }
+  }
+  if (firstError) {
+    throw firstError;
+  }
+}
+
+// src/templates/observability-loader.ts
+function collectionLoaderSource(errors, analytics) {
+  return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics, expectedErrorCodes: expectedDiagnosticErrorCodes })}, ${exceptionFrames.toString()});`;
+}
+function collectionLoader(options, parseFrames) {
+  const browser = globalThis.window;
+  if (!browser || browser.__sporadesCollectionInstalled) return;
+  browser.__sporadesCollectionInstalled = true;
+  const clean = (value) => {
+    try {
+      if (!value) return "";
+      const url = new browser.URL(value, browser.location.origin);
+      return ["http:", "https:", "file:"].includes(url.protocol) ? (url.protocol === "file:" ? "file://" : url.origin) + url.pathname : "";
+    } catch {
+      return "";
+    }
+  };
+  const send2 = (event) => {
+    try {
+      browser.fetch("/__sporades/collect", { method: "POST", credentials: "omit", keepalive: true, headers: { "content-type": "application/json" }, body: JSON.stringify(event) }).catch(() => {
+      });
+    } catch {
+    }
+  };
+  let count = 0, start = Date.now();
+  const error = (value, location) => {
+    try {
+      if (value?.name === void 0 && typeof value?.stack !== "string" && typeof value?.eventId === "string" && /^[a-f0-9]{32}$/.test(value.eventId) || value?.sporadesSource === "server" || options.expectedErrorCodes.includes(value?.code)) return;
+      if (Date.now() - start > 6e4) {
+        start = Date.now();
+        count = 0;
+      }
+      if (++count > 20) return;
+      let stackBudget = 8192, messageBudget = 2048;
+      const reduce = (item) => {
+        const lines = parseFrames(item?.stack).reverse().map((frame) => `    at ${frame.function} (${frame.filename}:${frame.lineno}:${frame.colno})`);
+        let stack = "";
+        for (const line of lines) {
+          if (line.length + 1 > stackBudget) break;
+          stack += line + "\n";
+          stackBudget -= line.length + 1;
+        }
+        const message = String(item?.message ?? (item !== null && typeof item === "object" ? "Non-Error exception" : item ?? "Client error")).slice(0, messageBudget).replace(/data:[^\s)]+/gi, "[embedded source]").slice(0, messageBudget);
+        messageBudget -= message.length;
+        return { name: typeof item?.name === "string" ? item.name.slice(0, 64) : typeof item === "object" ? "Error" : "NonError", message, stack: stack || void 0 };
+      };
+      const result = reduce(value), causes = [], seen = /* @__PURE__ */ new Set([value]);
+      let current2 = value;
+      for (let depth2 = 0; depth2 < 3 && current2?.cause !== void 0 && !seen.has(current2.cause); depth2++) {
+        current2 = current2.cause;
+        seen.add(current2);
+        causes.push(reduce(current2));
+      }
+      send2({ type: "error", ...result, causes, ...!result.stack && location ? { location } : {} });
+    } catch {
+    }
+  };
+  if (options.errors) {
+    browser.addEventListener("error", (event) => error(event.error ?? event.message, {
+      filename: clean(event.filename),
+      lineno: event.lineno,
+      colno: event.colno
+    }));
+    browser.addEventListener("unhandledrejection", (event) => error(event.reason));
+    browser.addEventListener("sporades:error", (event) => error(event.detail));
+  }
+  if (options.analytics) {
+    let last = "";
+    const pageview = () => {
+      if (last === browser.location.href) return;
+      last = browser.location.href;
+      send2({ type: "pageview", url: clean(browser.location.href), referrer: clean(browser.document.referrer) });
+    };
+    for (const name2 of ["pushState", "replaceState"]) {
+      const original = browser.history[name2];
+      browser.history[name2] = function(...args) {
+        const result = original.apply(this, args);
+        pageview();
+        return result;
+      };
+    }
+    browser.addEventListener("popstate", pageview);
+    browser.addEventListener("hashchange", pageview);
+    pageview();
+  }
+}
+
+// src/observability-runtime.ts
+import { randomUUID as randomUUID9 } from "node:crypto";
+function validateObservabilityConfig(config) {
+  const fail7 = () => {
+    const error = new Error("Invalid observability or analytics configuration.");
+    Object.assign(error, { code: "INVALID_OBSERVABILITY_CONFIG" });
+    throw error;
+  };
+  const object2 = (value, keys) => {
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !keys.includes(key))) fail7();
+  };
+  const envName2 = (value) => typeof value === "string" && /^[A-Z_][A-Z0-9_]*$/i.test(value);
+  if (config.observability !== void 0) {
+    object2(config.observability, ["errors"]);
+    if (config.observability.errors !== void 0) {
+      const errors = config.observability.errors;
+      object2(errors, ["protocol", "dsnEnv", "environment", "sampleRate", "client"]);
+      if (errors.protocol !== "sentry" || !envName2(errors.dsnEnv) || errors.client !== void 0 && typeof errors.client !== "boolean" || errors.environment !== void 0 && (typeof errors.environment !== "string" || !/^[\w.-]{1,64}$/.test(errors.environment)) || errors.sampleRate !== void 0 && (typeof errors.sampleRate !== "number" || !Number.isFinite(errors.sampleRate) || errors.sampleRate < 0 || errors.sampleRate > 1)) fail7();
+    }
+  }
+  if (config.analytics !== void 0) {
+    const analytics = config.analytics;
+    object2(analytics, ["provider", "endpointEnv", "websiteIdEnv", "redactQuery"]);
+    if (!["umami", "plausible"].includes(analytics.provider) || !envName2(analytics.endpointEnv) || !envName2(analytics.websiteIdEnv) || analytics.redactQuery !== void 0 && analytics.redactQuery !== true) fail7();
+  }
+}
+function providerUrl(value) {
+  try {
+    if (typeof value !== "string" || value.length > 2048) throw new Error();
+    const url = new URL(value);
+    if (url.username || url.password || url.search || url.hash || url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error();
+    return url;
+  } catch {
+    throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
+  }
+}
+function pageUrl(value, origin) {
+  if (typeof value !== "string" || value.length > 4096) throw new Error();
+  const url = new URL(value, origin);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error();
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+function createRuntimeObservability(config = {}, env = {}) {
+  validateObservabilityConfig(config);
+  const analytics = config.analytics;
+  const analyticsUrl = analytics && env[analytics.endpointEnv] && env[analytics.websiteIdEnv] ? providerUrl(env[analytics.endpointEnv]) : null;
+  const website = analyticsUrl ? env[analytics.websiteIdEnv] : null;
+  if (website && (typeof website !== "string" || website.length > 255 || /[\s?#\/]/.test(website))) throw new Error("Invalid collection provider configuration.");
+  const errors = config.observability?.errors;
+  let sentryUrl = null;
+  let dsn = null;
+  let sentryKey = null;
+  if (errors && env[errors.dsnEnv]) {
+    try {
+      const parsed = new URL(env[errors.dsnEnv]);
+      const key = parsed.username;
+      if (!key || !/^[a-zA-Z0-9_-]+$/.test(key) || parsed.password || parsed.search || parsed.hash) throw new Error();
+      sentryKey = key;
+      parsed.username = "";
+      const segments = parsed.pathname.split("/").filter(Boolean);
+      const project = segments.pop();
+      if (!project || !/^\d+$/.test(project)) throw new Error();
+      sentryUrl = providerUrl(parsed.href);
+      sentryUrl.pathname = `/${[...segments, "api", project, "envelope", ""].join("/")}`;
+      dsn = String(env[errors.dsnEnv]);
+    } catch {
+      throw Object.assign(new Error("Invalid collection provider configuration."), { code: "INVALID_OBSERVABILITY_CONFIG" });
+    }
+  }
+  const stopped2 = new AbortController();
+  const pending = /* @__PURE__ */ new Set();
+  const epoch = performance.now();
+  const budget = (maxActive, maxCount) => {
+    let active = 0, count = 0, window2 = 0;
+    return () => {
+      const currentWindow = Math.floor((performance.now() - epoch) / 6e4);
+      if (currentWindow !== window2) {
+        count = 0;
+        window2 = currentWindow;
+      }
+      if (stopped2.signal.aborted || active >= maxActive || count >= maxCount) return null;
+      active++;
+      count++;
+      let released = false;
+      return () => {
+        if (!released) {
+          released = true;
+          active--;
+        }
+      };
+    };
+  };
+  const acquireIngress = budget(8, 120);
+  const acquirePublicDelivery = budget(4, 60);
+  const acquireServerDelivery = budget(4, 60);
+  const secretForms = [...new Set(Object.values(env).filter((value) => typeof value === "string" && value.length > 0).flatMap((value) => {
+    const forms = [value, redactDiagnosticText(value)];
+    if (/^(?:[a-z][a-z\d+.-]*:)?\/\//i.test(value)) {
+      forms.push(value.split(/[?#]|%(?:3f|23)/i, 1)[0]);
+      try {
+        const url = new URL(value, "https://redacted.invalid");
+        if (url.pathname !== "/") forms.push(url.pathname);
+        if (url.search) forms.push(url.search, url.search.slice(1));
+        forms.push(url.hash.slice(1), url.username, url.password);
+      } catch {
+      }
+    }
+    return forms.filter(Boolean).flatMap((form) => [
+      form,
+      form.toUpperCase(),
+      form.toLowerCase(),
+      // Pattern matching needs the whole normalized secret, as well as capped audit codes.
+      form.trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_"),
+      safePrivilegedAuditErrorCode({ code: form })
+    ]);
+  }).filter((value) => value !== null && value.length > 0))].sort((a2, b) => b.length - a2.length);
+  const secretPattern = secretForms.length ? new RegExp(secretForms.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi") : null;
+  const overlappingSecrets = secretPattern ? new RegExp(`(?=(${secretPattern.source}))`, "gi") : null;
+  const safeText = (value, limit) => {
+    const text3 = (typeof value === "string" ? value : "Error").slice(0, 65536);
+    const spans = [];
+    if (overlappingSecrets) for (const match of text3.matchAll(overlappingSecrets)) {
+      const start = match.index, end = start + match[1].length, last = spans.at(-1);
+      if (last && start <= last.end) last.end = Math.max(last.end, end);
+      else spans.push({ start, end });
+    }
+    const safe = redactDiagnosticText(text3.replace(/data:[^\s)]+/gi, "[embedded source]"));
+    if (!spans.length) return (secretPattern ? safe.replace(secretPattern, "[REDACTED]") : safe).slice(0, limit);
+    const rawLines = text3.split("\n"), safeLines = safe.split("\n");
+    if (rawLines.length !== safeLines.length) return "[REDACTED]".slice(0, limit);
+    let offset2 = 0, spanIndex = 0, result = "";
+    for (let index = 0; index < rawLines.length; index++) {
+      const raw = rawLines[index], line = safeLines[index], end = offset2 + raw.length;
+      let prefix = 0;
+      while (prefix < raw.length && prefix < line.length && raw[prefix] === line[prefix]) prefix++;
+      while (spanIndex < spans.length && spans[spanIndex].end <= offset2) spanIndex++;
+      const local = [];
+      let cutoff = line.length, privateNewline = false;
+      for (let cursor = spanIndex; cursor < spans.length && spans[cursor].start <= end; cursor++) {
+        const span = spans[cursor], start = Math.max(0, span.start - offset2), stop = Math.min(raw.length, span.end - offset2);
+        if (start < stop) {
+          local.push({ start, end: stop });
+          if (stop > prefix) cutoff = Math.min(cutoff, start, prefix);
+        }
+        if (span.start <= end && span.end > end) privateNewline = true;
+      }
+      let copied = 0;
+      for (const span of local) {
+        if (span.start >= Math.min(prefix, cutoff)) break;
+        result += line.slice(copied, span.start) + "[REDACTED]";
+        copied = Math.min(span.end, prefix, cutoff);
+      }
+      result += line.slice(copied, cutoff) + (cutoff < line.length ? "[REDACTED]" : "");
+      if (index < rawLines.length - 1) result += privateNewline ? "[REDACTED]" : "\n";
+      offset2 = end + 1;
+    }
+    if (secretPattern) result = result.replace(secretPattern, "[REDACTED]");
+    return result.replace(/(?:\[REDACTED\]){2,}/g, "[REDACTED]").slice(0, limit);
+  };
+  const privilegedCauseCode = (cause) => {
+    const candidate = cause && typeof cause === "object" ? cause.code : void 0;
+    if (typeof candidate !== "string" || candidate.length > 65536) return "UNKNOWN_ERROR";
+    const redacted = safeText(candidate, 65536);
+    if (redacted !== candidate) return "UNKNOWN_ERROR";
+    const normalized = safePrivilegedAuditErrorCode({ code: redacted }, "errored");
+    return safeText(normalized, 64) === normalized ? normalized : "UNKNOWN_ERROR";
+  };
+  const send2 = async (url, body, headers) => {
+    const response = await fetch(url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.any([stopped2.signal, AbortSignal.timeout(2e3)]) });
+    await response.body?.cancel();
+  };
+  const transmit = (acquire, url, body, headers) => {
+    const release = acquire();
+    if (!release) return Promise.resolve();
+    const task = send2(url, body, headers).finally(() => {
+      release();
+      pending.delete(task);
+    });
+    pending.add(task);
+    return task;
+  };
+  const eventBase = (platform) => ({
+    event_id: randomUUID9().replaceAll("-", ""),
+    timestamp: Date.now() / 1e3,
+    platform,
+    environment: errors.environment,
+    release: typeof config.release === "string" ? safeText(config.release, 128) : typeof config.release?.id === "string" ? safeText(config.release.id, 128) : void 0
+  });
+  const deliver = (event, acquire) => {
+    const payload = JSON.stringify(event);
+    const body = `${JSON.stringify({ event_id: event.event_id, dsn })}
+${JSON.stringify({ type: "event", length: Buffer.byteLength(payload) })}
+${payload}
+`;
+    if (!sentryUrl) return;
+    void transmit(acquire, sentryUrl, body, { "content-type": "application/x-sentry-envelope", "x-sentry-auth": `Sentry sentry_version=7, sentry_key=${sentryKey}, sentry_client=sporades` }).catch(() => {
+    });
+  };
+  const captureError = (error, surface, address, acquire, context2 = {}) => {
+    try {
+      if (!sentryUrl || error?.sporadesAuthDenialLogData || error?.sporadesAclDenialLogData || expectedDiagnosticErrorCodes.includes(error?.code) || Math.random() >= (errors.sampleRate ?? 1)) return;
+      const values = [], seen = /* @__PURE__ */ new Set();
+      let current2 = error, frameBudget = 20, textBudget = 2048;
+      const privileged = error?.code === "PRIVILEGED_RUN_FAILED" || error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+      for (let depth2 = 0; depth2 < 4 && !seen.has(current2); depth2++) {
+        seen.add(current2);
+        const currentPrivileged = current2?.code === "PRIVILEGED_RUN_FAILED" || current2?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+        const fallback = surface === "client" && depth2 === 0 && !current2?.stack && current2?.location;
+        const parsed = exceptionFrames(current2?.stack, surface === "client" ? "sporades://embedded/module" : "sporades://capsule/server.mjs");
+        if (fallback && typeof fallback.filename === "string" && fallback.filename && fallback.filename.length <= 4096) {
+          const filename = /^(data|blob):/i.test(fallback.filename) ? "sporades://embedded/module" : fallback.filename.split(/[?#]/, 1)[0];
+          parsed.push({
+            filename,
+            function: "<anonymous>",
+            ...Number.isInteger(fallback.lineno) && fallback.lineno > 0 ? { lineno: fallback.lineno } : {},
+            ...Number.isInteger(fallback.colno) && fallback.colno > 0 ? { colno: fallback.colno } : {}
+          });
+        }
+        const frames = (frameBudget ? parsed.slice(-frameBudget) : []).map((frame) => ({ ...frame, filename: safeText(frame.filename, 512), function: safeText(frame.function, 128) }));
+        frameBudget -= frames.length;
+        const message = current2?.message ?? (typeof current2 === "object" && current2 !== null ? "Non-Error exception" : String(current2));
+        const value = safeText(message, textBudget);
+        textBudget -= value.length;
+        const errorCode3 = typeof current2?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(current2.code) ? safeText(current2.code, 64) : void 0;
+        values.unshift({
+          type: safeText(current2?.name ?? (typeof current2 === "object" ? "Error" : "NonError"), 64),
+          value,
+          stacktrace: { frames },
+          mechanism: { type: "generic", data: {
+            stack_source: frames.length ? fallback ? "error_event" : "original" : "absent",
+            ...errorCode3 ? { error_code: errorCode3 } : {},
+            ...currentPrivileged ? { cause_code: safeText(privilegedCauseCode(current2.cause), 64) } : {}
+          } }
+        });
+        if (currentPrivileged || !current2 || typeof current2 !== "object" && typeof current2 !== "function" || current2.cause === void 0) break;
+        current2 = current2.cause;
+      }
+      const code2 = typeof error?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : void 0;
+      const event = {
+        ...eventBase(surface === "client" ? "javascript" : "node"),
+        level: "error",
+        tags: {
+          capsule: safeText(config.name ?? "capsule", 128),
+          surface,
+          ...surface !== "client" && typeof context2.handler === "string" ? { handler: safeText(context2.handler, 128) } : {},
+          ...code2 ? { error_code: safeText(code2, 64) } : {},
+          ...privileged ? { cause_code: safeText(privilegedCauseCode(error.cause), 64) } : typeof error?.cause?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.cause.code) ? { cause_code: safeText(error.cause.code, 64) } : {}
+        },
+        exception: { values },
+        ...address ? { user: { ip_address: address } } : {}
+      };
+      event.tags.correlation_id = event.event_id;
+      deliver(event, acquire);
+      return event.event_id;
+    } catch {
+    }
+  };
+  return {
+    enabled: !!analyticsUrl || !!(sentryUrl && errors.client),
+    clientErrors: !!(sentryUrl && errors.client),
+    analytics: !!analyticsUrl,
+    capture(error, surface, address, context2 = {}) {
+      return captureError(error, surface, address, acquireServerDelivery, context2);
+    },
+    /** Values arrive already reduced by `cspViolations`; no document, sample, policy or client address is sent. */
+    captureCspViolation(violation) {
+      try {
+        if (!sentryUrl || Math.random() >= (errors.sampleRate ?? 1)) return;
+        deliver({
+          ...eventBase("javascript"),
+          level: "warning",
+          logger: "csp",
+          message: `CSP violation: ${violation.directive} blocked ${violation.blocked}`,
+          tags: { capsule: safeText(config.name ?? "capsule", 128), surface: "csp", csp_directive: violation.directive, csp_blocked: violation.blocked, ...violation.disposition ? { csp_disposition: violation.disposition } : {} }
+        }, acquirePublicDelivery);
+      } catch {
+      }
+    },
+    close() {
+      stopped2.abort();
+    },
+    async flush() {
+      await Promise.allSettled([...pending]);
+    },
+    async collect(input, origin, request, database) {
+      if (input.type === "error") {
+        if (!sentryUrl || !errors.client || typeof input.message !== "string" || input.stack !== void 0 && typeof input.stack !== "string") throw new Error();
+        const clientError = { name: typeof input.name === "string" ? input.name : "Error", message: input.message, stack: input.stack, location: input.location };
+        let target = clientError;
+        if (Array.isArray(input.causes)) for (const cause of input.causes.slice(0, 3)) {
+          if (!cause || typeof cause.message !== "string") break;
+          target.cause = { name: typeof cause.name === "string" ? cause.name : "Error", message: cause.message, stack: typeof cause.stack === "string" ? cause.stack : void 0 };
+          target = target.cause;
+        }
+        captureError(clientError, "client", trustedClientAddress(database, request), acquirePublicDelivery);
+        return;
+      }
+      if (!analyticsUrl || input.type !== "pageview") throw new Error();
+      const url = pageUrl(input.url, origin);
+      if (url.origin !== origin) throw new Error();
+      const referrer = input.referrer ? pageUrl(input.referrer, origin).href : "";
+      const address = trustedClientAddress(database, request);
+      const headers = { "content-type": "application/json", "user-agent": safeText(request.headers["user-agent"] ?? "Sporades", 512) };
+      if (address) headers["x-forwarded-for"] = address;
+      const body = analytics.provider === "umami" ? { type: "event", payload: { website, hostname: url.hostname, url: url.pathname, referrer } } : { name: "pageview", domain: website, url: url.href, referrer };
+      await transmit(acquirePublicDelivery, analyticsUrl, JSON.stringify(body), headers);
+    },
+    acquireIngress
+  };
+}
+async function routeCollection(database, request, response) {
+  const pathname = request.url?.split("?")[0];
+  if (pathname === CSP_REPORT_PATH && database.securityPolicy?.csp?.reportTo === "observability" && database.observability) {
+    await routeCspReport(database, request, response);
+    return true;
+  }
+  if (!database.observability?.enabled) return false;
+  if (pathname === "/__sporades/observe.js" && request.method === "GET") {
+    response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+    response.end(collectionLoaderSource(database.observability.clientErrors, database.observability.analytics));
+    return true;
+  }
+  if (pathname !== "/__sporades/collect") return false;
+  const reply = (code2) => {
+    response.writeHead(code2, { "cache-control": "no-store" });
+    response.end();
+  };
+  const origin = request.headers.origin;
+  try {
+    if (request.method !== "POST" || typeof origin !== "string" || new URL(origin).origin !== origin || !["http:", "https:"].includes(new URL(origin).protocol) || new URL(origin).host !== request.headers.host || request.headers["sec-fetch-site"] === "cross-site" || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+      reply(403);
+      return true;
+    }
+    const allowed = database.securityPolicy?.cors?.publicOrigin;
+    if (allowed && ![allowed, ...database.securityPolicy.cors.publicAliases ?? []].includes(origin)) {
+      reply(403);
+      return true;
+    }
+  } catch {
+    reply(403);
+    return true;
+  }
+  const release = database.observability.acquireIngress();
+  if (!release) {
+    reply(429);
+    return true;
+  }
+  let timer;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += Buffer.byteLength(chunk);
+          if (size > 16384) throw new Error();
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error());
+          request.destroy();
+        }, 2e3);
+      })
+    ]);
+    clearTimeout(timer);
+    const input = JSON.parse(body);
+    if (!input || Array.isArray(input) || typeof input !== "object") throw new Error();
+    await database.observability.collect(input, origin, request, database);
+    reply(204);
+  } catch {
+    if (!response.destroyed) reply(400);
+  } finally {
+    clearTimeout(timer);
+    release();
+  }
+  return true;
+}
+var CSP_REPORT_TYPES = ["application/csp-report", "application/reports+json", "application/json"];
+var CSP_BLOCKED_KEYWORDS = ["inline", "eval", "wasm-eval", "self", "trusted-types-policy", "trusted-types-sink"];
+var CSP_REPORTS_PER_REQUEST = 5;
+function cspViolation(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const report = input;
+  const raw = report["effective-directive"] ?? report.effectiveDirective ?? report["violated-directive"];
+  const directive = typeof raw === "string" ? raw.trim().split(/\s+/)[0] : "";
+  if (!/^[a-z][a-z-]{0,63}$/.test(directive)) return null;
+  const value = report["blocked-uri"] ?? report.blockedURL;
+  let blocked = "unknown";
+  if (typeof value === "string" && CSP_BLOCKED_KEYWORDS.includes(value)) blocked = value;
+  else if (typeof value === "string" && value.length <= 8192) {
+    try {
+      const url = new URL(value);
+      blocked = /^(https?|wss?):$/.test(url.protocol) ? url.origin : /^[a-z][a-z0-9+.-]{0,31}:$/.test(url.protocol) ? url.protocol : "unknown";
+    } catch {
+    }
+  }
+  const disposition = report.disposition === "enforce" || report.disposition === "report" ? report.disposition : void 0;
+  return { directive, blocked, ...disposition ? { disposition } : {} };
+}
+function cspViolations(input) {
+  if (Array.isArray(input)) {
+    return input.slice(0, 100).filter((entry) => entry && typeof entry === "object" && entry.type === "csp-violation").slice(0, CSP_REPORTS_PER_REQUEST).map((entry) => cspViolation(entry.body)).filter((entry) => entry !== null);
+  }
+  const report = input && typeof input === "object" ? cspViolation(input["csp-report"]) : null;
+  return report ? [report] : [];
+}
+async function routeCspReport(database, request, response) {
+  const reply = (code2) => {
+    if (!response.headersSent) {
+      response.writeHead(code2, { "cache-control": "no-store" });
+      response.end();
+    }
+  };
+  if (request.method !== "POST") return reply(405);
+  const origin = request.headers.origin;
+  try {
+    if (request.headers["sec-fetch-site"] === "cross-site" || origin !== void 0 && (typeof origin !== "string" || new URL(origin).host !== request.headers.host)) return reply(403);
+  } catch {
+    return reply(403);
+  }
+  const type = String(request.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!CSP_REPORT_TYPES.includes(type)) return reply(415);
+  const release = database.observability.acquireIngress();
+  if (!release) return reply(429);
+  let timer;
+  try {
+    const body = await Promise.race([
+      (async () => {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of request) {
+          size += Buffer.byteLength(chunk);
+          if (size > 16384) throw Object.assign(new Error(), { status: 413 });
+          chunks.push(Buffer.from(chunk));
+        }
+        return Buffer.concat(chunks).toString("utf8");
+      })(),
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error());
+          request.destroy();
+        }, 2e3);
+      })
+    ]);
+    const violations = cspViolations(JSON.parse(body));
+    if (!violations.length) throw new Error();
+    for (const violation of violations) database.observability.captureCspViolation(violation);
+    reply(204);
+  } catch (error) {
+    if (!response.destroyed) reply(error?.status === 413 ? 413 : 400);
+  } finally {
+    clearTimeout(timer);
+    release();
+  }
+}
+
+// src/mcp-runtime.ts
+import { createHash as createHash12, timingSafeEqual as timingSafeEqual4 } from "node:crypto";
+
+// src/live-query-invalidation.ts
+var { AsyncLocalStorage: AsyncLocalStorage2 } = process.getBuiltinModule("node:async_hooks");
+var liveQueryTablesTracked = Symbol.for("sporades.database.liveQueryTablesTracked");
+var LIVE_QUERY_ANY_TABLE = "*";
+var liveQueryReads = new AsyncLocalStorage2();
+var dirtyTables = /* @__PURE__ */ new Set();
+var writeGeneration = 0;
+function recordTableWrite(table, tables) {
+  tables.add(table);
+  if (tables === dirtyTables && !liveQueryReads.getStore()) writeGeneration++;
+}
+function liveQueryWriteGeneration() {
+  return writeGeneration;
+}
+var quotedIdentifier = String.raw`(?:\[([^\]]+)\]|"([^"]+)")`;
+var readTablePattern = new RegExp(String.raw`\b(?:FROM|JOIN)\s+${quotedIdentifier}`, "gi");
+var writeTablePattern = new RegExp(
+  String.raw`^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\s+${quotedIdentifier}`,
+  "i"
+);
+var nonWritingStatementPattern = /^\s*(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|PRAGMA|SELECT|LOCK\s+TABLE)\b/i;
+function trackLiveQueryReads(tables, run2) {
+  return liveQueryReads.run(tables, run2);
+}
+function recordLiveQueryStatementRead(sql2) {
+  const tables = liveQueryReads.getStore();
+  if (!tables) return;
+  let identified = false;
+  for (const match of String(sql2).matchAll(readTablePattern)) {
+    tables.add(match[1] ?? match[2]);
+    identified = true;
+  }
+  if (!identified) tables.add(LIVE_QUERY_ANY_TABLE);
+}
+function recordLiveQueryTableRead(table) {
+  liveQueryReads.getStore()?.add(table);
+}
+function recordLiveQueryStatementWrite(sql2, result, tables = dirtyTables) {
+  const text3 = String(sql2);
+  const terminator = text3.indexOf(";");
+  if (terminator !== -1 && /\S/.test(text3.slice(terminator + 1))) {
+    recordTableWrite(LIVE_QUERY_ANY_TABLE, tables);
+    return;
+  }
+  if (nonWritingStatementPattern.test(text3)) return;
+  const match = writeTablePattern.exec(text3);
+  if (match && result && typeof result === "object" && "changes" in result && Number(result.changes) === 0) return;
+  recordTableWrite(match ? match[1] ?? match[2] : LIVE_QUERY_ANY_TABLE, tables);
+}
+function publishLiveQueryDirtyTables(tables) {
+  for (const table of tables) recordTableWrite(table, dirtyTables);
+}
+function takeLiveQueryDirtyTables() {
+  const taken = dirtyTables;
+  dirtyTables = /* @__PURE__ */ new Set();
+  return taken;
+}
+function liveQueryNeedsRefresh(readTables, dirty) {
+  if (!readTables || dirty.has(LIVE_QUERY_ANY_TABLE)) return true;
+  for (const table of readTables) if (dirty.has(table)) return true;
+  return false;
+}
+
+// src/database-runtime.ts
+import { randomUUID as randomUUID10 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql2) {
@@ -138789,7 +138972,7 @@ function createConnection() {
         return;
       }` : ""}
       if (message.error && typeof window !== "undefined" && typeof window.CustomEvent === "function") {
-        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: message.error }));
+        window.dispatchEvent(new window.CustomEvent("sporades:error", { detail: { ...message.error, ...(typeof message.error.eventId === "string" && /^[a-f0-9]{32}$/.test(message.error.eventId) ? { sporadesSource: "server" } : {}) } }));
       }
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message, openedSocket);
@@ -151773,7 +151956,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
   const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   validateEndpointSessionDeclaration({ ...endpoint, handler });
   if (endpoint.options?.session === "none") {
-    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath);
+    return runSessionlessEndpoint(database, handler, requestUrl, request, requestPath, endpoint.name);
   }
   const runtimeOwnedProviderCallback = endpoint.runtimeOwnedEmailEvent || endpoint.runtimeOwnedStripeCallback;
   let endpointRequest = endpointRequestHead(database, requestUrl, request, requestPath);
@@ -151962,7 +152145,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
-    database.observability?.capture(error, "endpoint");
+    database.observability?.capture(error, "endpoint", void 0, { handler: endpoint.name });
     if (outerCommitted) throw error;
     if (endpointRequest.multipart) {
       try {
@@ -152272,7 +152455,7 @@ function endpointRequestHead(database, requestUrl, request, requestPath = reques
     query
   };
 }
-async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath) {
+async function runSessionlessEndpoint(database, handler, requestUrl, request, requestPath, handlerName) {
   try {
     const endpointRequest = await readEndpointRequest(database, requestUrl, request, true, requestPath);
     const signal = request.__sporadesEndpointSignal ?? request.signal;
@@ -152304,7 +152487,7 @@ async function runSessionlessEndpoint(database, handler, requestUrl, request, re
     }
     return result;
   } catch (error) {
-    database.observability?.capture(error, "endpoint");
+    database.observability?.capture(error, "endpoint", void 0, { handler: handlerName });
     throw error;
   }
 }
@@ -153570,7 +153753,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       sendUnhandledMessageError(client, rawMessage, error);
     });
   }
-  function sendUnhandledMessageError(client, rawMessage, error) {
+  function sendUnhandledMessageError(client, rawMessage, error, eventId) {
     let id2 = null;
     try {
       id2 = JSON.parse(rawMessage)?.id ?? null;
@@ -153581,6 +153764,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       id: id2,
       type: "error",
       error: {
+        ...eventId ? { eventId } : {},
         message: error?.message || "WebSocket message failed.",
         hint: error?.hint ?? "Retry the request. If this keeps happening, restart the Sporades session."
       }
@@ -153873,7 +154057,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
       if (previous) cancelQueryRefresh(previous);
       client.subscriptions.set(message.id, subscription);
       database.__notifyJobStateQueries = refreshQueries;
-      void runSubscriptionQueries(client, subscription, (error) => sendUnhandledMessageError(client, rawMessage, error), operation);
+      void runSubscriptionQueries(client, subscription, (error, eventId) => sendUnhandledMessageError(client, rawMessage, error, eventId), operation);
       return;
     }
     if (message.type === "query.unsubscribe") {
@@ -154386,12 +154570,16 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     return operation.run(async () => {
       const generation2 = (subscription.generation ?? 0) + 1;
       subscription.generation = generation2;
+      let eventId;
       try {
         const database = getDatabase();
         const readTables = /* @__PURE__ */ new Set();
         const result = await trackLiveQueryReads(readTables, () => runQuery(database, client.session.auth, subscription.name, subscription.args, {
           sessionToken: client.session.token,
-          clientAddress: client.clientAddress
+          clientAddress: client.clientAddress,
+          onDiagnostic: (id2) => {
+            eventId = id2;
+          }
         }));
         if (subscription.generation === generation2) subscription.readTables = result?.error || readTables.has(LIVE_QUERY_ANY_TABLE) ? null : readTables;
         const data2 = subscription.style === "direct" ? result.data ?? result.rows : { rows: result.data ?? result.rows };
@@ -154412,7 +154600,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation2) return;
         subscription.readTables = null;
         try {
-          onError(error);
+          onError(error, eventId);
         } catch {
         }
       } finally {
@@ -154436,7 +154624,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           void runSubscriptionQueries(
             client,
             subscription,
-            (error) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error)
+            (error, eventId) => sendUnhandledMessageError(client, JSON.stringify({ id: subscription.id }), error, eventId)
           );
         }
       }
@@ -154777,13 +154965,14 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
         if (queryHandler) admitCredentialHandler(queryHandler, context2, "query");
         context2 = await applyContextMiddleware(database, context2, "query");
       } catch (error) {
-        database.observability?.capture(error, "query");
+        const eventId = database.observability?.capture(error, "query", void 0, { handler: customHandler?.name });
         if (error?.sporadesAuthDenialLogData) {
           emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
         return {
           rows: null,
           error: {
+            ...eventId ? { eventId } : {},
             ...error?.code ? { code: error.code } : {},
             message: error.message,
             hint: error.hint ?? "Check the Capsule context middleware and retry the query."
@@ -154821,7 +155010,11 @@ async function runQuery(database, auth, queryName, rawArgs = [], options = {}) {
       return { rows, error: null };
     })();
   } catch (error) {
-    database.observability?.capture(error, "query");
+    const eventId = database.observability?.capture(error, "query", void 0, { handler: customHandler?.name });
+    try {
+      options.onDiagnostic?.(eventId);
+    } catch {
+    }
     primaryError = error;
     throw error;
   } finally {
@@ -154863,13 +155056,14 @@ async function runCustomQuery(database, context2, queryName, args, resolvedHandl
     assertJsonCompatible(data2);
     return { data: data2, error: null };
   } catch (error) {
-    database.observability?.capture(error, "query");
+    const eventId = database.observability?.capture(error, "query", void 0, { handler: handler.name });
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
     return {
       data: null,
       error: {
+        ...eventId ? { eventId } : {},
         ...error?.code ? { code: error.code } : {},
         message: error?.message || "Query handler failed.",
         hint: error?.hint ?? "Check the Capsule query handler and retry the query."
@@ -155089,8 +155283,8 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return committed;
   } catch (error) {
-    database.observability?.capture(error, "mutation");
-    if (outerCommitted) return createHookErrorResult(error);
+    const eventId = database.observability?.capture(error, "mutation", void 0, { handler: database.mutations.find((candidate) => candidate.name === mutationName)?.name });
+    if (outerCommitted) return createHookErrorResult(error, eventId);
     dropPendingCurrentUserFileByteDeletes(context2);
     dropPendingJobCancellationAborts(context2);
     dropAccessKeyLifecycleAuditEvents(context2);
@@ -155104,7 +155298,7 @@ async function runMutation(database, auth, mutationName, args, options = {}) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
-    return createHookErrorResult(error);
+    return createHookErrorResult(error, eventId);
   }
 }
 async function runCustomMutation(database, context2, mutationName, args, resolvedHandler = null) {
@@ -155188,6 +155382,7 @@ async function runAppMessage(database, auth, messageName, data2, options = {}) {
     await dispatchPendingJobs(context2);
     return response;
   } catch (error) {
+    const eventId = database.observability?.capture(error, "message", void 0, { handler: handler.name });
     dropPendingCurrentUserFileByteDeletes(context2);
     dropPendingJobCancellationAborts(context2);
     dropAccessKeyLifecycleAuditEvents(context2);
@@ -155199,6 +155394,7 @@ async function runAppMessage(database, auth, messageName, data2, options = {}) {
     return {
       data: null,
       error: {
+        ...eventId ? { eventId } : {},
         ...error?.code ? { code: error.code } : {},
         message: error?.message || "App message handler failed.",
         hint: error?.hint ?? "Check the Capsule message handler and retry the app message."
@@ -156047,7 +156243,7 @@ async function runCurrentUserJobWorker(database) {
             error = atomicStripeAbortError();
           }
         }
-        if (handlerStarted) database.observability?.capture(error, "job");
+        if (handlerStarted) database.observability?.capture(error, "job", void 0, { handler: row.handler });
         const handlerFailure = safeJobFailure(error);
         const permanentFailure = error?.retryable === false && handlerFailure.code !== "JOB_FAILED";
         const failedAt = database.clock.now().toISOString();
@@ -156099,10 +156295,11 @@ async function runCurrentUserJobWorker(database) {
     if (rerunRequested && !database.__jobStopped) scheduleCurrentUserJobWorker(database);
   }
 }
-function createHookErrorResult(error) {
+function createHookErrorResult(error, eventId) {
   return {
     ok: false,
     error: {
+      ...eventId ? { eventId } : {},
       ...error?.code ? { code: error.code } : {},
       message: error?.message || "Mutation hook failed.",
       hint: error?.hint ?? "Check the Capsule mutation hooks and retry the mutation."

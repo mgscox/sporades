@@ -1,10 +1,11 @@
+import { exceptionFrames } from "../exception-stack.js";
 import { expectedDiagnosticErrorCodes } from "../runtime-errors.js";
 /** First-party browser source. Provider identities and Server env never enter this script. */
 export function collectionLoaderSource(errors, analytics) {
-    return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics, expectedErrorCodes: expectedDiagnosticErrorCodes })});`;
+    return `(${collectionLoader.toString()})(${JSON.stringify({ errors, analytics, expectedErrorCodes: expectedDiagnosticErrorCodes })}, ${exceptionFrames.toString()});`;
 }
 // This function is serialized, never called in Node. Keep it self-contained.
-function collectionLoader(options) {
+function collectionLoader(options, parseFrames) {
     // DOM types are deliberately local: the server runtime graph is checked without DOM globals.
     const browser = globalThis.window;
     if (!browser || browser.__sporadesCollectionInstalled)
@@ -14,7 +15,7 @@ function collectionLoader(options) {
         if (!value)
             return "";
         const url = new browser.URL(value, browser.location.origin);
-        return url.origin + url.pathname;
+        return ["http:", "https:", "file:"].includes(url.protocol) ? (url.protocol === "file:" ? "file://" : url.origin) + url.pathname : "";
     }
     catch {
         return "";
@@ -24,9 +25,9 @@ function collectionLoader(options) {
     }
     catch { } };
     let count = 0, start = Date.now();
-    const error = (value) => {
+    const error = (value, location) => {
         try {
-            if (options.expectedErrorCodes.includes(value?.code))
+            if ((value?.name === undefined && typeof value?.stack !== "string" && typeof value?.eventId === "string" && /^[a-f0-9]{32}$/.test(value.eventId)) || value?.sporadesSource === "server" || options.expectedErrorCodes.includes(value?.code))
                 return;
             if (Date.now() - start > 60000) {
                 start = Date.now();
@@ -34,12 +35,37 @@ function collectionLoader(options) {
             }
             if (++count > 20)
                 return;
-            send({ type: "error", message: String(value?.message ?? value ?? "Client error").slice(0, 2048), stack: typeof value?.stack === "string" ? value.stack.slice(0, 8192) : undefined });
+            let stackBudget = 8192, messageBudget = 2048;
+            const reduce = (item) => {
+                // Parse before transport reduction so embedded source never enters the request.
+                const lines = parseFrames(item?.stack).reverse().map(frame => `    at ${frame.function} (${frame.filename}:${frame.lineno}:${frame.colno})`);
+                let stack = "";
+                for (const line of lines) {
+                    if (line.length + 1 > stackBudget)
+                        break;
+                    stack += line + "\n";
+                    stackBudget -= line.length + 1;
+                }
+                // Embedded-source replacement can expand text; charge only the bounded result.
+                const message = String(item?.message ?? (item !== null && typeof item === "object" ? "Non-Error exception" : item ?? "Client error")).slice(0, messageBudget).replace(/data:[^\s)]+/gi, "[embedded source]").slice(0, messageBudget);
+                messageBudget -= message.length;
+                return { name: typeof item?.name === "string" ? item.name.slice(0, 64) : typeof item === "object" ? "Error" : "NonError", message, stack: stack || undefined };
+            };
+            const result = reduce(value), causes = [], seen = new Set([value]);
+            let current = value;
+            for (let depth = 0; depth < 3 && current?.cause !== undefined && !seen.has(current.cause); depth++) {
+                current = current.cause;
+                seen.add(current);
+                causes.push(reduce(current));
+            }
+            send({ type: "error", ...result, causes, ...(!result.stack && location ? { location } : {}) });
         }
         catch { }
     };
     if (options.errors) {
-        browser.addEventListener("error", (event) => error(event.error ?? event.message));
+        browser.addEventListener("error", (event) => error(event.error ?? event.message, {
+            filename: clean(event.filename), lineno: event.lineno, colno: event.colno,
+        }));
         browser.addEventListener("unhandledrejection", (event) => error(event.reason));
         browser.addEventListener("sporades:error", (event) => error(event.detail));
     }

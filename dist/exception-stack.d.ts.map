@@ -1,0 +1,1 @@
+{"version":3,"file":"exception-stack.d.ts","sourceRoot":"","sources":["../src/exception-stack.ts"],"names":[],"mappings":"AAAA,MAAM,MAAM,cAAc,GAAG;IAAE,QAAQ,EAAE,MAAM,CAAC;IAAC,QAAQ,EAAE,MAAM,CAAC;IAAC,MAAM,CAAC,EAAE,MAAM,CAAC;IAAC,KAAK,CAAC,EAAE,MAAM,CAAA;CAAE,CAAC;AAErG,qFAAqF;AACrF,wBAAgB,eAAe,CAAC,KAAK,EAAE,OAAO,EAAE,cAAc,SAA+B,GAAG,cAAc,EAAE,CAuC/G"}
