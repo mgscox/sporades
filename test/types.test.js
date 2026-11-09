@@ -266,6 +266,8 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
     scope.mail.send({});
     // @ts-expect-error no nested privileged authority.
     scope.privileged.run({}, () => null);
+    // @ts-expect-error Current-user resource scopes have no userless Team lock.
+    scope.teams.lockLifecycle("team-id");
     return { committed: true };
   });
   const checked: boolean = answer.committed;
@@ -275,6 +277,17 @@ async function resourceContract(ctx: publicServerApi.CapsuleContext) {
   ctx.resources.run({ resource: { table: "anchors", id: "existing" }, operationId: "stable", input: null }, () => new Date());
   return checked;
 }
+
+const scheduledTeamLock = job(async (ctx, payload: { teamId: string; day: string }) => {
+  return ctx.resources.run({ resource: { table: "teamWorkAnchors", id: payload.teamId }, operationId: payload.day, input: payload }, async scope => {
+    const source: import("${path.relative(dir, path.join(repoRoot, 'src/server.js')).split(path.sep).join('/')}").ResourceScope = scope;
+    if (!source.teams) throw new Error("Privileged Job required");
+    const snapshot = await source.teams.lockLifecycle(payload.teamId);
+    // @ts-expect-error The Job-safe Team projection still has no admin methods.
+    source.teams.demote(payload.teamId, "member-id");
+    return { teamId: snapshot.teamId };
+  });
+});
 
 function principalAdmission(ctx: publicServerApi.FileIngressAdmissionContext<typeof privateSchema>) {
   const result: publicServerApi.RateLimitResult = ctx.rateLimit("upload:resource", { limit: 2, windowMs: 60000 });

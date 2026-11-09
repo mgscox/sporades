@@ -659,3 +659,54 @@ queues independent root work behind an acquired resource; resource acquisition
 against an already-busy gate instead rejects immediately. "Wait for release" is an ordering guarantee, not
 transparent callback replay: cancellation cannot commit its marker while the
 resource writer holds the engine, and a later cancellation cannot undo its receipt.
+
+### Team lifecycle locks in scheduled Jobs
+
+A Schedule runs its Job inside the runtime's audited Privileged callback; do
+not nest another `ctx.privileged.run`. Ordinary Jobs have no enclosing write
+transaction. Calling `ctx.teams.lockLifecycle` directly in one still refuses
+with `TEAM_POLICY_DENIED` (reported as opaque `PRIVILEGED_RUN_FAILED` for a
+Privileged Job). This reproduces the 0.9.45 behavior in #356.
+
+On SQLite and PostgreSQL, an already-Privileged Job can instead call
+`scope.teams.lockLifecycle(teamId, memberUserId?)` inside `ctx.resources.run`.
+It returns the same frozen `{ teamId, member }` snapshot and holds the same
+Team lifecycle lock through resource commit or rollback. The scope exposes
+only this Team method; it grants no membership mutation or administrator
+authority. Current-user Job scopes and mutation/endpoint resource scopes have
+no `scope.teams` capability. libSQL resource transactions remain unsupported.
+
+```ts
+remindTeam: job(async (ctx, payload: { teamId: string; day: string }) => {
+  // Each Team has a pre-existing Capsule-owned anchor row with immutable identity.
+  return ctx.resources.run({
+    resource: { table: "teamWorkAnchors", id: payload.teamId },
+    operationId: `allergen-reminder:${payload.day}`,
+    input: { teamId: payload.teamId, day: payload.day },
+  }, async scope => {
+    if (!scope.teams) throw new Error("Privileged Job required");
+    await scope.teams.lockLifecycle(payload.teamId);
+    // Read eligibility and enforce the Team's cap only after taking the lock.
+    const pending = await scope.db.reminders.where("teamId", payload.teamId).all();
+    if (pending.length >= 10) return { queued: false };
+    await scope.db.reminders.insert({ teamId: payload.teamId, day: payload.day });
+    return { queued: true };
+  });
+}),
+```
+
+Call resource entry as the Job's first database/framework provider operation.
+Anchor authorization precedes the callback; use a separate immutable identity
+row whose ACL does not read protected responsibility state. Take the Team lock
+before reading or writing that state, and use one Team per scope or a consistent
+Team-ID order. All other protected writers must take the same lifecycle lock.
+On PostgreSQL, resource and anchor locks precede Team locks; keep anchor rows
+separate from responsibility records and use the same order in other writers.
+SQLite serializes database writers across Teams.
+
+Lock failures poison rollback even when caught. Expired handles reject
+`RESOURCE_SCOPE_INACTIVE`; Job cancellation, deadline, claim checks and receipt
+replay retain the resource contract above. A replay returns its committed result
+without reacquiring a Team lock or re-running the callback; it grants no fresh
+eligibility decision. Persist local work or notification intent in the scope,
+then perform any provider I/O in a separate durable Job after commit.
