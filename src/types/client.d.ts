@@ -387,17 +387,18 @@ export type TeamsApi = {
 };
 
 /** Closed, provider-identifier-free Team Billing state for app-owned rendering. */
+export type TeamBillingInterval = `${"day" | "week" | "month" | "year"}:${number}`;
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }
   | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
-  | { state: "trialing"; teamId: string; productKey: string; quantity: number; trialEndsAt: string }
-  | { state: "active"; teamId: string; productKey: string; quantity: number; renewsAt: string }
-  | { state: "cancelling"; teamId: string; productKey: string; quantity: number; endsAt: string }
-  | { state: "past-due"; teamId: string; productKey: string; quantity: number; currentPeriodEnd: string }
-  | { state: "cancelled"; teamId: string; productKey: string; quantity: number }
+  | { state: "trialing"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; trialEndsAt: string }
+  | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; renewsAt: string }
+  | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; endsAt: string }
+  | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; currentPeriodEnd: string }
+  | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 
-export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string };
+export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
 export type TeamBillingCheckoutResult =
   | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
   | { state: "ready"; teamId: string; requestId: string; productKey: string; url: string; expiresAt: string }
@@ -411,7 +412,7 @@ export type TeamBillingPortalResult =
   | { state: "expired" | "superseded"; teamId: string; requestId: string }
   | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
 
-export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string };
+export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
 export type TeamBillingPlanTransitionResult =
   | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }

@@ -22,6 +22,7 @@
       "src/base-image.ts",
       "src/bounded-fixed-window.ts",
       "src/build-diagnostics.ts",
+      "src/build.ts",
       "src/bundle-pipeline.ts",
       "src/capsule-rate-limit.ts",
       "src/capsule-services.ts",
@@ -150,6 +151,7 @@
       "src/templates/server-bundle-module-graph.ts",
       "src/testing/stripe.ts",
       "src/types/admission-policy.d.ts",
+      "src/types/build.d.ts",
       "src/types/client.d.ts",
       "src/types/host-backups.d.ts",
       "src/types/host-observability.d.ts",
@@ -165,7 +167,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "ee8504ae2375cfd2e60fb75515fa737fc894e392265a4eb8e9b869bc6e0f91c3"
+    "digest": "2729406db135720122ebec3e44687167a3ab1fb0c1bc14f3367bb0d6eb08451c"
   },
   "outputs": {
     "files": [
@@ -223,6 +225,10 @@
       "dist/build-diagnostics.d.ts.map",
       "dist/build-diagnostics.js",
       "dist/build-diagnostics.js.map",
+      "dist/build.d.ts",
+      "dist/build.d.ts.map",
+      "dist/build.js",
+      "dist/build.js.map",
       "dist/bundle-pipeline.d.ts",
       "dist/bundle-pipeline.d.ts.map",
       "dist/bundle-pipeline.js",
@@ -733,6 +739,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "463c6da874801e14916e46c0ec1cedb0f85fd532a5758a8378189525a0986638"
+    "digest": "0579967a34da57d0fe568b7186e9ff5cca6d0b4685941e1ac262bae8f6f82da1"
   }
 }

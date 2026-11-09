@@ -105,6 +105,41 @@ test("trial Checkout is free until its end and the fake converts or cancels it",
   });
 });
 
+test("interval switches during a trial preserve its end for conversion and cancellation", async (t) => {
+  for (const via of ["portal", "managed", "pending-payment"]) for (const cancel of [false, true]) {
+    await t.test(`${via}: ${cancel ? "cancel" : "convert"}`, async (t) => {
+      const { fake, provider } = await fixture(t);
+      const checkout = await provider.create({ ...input, trialDays: 14 });
+      const session = await fake.checkout.complete(checkout.sessionId);
+      const subscription = fake.subscriptions.get(session.subscription);
+      const item = subscription.items.data[0];
+      if (via === "portal") await fake.portal.switchPrice(subscription.id, "price_studio");
+      else {
+        if (via === "pending-payment") fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
+        await provider.updateManagedSubscription(updateInput(subscription, item));
+        if (via === "pending-payment") await fake.subscriptions.completePayment(subscription.id);
+      }
+      const switched = fake.subscriptions.get(subscription.id);
+      assert.equal(switched.status, "trialing");
+      assert.equal(switched.items.data[0].price.id, "price_studio");
+      assert.equal(switched.items.data[0].current_period_start, subscription.trial_start);
+      assert.equal(switched.items.data[0].current_period_end, subscription.trial_end);
+      if (cancel) await fake.portal.cancelAtPeriodEnd(subscription.id);
+      await fake.clock.advance(14 * 86400);
+      const settled = fake.subscriptions.get(subscription.id);
+      assert.equal(settled.status, cancel ? "canceled" : "active");
+      if (!cancel) {
+        assert.equal(settled.items.data[0].current_period_start, subscription.trial_end);
+        const expectedEnd = new Date(subscription.trial_end * 1000);
+        if (expectedEnd.getUTCMonth() === 1 && expectedEnd.getUTCDate() === 29) expectedEnd.setUTCDate(28);
+        expectedEnd.setUTCFullYear(expectedEnd.getUTCFullYear() + 1);
+        assert.equal(settled.items.data[0].current_period_end, expectedEnd.getTime() / 1000);
+      }
+      assert.equal(fake.events.pending().at(-1).type, cancel ? "customer.subscription.deleted" : "customer.subscription.updated");
+    });
+  }
+});
+
 test("POST idempotency survives overlapping requests and lost replies; keys are scoped and parameter checked", async (t) => {
   const { fake, provider, stripe } = await fixture(t);
   const concurrent = await Promise.all(Array.from({ length: 8 }, () => provider.create(input)));
@@ -544,7 +579,7 @@ const invalidProduct: TeamBillingProductDeclaration = { ...product, trialDays: "
 void [serverTrial, invalidProduct];
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
-const options: StripeTeamBillingFakeOptions = { catalogue: { products: [], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
+const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
 await fake.checkout.complete("cs_test_types");
 await fake.events.deliver(undefined, { badSignature: true });
@@ -595,4 +630,28 @@ test("lost managed and Portal acknowledgements replay the committed result; GET 
   await assert.rejects(provider.updateManagedSubscription(update), (error) => error.code === "TEAM_BILLING_PROVIDER_REJECTED" && !error.retryable);
   await assert.rejects(provider.updateManagedSubscription(update), (error) => error.code === "TEAM_BILLING_PROVIDER_REJECTED" && !error.retryable);
   fake.faults.clear();
+});
+
+test('multi-interval Prices reset calendar periods only when an applied interval changes', async (t) => {
+  const multi = { products: [{ id: 'prod_team', prices: [
+    { id: 'price_team', recurring: 'month' }, { id: 'price_annual', recurring: 'year' },
+    { id: 'price_quarter', recurring: 'month', intervalCount: 3 },
+  ] }], portalConfigurations: [{ id: 'bpc_team', products: [{ product: 'prod_team', prices: ['price_team', 'price_annual', 'price_quarter'] }] }] };
+  const f = await fixture(t, { catalogue: multi });
+  const { fake, provider } = f;
+  const { subscription, item } = await paid(f);
+  await fake.clock.advance(86400);
+  const annual = await fake.portal.switchPrice(subscription.id, 'price_annual');
+  const annualItem = annual.items.data[0];
+  assert.equal(annualItem.current_period_start, fake.state().now);
+  assert.equal(new Date(annualItem.current_period_end * 1000).getUTCFullYear(), new Date(annualItem.current_period_start * 1000).getUTCFullYear() + 1);
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await provider.updateManagedSubscription(updateInput(subscription, item, { sourcePriceId: 'price_annual', targetPriceId: 'price_quarter', targetProductId: 'prod_team' }));
+  assert.equal(fake.subscriptions.get(subscription.id).items.data[0].price.id, 'price_annual');
+  await fake.clock.advance(60);
+  const applied = await fake.subscriptions.completePayment(subscription.id);
+  assert.equal(applied.items.data[0].price.recurring.interval_count, 3);
+  assert.equal(applied.items.data[0].current_period_start, fake.state().now);
+  const start = new Date(fake.state().now * 1000);
+  assert.equal(new Date(applied.items.data[0].current_period_end * 1000).getUTCMonth(), (start.getUTCMonth() + 3) % 12);
 });

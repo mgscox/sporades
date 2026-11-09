@@ -40,7 +40,9 @@ function validateCatalogue(catalogue) {
         requireValue(/^prod_[A-Za-z0-9_]+$/.test(product.id) && !products.has(product.id) && Array.isArray(product.prices) && product.prices.length);
         products.set(product.id, new Set());
         for (const price of product.prices) {
-            requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["month", "year"].includes(price.recurring));
+            requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring)
+                && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1
+                && (price.intervalCount ?? 1) <= ({ day: 1095, week: 156, month: 36, year: 3 })[price.recurring]);
             prices.add(price.id);
             products.get(product.id).add(price.id);
         }
@@ -155,16 +157,19 @@ export async function createStripeTeamBillingFake(options) {
             const entry = product.prices.find((item) => item.id === priceId);
             if (entry)
                 return { id: entry.id, object: "price", livemode: false, product: product.id,
-                    recurring: { interval: entry.recurring, interval_count: 1, usage_type: "licensed" } };
+                    recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" } };
         }
         return fail("Unknown catalogue Price.");
     }
     function periodEnd(start, priceValue) {
+        const { interval, interval_count: count } = priceValue.recurring;
+        if (interval === "day" || interval === "week")
+            return start + count * 86400 * (interval === "week" ? 7 : 1);
         const date = new Date(start * 1000);
         // Calendar periods, clamped to the last day of the target month (including leap years).
         const day = date.getUTCDate();
         date.setUTCDate(1);
-        date.setUTCMonth(date.getUTCMonth() + (priceValue.recurring.interval === "year" ? 12 : 1));
+        date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
         const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
         date.setUTCDate(Math.min(day, lastDay));
         return Math.floor(date.getTime() / 1000);
@@ -269,9 +274,17 @@ export async function createStripeTeamBillingFake(options) {
         subscription.items.data[0].quantity = integer(quantity);
         return subscriptionEvent(subscription);
     }
+    function applyPrice(item, targetPrice) {
+        if (item.price.recurring.interval !== targetPrice.recurring.interval
+            || item.price.recurring.interval_count !== targetPrice.recurring.interval_count) {
+            item.current_period_start = now;
+            item.current_period_end = periodEnd(now, targetPrice);
+        }
+        item.price = copy(targetPrice);
+    }
     async function switchPrice(subscriptionId, priceId) {
         const subscription = liveSubscription(subscriptionId);
-        subscription.items.data[0].price = price(priceId);
+        applyPrice(subscription.items.data[0], price(priceId));
         return subscriptionEvent(subscription);
     }
     async function setCancellation(subscriptionId, cancel) {
@@ -360,7 +373,7 @@ export async function createStripeTeamBillingFake(options) {
                         subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
                 }
                 else {
-                    item.price = targetPrice;
+                    applyPrice(item, targetPrice);
                     item.quantity = quantity;
                     subscription.pending_update = null;
                 }
@@ -465,7 +478,7 @@ export async function createStripeTeamBillingFake(options) {
                 const pending = subscription.pending_update;
                 requireValue(pending && pending.expires_at > now, "No payable pending update.");
                 const requested = pending.subscription_items[0];
-                subscription.items.data[0].price = copy(requested.price);
+                applyPrice(subscription.items.data[0], requested.price);
                 subscription.items.data[0].quantity = requested.quantity;
                 subscription.pending_update = null;
                 subscription.status = "active";
