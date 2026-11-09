@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Features
+
+- Team Billing products can declare `trialDays: 1–90`. One trial Checkout is
+  reserved per Team across products; verified `trialing` truth exposes the paid
+  product and `trialEndsAt`. The stateful Stripe fake supports trial conversion
+  and cancellation (#353).
+
 ### Bug Fixes
 
 - Chained `.where()` calls now combine equality predicates with AND for `get()`

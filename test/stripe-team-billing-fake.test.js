@@ -4,10 +4,12 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import Stripe from "stripe";
 import { createStripeTeamBillingFake } from "sporades/testing/stripe";
 import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
+import { startTeamBillingCheckout, performTeamBillingCheckout, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { inspectRuntimeJobs, openDevDatabase, routeEndpoint, runCurrentUserJobWorker } from "../dist/server-runtime-source.js";
 
@@ -82,6 +84,25 @@ test("the real provider attests Checkout, Portal, plans, seats and provider-safe
   const missing = await provider.quiesceTeamBilling(erasure({ checkoutSessionIds: ["cs_test_missing"], subscriptionIds: ["sub_missing"] }));
   assert.deepEqual(missing.checkouts, [{ id: "cs_test_missing", state: "safely-closed" }]);
   assert.deepEqual(missing.subscriptions, [{ id: "sub_missing", state: "safely-closed" }]);
+});
+
+test("trial Checkout is free until its end and the fake converts or cancels it", async (t) => {
+  for (const cancel of [false, true]) await t.test(cancel ? "cancel" : "convert", async (t) => {
+    const { fake, provider } = await fixture(t);
+    const result = await provider.create({ ...input, trialDays: 14 });
+    const session = await fake.checkout.complete(result.sessionId);
+    const subscription = fake.subscriptions.get(session.subscription);
+    assert.equal(session.payment_status, "no_payment_required");
+    assert.equal(subscription.status, "trialing");
+    assert.equal(subscription.trial_end - subscription.trial_start, 14 * 86400);
+    assert.equal(subscription.items.data[0].current_period_end, subscription.trial_end);
+    if (cancel) await fake.portal.cancelAtPeriodEnd(subscription.id);
+    await fake.clock.advance(14 * 86400 - 1);
+    assert.equal(fake.subscriptions.get(subscription.id).status, "trialing");
+    await fake.clock.advance(1);
+    assert.equal(fake.subscriptions.get(subscription.id).status, cancel ? "canceled" : "active");
+    assert.equal(fake.events.pending().at(-1).type, cancel ? "customer.subscription.deleted" : "customer.subscription.updated");
+  });
 });
 
 test("POST idempotency survives overlapping requests and lost replies; keys are scoped and parameter checked", async (t) => {
@@ -377,6 +398,78 @@ test("real callback verification and atomic convergence accept the fake's events
   assert.equal(fake.events.deliveries().find((entry) => entry.eventId === unknown.id).status, 200);
 });
 
+test("Team trial Checkout and signed callbacks expose entitled truth and retain trial history after restart", async (t) => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-trial-callback-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const auth = { userId: "trial-admin", isAuthenticated: true, isGuest: false, provider: "email" };
+  const capsule = { name: "trial-callback", schema: {}, teamBilling: {
+    checkout: { successPath: "/success", cancelPath: "/cancel" },
+    catalogue: { team: { trialDays: 14, quantity: { kind: "fixed", value: 2 }, stripe: {
+      sandbox: { priceId: "price_team", productId: "prod_team" }, live: { priceId: "price_live_team", productId: "prod_live_team" },
+    } } }, authorize: async () => ({ allow: true }),
+  } };
+  const open = () => openDevDatabase(path.join(dir, "trial.db"), "", env, { name: capsule.name, payments: { stripe: { ...config, requestTimeoutMs: 1000 } } }, capsule,
+    { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  let database = await open();
+  const callback = createServer(async (req, res) => {
+    try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); }
+    catch { res.writeHead(500).end(); }
+  });
+  const origin = await listen(callback);
+  const fake = await createStripeTeamBillingFake({ catalogue, webhookSecret: secret, webhookTarget: `${origin}/stripe/webhook`, delivery: "manual" });
+  t.after(async () => { await fake.close(); await stop(callback); await database.close(); });
+  database.stripeApiBaseUrl = fake.origin;
+  await database.init();
+  const timestamp = new Date().toISOString();
+  database.adapter.prepare("INSERT INTO [sporades_auth_users] ([id], [createdAt], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider]) VALUES (?, ?, 'Admin', NULL, NULL, 1, 0, 'email')").run(auth.userId, timestamp);
+  database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Trial Team', ?, ?)").run(input.teamId, timestamp, auth.userId);
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(input.teamId, auth.userId, timestamp);
+  assert.equal((await startTeamBillingCheckout(database, auth, input.teamId, input.operationId, "team")).state, "pending");
+  const operation = database.adapter.prepare("SELECT [id] FROM [sporades_team_billing_operations] WHERE [requestId] = ?").get(input.operationId);
+  await performTeamBillingCheckout(database, {}, { operationId: operation.id });
+  const ready = await startTeamBillingCheckout(database, auth, input.teamId, input.operationId, "team");
+  assert.equal(ready.state, "ready");
+  await fake.checkout.expire(fake.state().checkouts[0].id);
+  await fake.events.deliver();
+  let expired = false;
+  for (let count = 0; count < 100; count++) {
+    await runCurrentUserJobWorker(database);
+    if ((await startTeamBillingCheckout(database, auth, input.teamId, input.operationId, "team")).state === "expired") {
+      expired = true; break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(expired, true, "verified expiry closes the unused reservation");
+  const nextRequestId = "44444444-4444-4444-8444-444444444444";
+  assert.equal((await startTeamBillingCheckout(database, auth, input.teamId, nextRequestId, "team")).state, "pending");
+  const nextOperation = database.adapter.prepare("SELECT [id] FROM [sporades_team_billing_operations] WHERE [requestId] = ?").get(nextRequestId);
+  await performTeamBillingCheckout(database, {}, { operationId: nextOperation.id });
+  const session = await fake.checkout.complete(fake.state().checkouts[1].id);
+  assert.equal(session.payment_status, "no_payment_required");
+  async function observe(expected) {
+    await fake.events.deliver();
+    for (let count = 0; count < 100; count++) {
+      await runCurrentUserJobWorker(database);
+      const truth = await readCurrentUserTeamBilling(database, auth, input.teamId);
+      if (truth.state === expected) return truth;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.fail(`Did not converge to ${expected}`);
+  }
+  assert.deepEqual(await observe("trialing"), { state: "trialing", teamId: input.teamId, productKey: "team", quantity: 2,
+    trialEndsAt: new Date(fake.subscriptions.get(session.subscription).trial_end * 1000).toISOString() });
+  await fake.clock.advance(14 * 86400);
+  assert.equal((await observe("active")).productKey, "team");
+  await fake.subscriptions.setStatus(session.subscription, "canceled");
+  await observe("cancelled");
+  await database.close();
+  database = await open();
+  database.stripeApiBaseUrl = fake.origin;
+  await assert.rejects(startTeamBillingCheckout(database, auth, input.teamId, "33333333-3333-4333-8333-333333333333", "team"), error => error.code === "TEAM_BILLING_DENIED");
+  assert.equal((await readCurrentUserTeamBilling(database, auth, input.teamId)).state, "cancelled");
+  assert.equal(fake.state().checkouts.length, 2);
+});
+
 test("auto delivery signs committed state and never follows a webhook redirect", async (t) => {
   const bodies = [];
   const target = createServer(async (req, res) => {
@@ -440,6 +533,15 @@ test("canonical and generated testing declarations compile the same consumer con
   await writeFile(probe, `
 import { createStripeTeamBillingFake, type StripeFakeFault, type StripeTeamBillingFakeOptions } from "sporades/testing/stripe";
 import { createStripeTeamBillingFake as generatedFactory } from ${JSON.stringify(path.resolve("dist/testing/stripe.js"))};
+import type { TeamBillingProductDeclaration, TeamBillingProjection as ServerTruth } from "sporades/server";
+import type { TeamBillingProjection as ClientTruth } from "sporades/client";
+const trial: ServerTruth = { state: "trialing", teamId: "team", productKey: "team", quantity: 2, trialEndsAt: "2026-11-22T00:00:00.000Z" };
+const clientTrial: ClientTruth = trial;
+const serverTrial: ServerTruth = clientTrial;
+const product: TeamBillingProductDeclaration = { trialDays: 14, quantity: { kind: "fixed", value: 2 }, stripe: { sandbox: { priceId: "price_test" }, live: { priceId: "price_live" } } };
+// @ts-expect-error Trial days are numeric.
+const invalidProduct: TeamBillingProductDeclaration = { ...product, trialDays: "14" };
+void [serverTrial, invalidProduct];
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
 const options: StripeTeamBillingFakeOptions = { catalogue: { products: [], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };

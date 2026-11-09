@@ -290,8 +290,8 @@ test("erasure recovers an attempted Checkout from its exact immutable provider r
   const fixture = openFixture();
   try {
     fixture.sqlite.prepare(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerExpiresAt], [attemptedAt]) " +
-      "VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'ffffffff-ffff-4fff-8fff-ffffffffffff', ?, 'erasure-admin', 'checkout', 'agency', 'retrying', NULL, 'checkout-lost-stable-key', NULL, ?, ?, 'sandbox', 2, 'price_erasure', 2000000000, ?)",
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerExpiresAt], [attemptedAt], [trialDays]) " +
+      "VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'ffffffff-ffff-4fff-8fff-ffffffffffff', ?, 'erasure-admin', 'checkout', 'agency', 'retrying', NULL, 'checkout-lost-stable-key', NULL, ?, ?, 'sandbox', 2, 'price_erasure', 2000000000, ?, 14)",
     ).run(teamId, "2026-08-24T10:00:00.000Z", "2026-08-24T10:00:00.000Z", "2026-08-24T10:00:00.000Z");
     await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId);
     fixture.controls.outcome = {
@@ -310,6 +310,7 @@ test("erasure recovers an attempted Checkout from its exact immutable provider r
       mode: "subscription",
       priceId: "price_erasure",
       quantity: 2,
+      trialDays: 14,
       successPath: "/billing/success",
       cancelPath: "/billing/cancelled",
       idempotencyKey: "checkout-lost-stable-key",
@@ -624,7 +625,7 @@ function openFixture() {
     "CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)",
-    "CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [providerExpiresAt] INTEGER NULL, [attemptedAt] TEXT NULL, [providerCustomerId] TEXT NULL, [providerSubscriptionId] TEXT NULL, UNIQUE ([teamId], [requestId]))",
+    "CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [providerExpiresAt] INTEGER NULL, [attemptedAt] TEXT NULL, [trialDays] INTEGER NULL, [providerCustomerId] TEXT NULL, [providerSubscriptionId] TEXT NULL, UNIQUE ([teamId], [requestId]))",
     "CREATE TABLE [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)",

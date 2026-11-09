@@ -197,13 +197,15 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const customerId = input.customerId ?? session.customer ?? id("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
     const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id);
+    const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
+    const trialEnd = trialDays ? now + trialDays * 86400 : null;
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
-      status: "active", cancel_at_period_end: false, cancel_at: null, pending_update: null,
+      status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, pending_update: null,
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
-        quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: periodEnd(now, itemPrice) }] } };
+        quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
     subscriptions.set(subscriptionId, subscription);
-    Object.assign(session, { status: "complete", customer: customerId, subscription: subscriptionId });
+    Object.assign(session, { status: "complete", payment_status: trialDays ? "no_payment_required" : "paid", customer: customerId, subscription: subscriptionId });
     // Commit both objects before delivering either event.
     await emit(CHECKOUT_COMPLETED, session); await emit(SUBSCRIPTION_CREATED, subscription);
     return copy(session);
@@ -252,7 +254,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       case "checkout.sessions.create": {
         exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer"]);
         requireValue(p.mode === "subscription"); exactKeys(p.line_items, ["0"]); exactKeys(p.line_items[0], ["price", "quantity"]);
-        exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"]);
+        exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
+        if (p.subscription_data.trial_period_days !== undefined) integer(p.subscription_data.trial_period_days, 90);
         exactKeys(p.subscription_data.metadata, ["sporades_team_billing_operation"]);
         requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation
           && p.client_reference_id === p.subscription_data.metadata.sporades_team_billing_operation);
@@ -401,6 +404,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       requireValue(Number.isSafeInteger(seconds) && seconds >= 0 && now + seconds <= 253_402_300_799); now += seconds;
       for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now) await expire(session.id);
       for (const sub of subscriptions.values()) if (sub.status !== "canceled" && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
+      for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now) await fake.subscriptions.renew(sub.id);
       for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now) {
         sub.pending_update = null; await subscriptionEvent(sub);
       }

@@ -100,12 +100,13 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     )),
     ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
-    ...(["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
+    ...(["trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
     ...(["lastEventRank", "terminalLatch"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
     ...(["eventType", "outcome", "safeReason"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
   ]);
@@ -124,7 +125,9 @@ export function normalizeTeamBillingDefinition(value: any) {
   const catalogue: LooseRecord = {};
   for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
     if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product)
-      || Object.keys(product as LooseRecord).some((key) => !["quantity", "stripe"].includes(key))) throw invalidDeclaration();
+      || Object.keys(product as LooseRecord).some((key) => !["quantity", "stripe", "trialDays"].includes(key))) throw invalidDeclaration();
+    const trialDays = (product as LooseRecord).trialDays;
+    if (trialDays !== undefined && (!Number.isSafeInteger(trialDays) || trialDays < 1 || trialDays > 90)) throw invalidDeclaration();
     const quantity = normalizeQuantity((product as LooseRecord).quantity);
     const stripe = (product as LooseRecord).stripe;
     if (!stripe || typeof stripe !== "object" || Array.isArray(stripe)
@@ -136,6 +139,7 @@ export function normalizeTeamBillingDefinition(value: any) {
     prices.add(live.priceId);
     catalogue[productKey] = Object.freeze({
       quantity,
+      ...(trialDays === undefined ? {} : { trialDays }),
       stripe: Object.freeze({ sandbox, live }),
     });
   }
@@ -269,6 +273,7 @@ export async function startTeamBillingCheckout(database: LooseRecord, auth: Loos
       return checkoutOperationResult(database, transaction, teamId, requestId, existing);
     }
     const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
+    if (desired.trialDays !== undefined) await assertTeamTrialAvailable(transaction, teamId);
     const now = database.clock.now().toISOString();
     const active = await transaction.prepare(sql(
       "SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] " +
@@ -290,9 +295,9 @@ export async function startTeamBillingCheckout(database: LooseRecord, auth: Loos
     )).run(now, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] " +
-      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) " +
-      "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)",
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
+      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [trialDays]) " +
+      "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, desired.trialDays ?? null);
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
     enqueued = true;
@@ -377,7 +382,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
     providerInput = await database.adapter.withTransaction(async (transaction: LooseRecord) => {
       const sql = transaction.dialect.sql;
       const operation = await transaction.prepare(sql(
-        "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] " +
+        "SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] " +
         "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
       )).get(operationId);
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
@@ -415,6 +420,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
         "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?",
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
+      if (operation.trialDays != null) await assertTeamTrialAvailable(transaction, operation.teamId, operation.id, operation.providerSubscriptionId ?? "");
       const attemptedAt = database.clock.now().toISOString();
       const claimToken = randomUUID();
       const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 60_000).toISOString();
@@ -437,6 +443,7 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
         mode: "subscription",
         priceId: desired.priceId,
         quantity: desired.quantity,
+        ...(operation.trialDays == null ? {} : { trialDays: operation.trialDays }),
         successPath: database.teamBillingDefinition.checkout.successPath,
         cancelPath: database.teamBillingDefinition.checkout.cancelPath,
         idempotencyKey: operation.idempotencyKey,
@@ -725,14 +732,14 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
     });
   }
   const currentRows = await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC",
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC",
   )).all(teamId);
   if (currentRows.length > 1) {
     return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
   }
   const row = currentRows[0] ?? await transaction.prepare(sql(
-    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+    "SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
     "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1",
   )).get(teamId);
   const quarantine = await transaction.prepare(sql(
@@ -764,6 +771,12 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
     return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
   }
   const common = { teamId, productKey: row.productKey, quantity };
+  if (row.state === "trialing") {
+    const trialEndsAt = canonicalTimestamp(row.trialEndsAt);
+    return Object.freeze(trialEndsAt
+      ? { state: "trialing" as const, ...common, trialEndsAt }
+      : { state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
+  }
   if (row.state === "active") {
     const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
     if (!currentPeriodEnd) {
@@ -855,6 +868,22 @@ function canonicalReturnPath(value: any) {
   }
 }
 
+// A dispatched trial reserves the Team allowance even when the provider reply is lost.
+// Keep the reservation with its durable operation so retries can recover the same Session.
+async function assertTeamTrialAvailable(transaction: LooseRecord, teamId: string, operationId = "", subscriptionId = "") {
+  const sql = transaction.dialect.sql;
+  const attempted = await transaction.prepare(sql(
+    "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' " +
+    "AND [trialDays] IS NOT NULL AND [attemptedAt] IS NOT NULL AND [id] <> ? " +
+    "AND NOT ([status] = 'expired' AND [terminalObservedAt] IS NOT NULL) LIMIT 1",
+  )).get(teamId, operationId);
+  const observed = await transaction.prepare(sql(
+    "SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [trialEndsAt] IS NOT NULL " +
+    "AND [providerSubscriptionId] <> ? LIMIT 1",
+  )).get(teamId, subscriptionId);
+  if (attempted || observed) throw teamBillingDenied();
+}
+
 async function checkoutDesiredState(database: LooseRecord, transaction: LooseRecord, teamId: string, productKey: string) {
   const product = database.teamBillingDefinition.catalogue[productKey];
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
@@ -864,7 +893,7 @@ async function checkoutDesiredState(database: LooseRecord, transaction: LooseRec
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(teamId))?.count ?? 0));
   if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
-  return { mode, quantity, priceId: product.stripe[mode].priceId };
+  return { mode, quantity, priceId: product.stripe[mode].priceId, trialDays: product.trialDays };
 }
 
 async function portalDesiredState(database: LooseRecord, transaction: LooseRecord, teamId: string) {
@@ -875,7 +904,7 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
   )).get(teamId);
   const subscriptions = await transaction.prepare(sql(
     "SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
-    "WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC",
+    "WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC",
   )).all(teamId);
   const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
   const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
@@ -886,7 +915,7 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
       "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
     )).get(teamId))?.count ?? 0));
   if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? ""))
-    || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state)
+    || !subscription || subscription.mode !== mode || !["trialing", "active", "cancelling", "past-due"].includes(subscription.state)
     || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId
     || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity) throw checkoutUnavailable();
   const grouped = new Map<string, Set<string>>();
