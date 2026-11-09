@@ -77,7 +77,7 @@ export function createTeamBillingTables(adapter) {
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
         ...(["interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
-        ...(["lastEventRank", "terminalLatch"]
+        ...(["lastEventRank", "terminalLatch", "hasSchedule"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
         ...(["eventType", "outcome", "safeReason"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
@@ -89,7 +89,7 @@ export function createTeamBillingTables(adapter) {
 }
 export function normalizeTeamBillingDefinition(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).some((key) => !["catalogue", "authorize", "usage", "checkout", "portal"].includes(key))
+        || Object.keys(value).some((key) => !["catalogue", "authorize", "usage", "checkout", "portal", "transitions"].includes(key))
         || typeof value.authorize !== "function"
         || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
         throw invalidDeclaration();
@@ -125,12 +125,17 @@ export function normalizeTeamBillingDefinition(value) {
             stripe: Object.freeze({ sandbox, live }),
         });
     }
+    if (value.transitions !== undefined && (!isRecord(value.transitions)
+        || Object.keys(value.transitions).some((key) => key !== "allowSamePolicy")
+        || (value.transitions.allowSamePolicy !== undefined && typeof value.transitions.allowSamePolicy !== "boolean")))
+        throw invalidDeclaration();
+    const transitions = value.transitions === undefined ? null : Object.freeze({ allowSamePolicy: value.transitions.allowSamePolicy ?? false });
     if ((value.usage !== undefined && typeof value.usage !== "function")
         || Object.values(catalogue).some((product) => product.quantity.kind === "usage") && typeof value.usage !== "function")
         throw invalidDeclaration();
     const checkout = value.checkout === undefined ? null : normalizeCheckoutDefinition(value.checkout);
     const portal = value.portal === undefined ? null : normalizePortalDefinition(value.portal, catalogue);
-    return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, ...(value.usage === undefined ? {} : { usage: value.usage }), checkout, portal });
+    return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, ...(value.usage === undefined ? {} : { usage: value.usage }), checkout, portal, transitions });
 }
 function normalizePortalDefinition(value, catalogue) {
     if (!value || typeof value !== "object" || Array.isArray(value)
@@ -308,6 +313,8 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
         if (existing) {
             if (existing.productKey !== productKey || existing.providerPriceId !== price.priceId)
                 throw checkoutConflict();
+            if (existing.status !== "completed")
+                await assertNoTeamBillingSubscription(transaction, teamId);
             return checkoutOperationResult(database, transaction, teamId, requestId, existing);
         }
         const desired = await checkoutDesiredState(database, transaction, teamId, productKey, interval);
@@ -482,6 +489,11 @@ export async function performTeamBillingCheckout(database, context, payload, att
         }
         if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY")
             throw error;
+        if (error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS") {
+            await settleCheckoutFailure(database, operationId, error.code);
+            error.retryable = false;
+            throw error;
+        }
         await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
         const failure = checkoutUnavailable();
         failure.retryable = false;
@@ -769,7 +781,7 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
         });
     }
     const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
+        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
     if (currentRows.length > 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
@@ -893,6 +905,13 @@ function canonicalReturnPath(value) {
         return null;
     }
 }
+async function assertNoTeamBillingSubscription(transaction, teamId) {
+    const subscription = await transaction.prepare(transaction.dialect.sql("SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND ([state] <> 'cancelled' OR [terminalLatch] IS NULL OR [terminalLatch] <> 1) LIMIT 1")).get(teamId);
+    const unresolved = subscription ? null : await transaction.prepare(transaction.dialect.sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [providerSubscriptionId] IS NOT NULL " +
+        "AND [providerSubscriptionId] NOT IN (SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] = 'cancelled' AND [terminalLatch] = 1) LIMIT 1")).get(teamId, teamId);
+    if (subscription || unresolved)
+        throw commandError("The Team already has a subscription.", "Manage the existing subscription from Team billing settings.", "TEAM_BILLING_SUBSCRIPTION_EXISTS");
+}
 // A dispatched trial reserves the Team allowance even when the provider reply is lost.
 // Keep the reservation with its durable operation so retries can recover the same Session.
 async function assertTeamTrialAvailable(transaction, teamId, operationId = "", subscriptionId = "") {
@@ -906,6 +925,7 @@ async function assertTeamTrialAvailable(transaction, teamId, operationId = "", s
         throw teamBillingDenied();
 }
 async function checkoutDesiredState(database, transaction, teamId, productKey, interval) {
+    await assertNoTeamBillingSubscription(transaction, teamId);
     const product = database.teamBillingDefinition.catalogue[productKey];
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
     const quantity = await readTeamBillingQuantity(database, transaction, teamId, product.quantity);

@@ -9,4 +9,6 @@ export type TeamBillingSubscriptionSemantics = Readonly<{
 export declare function teamBillingSubscriptionSemantics(eventType: TeamBillingSubscriptionEventType, state: TeamBillingSubscriptionState, cancelAtPeriodEnd: boolean): TeamBillingSubscriptionSemantics | null;
 /** Canonical persisted ratchet implied by verified Subscription state. */
 export declare function teamBillingStoredSubscriptionSemantics(state: TeamBillingSubscriptionState, cancelAtPeriodEnd: boolean): TeamBillingSubscriptionSemantics | null;
+/** Provider-free refusals shared by durable admission and the final provider read. */
+export declare function teamBillingTransitionRefusal(state: string, cancelling: boolean, hasSchedule: boolean): string | null;
 //# sourceMappingURL=team-billing-subscription-semantics.d.ts.map
