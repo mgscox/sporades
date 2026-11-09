@@ -13,10 +13,11 @@ test("same-policy transition declaration is optional, boolean and closed", () =>
   } } }, authorize: () => ({ allow: true }) };
   for (const allowSamePolicy of [true, false]) {
     const normalized = normalizeTeamBillingDefinition({ ...definition, transitions: { allowSamePolicy } });
-    assert.deepEqual(normalized.transitions, { allowSamePolicy });
+    assert.deepEqual(normalized.transitions, { allowSamePolicy, endTrial: false });
     assert.ok(Object.isFrozen(normalized.transitions));
+    assert.equal(normalizeTeamBillingDefinition({ ...definition, transitions: { endTrial: allowSamePolicy } }).transitions.endTrial, allowSamePolicy);
   }
-  for (const transitions of [null, [], true, { allowSamePolicy: "true" }, { timing: "now" }]) {
+  for (const transitions of [null, [], true, { allowSamePolicy: "true" }, { endTrial: "true" }, { endTrial: null }, { timing: "now" }]) {
     assert.throws(() => normalizeTeamBillingDefinition({ ...definition, transitions }), { code: "INVALID_TEAM_BILLING_DECLARATION" });
   }
 });

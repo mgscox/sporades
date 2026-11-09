@@ -72,13 +72,17 @@ async function refreshReceiptInspection(database: RecordLike, row: RecordLike, i
   return current;
 }
 
+// Tests that a retry never waits out the polling window for an expired or
+// terminal-failed row inject database.__ingressPollDelay to count poll sleeps.
+// Internal seam only: undefined in every production database.
 async function awaitCompletedStagingReceipt(database: RecordLike, key: string) {
   const maximumDeadline = Date.now() + leaseTtlMs;
   for (let attempt = 0; Date.now() < maximumDeadline; attempt += 1) {
     const row = await receipt(database, key);
     if (!row || row.state !== "staging") return row;
     const expiry = Date.parse(row.expiresAt); if (!Number.isFinite(expiry) || expiry <= Date.now()) return row;
-    await new Promise((resolve) => setTimeout(resolve, Math.min(25, attempt + 1, expiry - Date.now())));
+    const pollDelay = database.__ingressPollDelay ?? ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+    await pollDelay(Math.min(25, attempt + 1, expiry - Date.now()));
   }
   throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
 }
