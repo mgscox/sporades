@@ -100,8 +100,6 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
         if (refusal) throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
       }
-
-
       // An applied reset needs no second POST, even after provider keys expire.
       const item = current.items.data[0];
       const recurring = item.price.recurring;

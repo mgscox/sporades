@@ -6,6 +6,50 @@ reported as a skip, not as evidence that that integration passed. Keep the final
 `QA_SUMMARY` line in the QA report, including its skipped lanes. A failing or
 unfinished local regression gate is not a passing gate.
 
+## Optional telemetry Docker acceptance
+
+QA leaves these destructive fault drills opted out and reports the opt-in reason.
+Run them separately against a disposable local Docker daemon:
+
+```sh
+export SPORADES_CONFIG_DIR="$PWD/.qa-config"
+npm run build
+SPORADES_REAL_TELEMETRY_CA_CONTAINER=1 node --test test/telemetry-container-ca.acceptance.test.js
+SPORADES_REAL_TELEMETRY_OUTAGE=1 node --test test/telemetry-outage.acceptance.test.js
+```
+
+Both files check prerequisites before starting the scenario and name missing
+requirements in their skip output: a reachable Linux Docker daemon, built CLI
+and runtime, and a POSIX runner. Native Windows skips because the fixtures use
+POSIX npm execution, uid/gid and process inspection; use Linux/WSL or macOS.
+Private-CA acceptance additionally needs npm, OpenSSL `req -addext`, a locally
+available Sporades Base image, and Docker access to the disposable HTTPS
+collector. An independent Node HTTPS probe checks that route and CA trust before
+testing Sporades exports. The Capsule installs the candidate tarball so the
+acceptance also works before that version is published. Outage acceptance additionally needs Compose,
+cgroup v2, POSIX `ps`, and a filesystem that preserves protected `0600` files
+(WSL projects on a Windows mount may lack those permissions).
+Once a scenario starts, failed exports, Jobs, storage assertions or recovery
+deadlines still fail the test.
+
+Capsule names, Compose projects and published gateway ports are unique per run.
+The outage fixture pins its selected free gateway port across restarts and uses
+it in Grafana's canonical URL. Grafana plugin preinstallation is disabled
+only in this fixture to avoid unrelated catalogue downloads during provisioning.
+
+For a Docker-hosted test runner, bind the worktree at the same absolute path
+visible to the daemon so sibling container mounts resolve. Set
+`SPORADES_ACCEPTANCE_DOCKER_HOST` to the address the runner uses for published
+ports (for example `host.docker.internal` on Docker Desktop). Set
+`SPORADES_ACCEPTANCE_COLLECTOR_HOST` to the address sibling Containers use for
+the test runner's HTTPS listener (for example the bridge gateway when the runner
+uses host networking). The certificate SAN is generated for that exact address;
+certificate verification remains enabled. Defaults suit a process running on
+the Docker host: `127.0.0.1` for published ports and `host.docker.internal` for
+the collector. These overrides select fixture networking, not an operator's
+Monitoring server. The legacy CLI case remains a separate opt-in through
+`SPORADES_LEGACY_CLI_PATH`.
+
 ## Desk setup and commands
 
 Use Node 24 LTS (the runner is also tested on the package's Node 22.13 minimum).
