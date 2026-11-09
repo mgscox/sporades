@@ -7,6 +7,21 @@ import { test } from "node:test";
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { createTeamBillingTables, normalizeTeamBillingDefinition, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 
+test("Team Billing products accept only integer trial days from 1 through 90", () => {
+  const declaration = (trialDays) => ({
+    catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, trialDays,
+      stripe: { sandbox: { priceId: "price_trial_test" }, live: { priceId: "price_trial_live" } } } },
+    authorize: async () => ({ allow: true }),
+  });
+  for (const days of [1, 14, 90]) {
+    assert.equal(normalizeTeamBillingDefinition(declaration(days)).catalogue.studio.trialDays, days);
+  }
+  for (const days of [0, -1, 91, 1.5, "14", null, NaN, Infinity]) {
+    assert.throws(() => normalizeTeamBillingDefinition(declaration(days)), error => error.code === "INVALID_TEAM_BILLING_DECLARATION");
+  }
+  assert.equal(normalizeTeamBillingDefinition(declaration(undefined)).catalogue.studio.trialDays, undefined);
+});
+
 test("Team Billing declaration is dormant when omitted and validates an exact two-mode catalogue", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-declaration-"));
   const databasePath = path.join(dir, "data.db");

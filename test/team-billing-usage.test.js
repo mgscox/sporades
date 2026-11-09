@@ -38,7 +38,7 @@ test("usage quantity declares an exact meter and bounded optional floor and ceil
 });
 
 
-async function fixture(t, run, { intervals = false, regional = false } = {}) {
+async function fixture(t, run, { intervals = false, regional = false, trialDays } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-billing-usage-"));
   const state = { capturedDb: null, invalidUsage: null, reads: [], beforeUsage: null };
   const capsule = { name: "usage-billing", schema: {
@@ -76,6 +76,7 @@ async function fixture(t, run, { intervals = false, regional = false } = {}) {
       return { removed: true };
     }),
   } };
+  if (trialDays !== undefined) capsule.teamBilling.catalogue.multi.trialDays = trialDays;
   if (intervals) capsule.teamBilling.catalogue.multi.stripe = {
     sandbox: { prices: { "month:1": { priceId: "price_venues" }, "year:1": { priceId: "price_venues_year" } } },
     live: { prices: { "month:1": { priceId: "price_live_venues" }, "year:1": { priceId: "price_live_venues_year" } } },
@@ -146,8 +147,8 @@ test("usage Checkout reads exact cross-owner counts with the declared minimum", 
   });
 });
 
-for (const [initialCount, finalCount, quantity] of [[6, 7, 7], [7, 5, 6]]) {
-  test(`usage changing from ${initialCount} to ${finalCount} during Checkout repairs before granting entitlement`, async t => {
+for (const trialDays of [undefined, 14]) for (const [initialCount, finalCount, quantity] of [[6, 7, 7], [7, 5, 6]]) {
+  test(`usage changing from ${initialCount} to ${finalCount} during ${trialDays ? "trial " : ""}Checkout repairs before granting entitlement`, async t => {
     await fixture(t, async ({ database, fake, change, settle, truth, teamId, auth }) => {
       for (let index = 0; index < initialCount; index++) assert.equal((await change("add")).error, null);
       await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi");
@@ -160,15 +161,20 @@ for (const [initialCount, finalCount, quantity] of [[6, 7, 7], [7, 5, 6]]) {
         for (const venue of venues) assert.equal((await change("remove", venue.id)).error, null);
       }
       const session = await fake.checkout.complete(checkout.id);
+      const trialEnd = fake.subscriptions.get(session.subscription).trial_end;
       await fake.events.deliver(); await settle();
       assert.equal((await truth()).state, "pending", "provider acknowledgement grants no entitlement");
       assert.equal(fake.subscriptions.get(session.subscription).items.data[0].quantity, quantity);
       const update = fake.requests().filter(request => request.operation === "subscriptions.update").at(-1);
       assert.equal(update.parameters.proration_behavior, "create_prorations");
       await fake.events.deliver(); await settle();
-      assert.equal((await truth()).state, "active");
+      assert.equal((await truth()).state, trialDays ? "trialing" : "active");
       assert.equal((await truth()).quantity, quantity);
-    });
+      if (trialDays) {
+        assert.equal(fake.subscriptions.get(session.subscription).trial_end, trialEnd);
+        assert.equal((await truth()).trialEndsAt, new Date(trialEnd * 1000).toISOString());
+      }
+    }, { trialDays });
   });
 }
 
@@ -298,11 +304,12 @@ for (const regional of [false, true]) test(`below-floor verified usage drift sta
 });
 
 
-test("startup repair reconstructs missing usage intent from exact resources", async t => {
+for (const trialDays of [undefined, 14]) test(`startup repair reconstructs missing ${trialDays ? "trial " : ""}usage intent from exact resources`, async t => {
   await fixture(t, async ({ database, fake, settle, teamId, auth, truth }) => {
     await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi");
     await settle();
     const session = await fake.checkout.complete(fake.state().checkouts[0].id);
+    const trialEnd = fake.subscriptions.get(session.subscription).trial_end;
     await fake.events.deliver(); await settle();
     // Simulate legacy resource writes that omitted the lifecycle staging boundary.
     for (let index = 0; index < 7; index++) database.adapter.prepare(
@@ -313,7 +320,12 @@ test("startup repair reconstructs missing usage intent from exact resources", as
     assert.equal(fake.subscriptions.get(session.subscription).items.data[0].quantity, 7);
     await fake.events.deliver(); await settle();
     assert.equal((await truth()).quantity, 7);
-  });
+    assert.equal((await truth()).state, trialDays ? "trialing" : "active");
+    if (trialDays) {
+      assert.equal(fake.subscriptions.get(session.subscription).trial_end, trialEnd);
+      assert.equal((await truth()).trialEndsAt, new Date(trialEnd * 1000).toISOString());
+    }
+  }, { trialDays });
 });
 
 for (const driftQuantity of [5, 6]) test(`acknowledged usage intent repairs later drift to ${driftQuantity} with a fresh provider write`, async t => {

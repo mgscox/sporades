@@ -391,6 +391,7 @@ export type TeamBillingInterval = `${"day" | "week" | "month" | "year"}:${number
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }
   | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
+  | { state: "trialing"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; trialEndsAt: string }
   | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; renewsAt: string }
   | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; endsAt: string }
   | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; currentPeriodEnd: string }

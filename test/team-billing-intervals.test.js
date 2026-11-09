@@ -65,13 +65,14 @@ import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocke
 import { startTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingPortal } from '../dist/team-billing-runtime.js';
 import { requestTeamBillingPlanTransition, repairTeamBillingDesiredState, stageTeamBillingMembershipChange } from '../dist/team-billing-management.js';
 
-for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], ['year:1', 'usd'], ['month:1', 'gbp']]) test(`WebSocket Checkout ${initial} ${currency ?? 'legacy'}, interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
+for (const [initial, currency, trial] of [['month:1', undefined, false], ['year:1', undefined, false], ['month:1', undefined, true], ['year:1', undefined, true], ['month:1', 'usd', false], ['year:1', 'usd', false], ['month:1', 'gbp', false]]) test(`WebSocket ${trial ? 'trial' : 'paid'} Checkout ${initial} ${currency ?? 'legacy'}, interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-intervals-'));
   const teamId = randomUUID();
   let actor;
   const checks = [];
   let allowBilling = true;
   const d = declaration();
+  if (trial) d.catalogue.kitchen.trialDays = 14;
   if (initial === "year:1") d.catalogue.kitchen.quantity = { kind: "team-members" };
   d.authorize = (_ctx, input) => { checks.push(input); return { allow: allowBilling }; };
   if (currency) for (const mode of ['sandbox', 'live']) for (const price of Object.values(d.catalogue.kitchen.stripe[mode].prices)) {
@@ -174,6 +175,21 @@ for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], 
     await fake.subscriptions.setStatus(completed.subscription, 'active'); await deliver();
     assert.equal((await read()).currency, currency);
   }
+  if (trial) {
+    const trialEndsAt = new Date((fake.state().now + 14 * 86400) * 1000).toISOString();
+    assert.equal(completed.payment_status, 'no_payment_required');
+    assert.deepEqual(await read(), { state: 'trialing', teamId, productKey: 'kitchen', quantity: 1, interval: initial, trialEndsAt });
+    await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
+    assert.equal(fake.state().portalSessions.length, 1, 'trialing interval subscriptions admit Portal access');
+    if (initial === 'year:1') {
+      database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'trial-member', 'member', ?)").run(teamId, now);
+      await repairTeamBillingDesiredState(database); await drain(); await deliver();
+      assert.deepEqual(await read(), { state: 'trialing', teamId, productKey: 'kitchen', quantity: 2, interval: initial, trialEndsAt });
+    }
+    await fake.clock.advance(14 * 86400); await deliver();
+    assert.equal((await read()).state, 'active');
+    assert.equal((await read()).interval, initial);
+  }
   if (currency) {
     await database.close(); database = await open(); database.stripeApiBaseUrl = fake.origin; await database.init();
     assert.equal((await read()).currency, currency, 'restart preserves verified currency and amount');
@@ -227,14 +243,14 @@ for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], 
     await fake.subscriptions.completePayment(completed.subscription);
   }
   await deliver(); if (currency) assert.equal((await read()).currency, currency); assert.equal((await read()).interval, opposite); assert.equal((await read()).state, 'active');
-  await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
+  if (!trial) { await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain(); }
   assert.equal(fake.state().portalSessions.length, 1, 'Portal attests both Prices for the same Product');
   await fake.portal.switchPrice(completed.subscription, initial === 'month:1' ? 'price_month' : 'price_year'); await deliver();
   assert.equal((await read()).interval, initial);
   if (initial === 'year:1') {
     database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'second-member', 'member', ?)").run(teamId, now);
     await stageTeamBillingMembershipChange(database, teamId); await drain(); await deliver();
-    assert.equal((await read()).quantity, 2);
+    assert.equal((await read()).quantity, trial ? 3 : 2);
     assert.equal((await read()).interval, 'year:1', 'seat changes preserve the observed annual Price');
   }
   await fake.subscriptions.setStatus(completed.subscription, 'past_due'); await deliver(); assert.equal((await read()).state, 'past-due'); assert.equal((await read()).interval, initial);
@@ -248,4 +264,5 @@ for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], 
     await assert.rejects(startTeamBillingCheckout(database, actor, teamId, randomUUID(), 'kitchen', initial, 'eur'), { code: 'TEAM_BILLING_CURRENCY_MISMATCH' });
     assert.equal(fake.requests().length, before, 'a retained Customer cannot silently acquire a different currency');
   }
+  if (trial) await assert.rejects(startTeamBillingCheckout(database, actor, teamId, randomUUID(), 'kitchen', opposite), { code: 'TEAM_BILLING_DENIED' });
 });

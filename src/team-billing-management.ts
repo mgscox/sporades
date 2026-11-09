@@ -375,7 +375,7 @@ export async function repairTeamBillingDesiredState(database: LooseRecord) {
   let queued = 0;
   await inTransaction(database, async (transaction) => {
     const subscriptions = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [teamId], [productKey], [quantity], [providerPriceId] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
+      "SELECT [teamId], [productKey], [quantity], [providerPriceId] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
     )).all();
     for (const candidate of subscriptions) {
       const candidateProduct = database.teamBillingDefinition?.catalogue?.[candidate.productKey];
@@ -565,7 +565,7 @@ async function targetQuantity(database: LooseRecord, transaction: LooseRecord, t
 async function currentSubscription(transaction: LooseRecord, teamId: string) {
   const rows = await transaction.prepare(transaction.dialect.sql(
     "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [interval], [currency], [productKey], [quantity] " +
-    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]",
+    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]",
   )).all(teamId);
   if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
   return rows[0];
