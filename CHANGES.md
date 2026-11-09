@@ -8,6 +8,7 @@
 
 ### Bug Fixes
 
+- Provide transaction-bound Team lifecycle locks in privileged Job resource scopes, including scheduled Jobs; keep ordinary nontransactional lock calls fail-closed (#356).
 - Chained `.where()` calls now combine equality predicates with AND for `get()`
   and `all()` across SQLite, PostgreSQL, and libSQL, including live queries
   (#354). Previously each call silently replaced the previous clause. Audit

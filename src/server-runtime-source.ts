@@ -4210,6 +4210,9 @@ function bindOrdinaryJobResourceContext(database: LooseRecord, context: LooseRec
   const scopeLogEvents = new WeakMap<object, LooseRecord[]>();
   return bindJobResources(database, context, claim, {
     privileged,
+    createTeams(adapter: LooseRecord, scoped: LooseRecord) {
+      return createPrivilegedTeamsApi(createTransactionDatabase(database, adapter), () => scoped);
+    },
     createContext(adapter: LooseRecord, signal: AbortSignal) {
       const scopedDatabase = createTransactionDatabase(database, adapter);
       // Do not let ACL denials or app logs write outside the owning transaction.
