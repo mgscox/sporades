@@ -577,6 +577,7 @@ const app = capsule({
       continuationTtlSeconds: 600,
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
+    transitions: { allowSamePolicy: true },
     usage: async (ctx, input) => {
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       const signal: AbortSignal = ctx.signal;
@@ -599,6 +600,8 @@ const app = capsule({
       input.productKey?.toUpperCase();
       input.interval?.toUpperCase();
       input.currency?.toUpperCase();
+      input.fromProductKey?.toUpperCase();
+      input.fromInterval?.toUpperCase();
       const counts = await ctx.teams.countMembers(input.teamId);
       const totalCount: number = counts.totalCount;
       const adminCount: number = counts.adminCount;

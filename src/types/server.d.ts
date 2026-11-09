@@ -826,6 +826,9 @@ export type TeamBillingAuthorityInput = {
   productKey?: string;
   interval?: TeamBillingInterval;
   currency?: string;
+  /** Verified source of a plan-transition, resolved under the Team lifecycle lock. */
+  fromProductKey?: string;
+  fromInterval?: TeamBillingInterval;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
@@ -857,6 +860,8 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   catalogue: Record<string, TeamBillingProductDeclaration>;
   /** Rechecked inside every operation transaction after current Team-admin admission. */
   authorize(ctx: TeamBillingAuthorityContext<Schema>, input: TeamBillingAuthorityInput): MaybePromise<TeamBillingAuthorityDecision>;
+  /** Opt in to managed switches between products with the same quantity policy. Omitted/false preserves Portal-only same-policy product switches. */
+  transitions?: { allowSamePolicy?: boolean };
   /** Exact cross-owner resource counts keyed by meter, including every creator in the Team. Runs under its lifecycle lock with expiring read-only data access and a five-second budget; missing, partial or invalid counts fail closed. Required for usage quantities. */
   usage?(ctx: Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; signal: AbortSignal }>, input: Readonly<{ teamId: string }>): MaybePromise<Record<string, number>>;
   /** Trusted same-origin Checkout returns. Omit to keep Checkout unavailable while retaining read-only billing state. */

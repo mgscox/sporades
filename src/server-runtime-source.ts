@@ -6217,12 +6217,12 @@ export function createWebSocketHub(
           type: "error",
           data: null,
           error: {
-            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
+            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
               ? error.code : "TEAM_BILLING_DENIED",
             message: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "The target Price does not support the existing billing currency."
               : error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
               ? "Team Checkout request conflicts with existing work."
-              : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : "Team Checkout is unavailable.",
+              : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
             hint: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency."
               : error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
               ? "Use a new request identifier for a different product, interval, or currency."
@@ -6265,7 +6265,8 @@ export function createWebSocketHub(
         const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
         sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
       } catch (error: any) {
-        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
+        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
+          "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_SUBSCRIPTION_TRIALING", "TEAM_BILLING_UNKNOWN_SCHEDULE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
           ? error.code : "TEAM_BILLING_DENIED";
         sendJson(client, {
           id: message.id ?? null,

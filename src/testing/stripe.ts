@@ -220,7 +220,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const trialEnd = trialDays ? now + trialDays * 86400 : null;
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
       ...(session.currency ? { currency: session.currency } : {}),
-      status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, pending_update: null,
+      status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null,
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
@@ -237,12 +237,19 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   }
   function liveSubscription(subscriptionId: string) {
     const subscription = get(subscriptions, subscriptionId);
-    requireValue(subscription.status !== "canceled", "Subscription is canceled."); return subscription;
+    requireValue(!["canceled", "incomplete_expired"].includes(subscription.status), "Subscription is terminal."); return subscription;
   }
   async function setStatus(subscriptionId: string, status: string) {
-    requireValue(["active", "past_due", "unpaid", "canceled"].includes(status));
-    const subscription = liveSubscription(subscriptionId); subscription.status = status;
-    if (status === "canceled") { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; }
+    requireValue(["active", "past_due", "unpaid", "trialing", "incomplete", "incomplete_expired", "canceled"].includes(status));
+    const subscription = liveSubscription(subscriptionId);
+    if (status === "trialing" && !(subscription.trial_end > now)) {
+      const end = subscription.items.data[0].current_period_end;
+      requireValue(end > now, "Trial requires a future period end.");
+      subscription.trial_start = now;
+      subscription.trial_end = end;
+    }
+    subscription.status = status;
+    if (["canceled", "incomplete_expired"].includes(status)) { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; }
     return subscriptionEvent(subscription);
   }
   async function setQuantity(subscriptionId: string, quantity: number) {
@@ -401,7 +408,14 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     checkout: { complete, expire },
     portal: { switchPrice, cancelAtPeriodEnd: (id) => setCancellation(id, true), resume: (id) => setCancellation(id, false) },
     subscriptions: {
-      setStatus, setQuantity, get: (id) => copy(get(subscriptions, id)),
+      setStatus, setQuantity,
+      async setSchedule(id, scheduleId) {
+        requireValue(scheduleId === null || typeof scheduleId === "string" && /^sub_sched_[A-Za-z0-9_]{1,240}$/.test(scheduleId));
+        const subscription = liveSubscription(id);
+        subscription.schedule = scheduleId;
+        return subscriptionEvent(subscription);
+      },
+      get: (id) => copy(get(subscriptions, id)),
       async completePayment(id) {
         const subscription = liveSubscription(id); const pending = subscription.pending_update;
         requireValue(pending && pending.expires_at > now, "No payable pending update.");
@@ -439,7 +453,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     clock: { async advance(seconds) {
       requireValue(Number.isSafeInteger(seconds) && seconds >= 0 && now + seconds <= 253_402_300_799); now += seconds;
       for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now) await expire(session.id);
-      for (const sub of subscriptions.values()) if (sub.status !== "canceled" && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
+      for (const sub of subscriptions.values()) if (!["canceled", "incomplete_expired"].includes(sub.status) && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
       for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now) await fake.subscriptions.renew(sub.id);
       for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now) {
         sub.pending_update = null; await subscriptionEvent(sub);
@@ -480,6 +494,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const controls: Record<string, (...args: any[]) => any> = {
     "checkout.complete": fake.checkout.complete, "checkout.expire": fake.checkout.expire,
     "portal.switchPrice": fake.portal.switchPrice, "portal.cancelAtPeriodEnd": fake.portal.cancelAtPeriodEnd, "portal.resume": fake.portal.resume,
+    "subscriptions.setSchedule": fake.subscriptions.setSchedule,
     "subscriptions.setStatus": fake.subscriptions.setStatus, "subscriptions.setQuantity": fake.subscriptions.setQuantity,
     "subscriptions.completePayment": fake.subscriptions.completePayment,
     "subscriptions.failPayment": fake.subscriptions.failPayment, "subscriptions.renew": fake.subscriptions.renew, "subscriptions.get": fake.subscriptions.get,

@@ -26,6 +26,9 @@ test("usage quantity declares an exact meter and bounded optional floor and ceil
   assert.deepEqual(normalized.catalogue.multi.quantity, quantity);
   assert.ok(Object.isFrozen(normalized.catalogue.multi.quantity));
   assert.equal(normalized.usage, usage);
+  const withTransitions = normalizeTeamBillingDefinition({ ...declaration(quantity), transitions: { allowSamePolicy: true } });
+  assert.equal(withTransitions.usage, usage);
+  assert.equal(withTransitions.transitions.allowSamePolicy, true);
   assert.deepEqual(normalizeTeamBillingDefinition(declaration({ kind: "usage", meter: "maxVenues" })).catalogue.multi.quantity,
     { kind: "usage", meter: "maxVenues" });
   for (const invalid of [
