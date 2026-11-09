@@ -53,6 +53,14 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
     state: "inactive";
     teamId: string;
 }> | Readonly<{
+    trialEndsAt: string;
+    interval?: any;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "trialing";
+    reason?: undefined;
+}> | Readonly<{
     endsAt: string;
     interval?: any;
     teamId: string;
@@ -126,6 +134,14 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     state: "inactive";
     teamId: string;
+}> | Readonly<{
+    trialEndsAt: string;
+    interval?: any;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "trialing";
+    reason?: undefined;
 }> | Readonly<{
     endsAt: string;
     interval?: any;

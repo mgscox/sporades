@@ -70,7 +70,11 @@ test('verified unsafe states refuse transitions and Checkout, and terminal cance
     [() => fake.subscriptions.setSchedule(subscriptionId, 'sub_sched_foreign'), 'TEAM_BILLING_UNKNOWN_SCHEDULE'],
   ]) {
     await change(); await f.deliver();
-    if (code.endsWith('TRIALING')) assert.equal((await f.read()).state, 'attention-required', 'trial evidence grants no paid entitlement');
+    if (code.endsWith('TRIALING')) {
+      const truth = await f.read();
+      assert.equal(truth.state, 'trialing');
+      assert.equal(truth.trialEndsAt, new Date(fake.subscriptions.get(subscriptionId).trial_end * 1000).toISOString());
+    }
     const writes = fake.requests().filter(r => r.operation === 'subscriptions.update').length;
     const input = { teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
     assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input })).error.code, code);

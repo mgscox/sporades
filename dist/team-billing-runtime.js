@@ -75,12 +75,13 @@ export function createTeamBillingTables(adapter) {
             ")")),
         ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
-        ...(["interval", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
+        ...(["interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
         ...(["lastEventRank", "terminalLatch"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
         ...(["eventType", "outcome", "safeReason"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
@@ -100,7 +101,10 @@ export function normalizeTeamBillingDefinition(value) {
     const catalogue = {};
     for (const [productKey, product] of entries.sort(([left], [right]) => left.localeCompare(right))) {
         if (!PRODUCT_KEY_PATTERN.test(productKey) || !product || typeof product !== "object" || Array.isArray(product)
-            || Object.keys(product).some((key) => !["quantity", "stripe"].includes(key)))
+            || Object.keys(product).some((key) => !["quantity", "stripe", "trialDays"].includes(key)))
+            throw invalidDeclaration();
+        const trialDays = product.trialDays;
+        if (trialDays !== undefined && (!Number.isSafeInteger(trialDays) || trialDays < 1 || trialDays > 90))
             throw invalidDeclaration();
         const quantity = normalizeQuantity(product.quantity);
         const stripe = product.stripe;
@@ -117,6 +121,7 @@ export function normalizeTeamBillingDefinition(value) {
             }
         catalogue[productKey] = Object.freeze({
             quantity,
+            ...(trialDays === undefined ? {} : { trialDays }),
             stripe: Object.freeze({ sandbox, live }),
         });
     }
@@ -306,6 +311,8 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
             return checkoutOperationResult(database, transaction, teamId, requestId, existing);
         }
         const desired = await checkoutDesiredState(database, transaction, teamId, productKey, interval);
+        if (desired.trialDays !== undefined)
+            await assertTeamTrialAvailable(transaction, teamId);
         const now = database.clock.now().toISOString();
         const active = await transaction.prepare(sql("SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] " +
             "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1")).get(teamId);
@@ -321,8 +328,8 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
             "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL")).run(now, teamId);
         await transaction.prepare(sql("INSERT INTO [sporades_team_billing_operations] " +
-            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt]) " +
-            "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt);
+            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [trialDays]) " +
+            "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, desired.trialDays ?? null);
         if (typeof database.enqueueTeamBillingCheckoutJob !== "function")
             throw checkoutUnavailable();
         await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
@@ -403,7 +410,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
     try {
         providerInput = await database.adapter.withTransaction(async (transaction) => {
             const sql = transaction.dialect.sql;
-            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] " +
+            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] " +
                 "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'")).get(operationId);
             if (!operation || !["queued", "running", "retrying"].includes(operation.status))
                 return null;
@@ -439,6 +446,8 @@ export async function performTeamBillingCheckout(database, context, payload, att
             const customer = await transaction.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(operation.teamId);
             if (customer && customer.mode !== desired.mode)
                 throw checkoutUnavailable();
+            if (operation.trialDays != null)
+                await assertTeamTrialAvailable(transaction, operation.teamId, operation.id, operation.providerSubscriptionId ?? "");
             const attemptedAt = database.clock.now().toISOString();
             const claimToken = randomUUID();
             const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 60_000).toISOString();
@@ -456,6 +465,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
                 mode: "subscription",
                 priceId: desired.priceId,
                 quantity: desired.quantity,
+                ...(operation.trialDays == null ? {} : { trialDays: operation.trialDays }),
                 successPath: database.teamBillingDefinition.checkout.successPath,
                 cancelPath: database.teamBillingDefinition.checkout.cancelPath,
                 idempotencyKey: operation.idempotencyKey,
@@ -758,12 +768,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
             requestedAt,
         });
     }
-    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
+    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
     if (currentRows.length > 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
-    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     const quarantine = await transaction.prepare(sql("SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] " +
         "WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1")).get(teamId);
@@ -794,6 +804,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
     const common = { teamId, productKey: row.productKey, quantity, ...(price.interval ? { interval: price.interval } : {}) };
+    if (row.state === "trialing") {
+        const trialEndsAt = canonicalTimestamp(row.trialEndsAt);
+        return Object.freeze(trialEndsAt
+            ? { state: "trialing", ...common, trialEndsAt }
+            : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
+    }
     if (row.state === "active") {
         const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
         if (!currentPeriodEnd) {
@@ -877,6 +893,18 @@ function canonicalReturnPath(value) {
         return null;
     }
 }
+// A dispatched trial reserves the Team allowance even when the provider reply is lost.
+// Keep the reservation with its durable operation so retries can recover the same Session.
+async function assertTeamTrialAvailable(transaction, teamId, operationId = "", subscriptionId = "") {
+    const sql = transaction.dialect.sql;
+    const attempted = await transaction.prepare(sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' " +
+        "AND [trialDays] IS NOT NULL AND [attemptedAt] IS NOT NULL AND [id] <> ? " +
+        "AND NOT ([status] = 'expired' AND [terminalObservedAt] IS NOT NULL) LIMIT 1")).get(teamId, operationId);
+    const observed = await transaction.prepare(sql("SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [trialEndsAt] IS NOT NULL " +
+        "AND [providerSubscriptionId] <> ? LIMIT 1")).get(teamId, subscriptionId);
+    if (attempted || observed)
+        throw teamBillingDenied();
+}
 async function checkoutDesiredState(database, transaction, teamId, productKey, interval) {
     const product = database.teamBillingDefinition.catalogue[productKey];
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
@@ -887,20 +915,20 @@ async function checkoutDesiredState(database, transaction, teamId, productKey, i
     const price = teamBillingPrice(product.stripe[mode], interval);
     if (!price)
         throw checkoutUnavailable();
-    return { mode, quantity, priceId: price.priceId };
+    return { mode, quantity, priceId: price.priceId, trialDays: product.trialDays };
 }
 async function portalDesiredState(database, transaction, teamId) {
     const sql = transaction.dialect.sql;
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
     const customer = await transaction.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
     const subscriptions = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
-        "WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC")).all(teamId);
+        "WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC")).all(teamId);
     const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
     const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
     const binding = product?.stripe?.[mode];
     const expectedQuantity = product ? await readTeamBillingQuantity(database, transaction, teamId, product.quantity) : null;
     if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? ""))
-        || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state)
+        || !subscription || subscription.mode !== mode || !["trialing", "active", "cancelling", "past-due"].includes(subscription.state)
         || !binding?.productId || !binding?.portalConfigurationId || !teamBillingPriceById(binding, subscription.providerPriceId)
         || (binding.prices && teamBillingPriceById(binding, subscription.providerPriceId)?.interval !== subscription.interval)
         || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity)

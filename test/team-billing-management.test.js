@@ -98,16 +98,16 @@ test("revoking same-policy opt-in fences an already queued transition", async ()
   } finally { fixture.close(); }
 });
 
-test("retained trial evidence cannot stage or execute automatic seat convergence", async () => {
+test("trial evidence retains automatic seat convergence while plan transitions stay guarded", async () => {
   const fixture = openFixture();
   try {
+    fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
     fixture.setMembers(3);
     const staged = await stageTeamBillingMembershipChange(fixture.database, teamId);
-    fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
-    fixture.setMembers(4);
-    assert.deepEqual(await stageTeamBillingMembershipChange(fixture.database, teamId), { staged: false });
+    assert.equal(staged.staged, true);
     await performTeamBillingSeatConvergence(fixture.database, {}, generationPayload(staged));
-    assert.equal(fixture.providerCalls.length, 0);
+    assert.equal(fixture.providerCalls.length, 1);
+    assert.equal(fixture.providerCalls[0].targetQuantity, 3);
   } finally { fixture.close(); }
 });
 

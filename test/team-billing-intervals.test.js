@@ -45,12 +45,13 @@ import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocke
 import { startTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingPortal } from '../dist/team-billing-runtime.js';
 import { requestTeamBillingPlanTransition, repairTeamBillingDesiredState, stageTeamBillingMembershipChange } from '../dist/team-billing-management.js';
 
-for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}, interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
+for (const trial of [false, true]) for (const initial of ['month:1', 'year:1']) test(`WebSocket ${trial ? 'trial' : 'paid'} Checkout ${initial}, interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-intervals-'));
   const teamId = randomUUID();
   let actor;
   const checks = [];
   const d = declaration();
+  if (trial) d.catalogue.kitchen.trialDays = 14;
   if (initial === "year:1") d.catalogue.kitchen.quantity = { kind: "team-members" };
   d.authorize = (_ctx, input) => { checks.push(input); return { allow: true }; };
   const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
@@ -93,6 +94,21 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   const session = fake.state().checkouts[0]; assert.equal(session.line_items.data[0].price.id, initial === 'month:1' ? 'price_month' : 'price_year');
   const completed = await fake.checkout.complete(session.id); await deliver();
   assert.equal((await read()).interval, initial);
+  if (trial) {
+    const trialEndsAt = new Date((fake.state().now + 14 * 86400) * 1000).toISOString();
+    assert.equal(completed.payment_status, 'no_payment_required');
+    assert.deepEqual(await read(), { state: 'trialing', teamId, productKey: 'kitchen', quantity: 1, interval: initial, trialEndsAt });
+    await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
+    assert.equal(fake.state().portalSessions.length, 1, 'trialing interval subscriptions admit Portal access');
+    if (initial === 'year:1') {
+      database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'trial-member', 'member', ?)").run(teamId, now);
+      await repairTeamBillingDesiredState(database); await drain(); await deliver();
+      assert.deepEqual(await read(), { state: 'trialing', teamId, productKey: 'kitchen', quantity: 2, interval: initial, trialEndsAt });
+    }
+    await fake.clock.advance(14 * 86400); await deliver();
+    assert.equal((await read()).state, 'active');
+    assert.equal((await read()).interval, initial);
+  }
   const originalDefinition = database.teamBillingDefinition;
   const redeclared = declaration();
   // A redeploy cannot relabel already-verified monthly evidence as annual.
@@ -117,14 +133,14 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   assert.ok(checks.some(c => c.operation === 'plan-transition' && c.interval === opposite));
   assert.ok(fake.requests().some(r => r.operation === 'subscriptions.update' && r.parameters.proration_behavior === 'create_prorations'));
   await deliver(); assert.equal((await read()).interval, opposite); assert.equal((await read()).state, 'active');
-  await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
+  if (!trial) { await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain(); }
   assert.equal(fake.state().portalSessions.length, 1, 'Portal attests both Prices for the same Product');
   await fake.portal.switchPrice(completed.subscription, initial === 'month:1' ? 'price_month' : 'price_year'); await deliver();
   assert.equal((await read()).interval, initial);
   if (initial === 'year:1') {
     database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'second-member', 'member', ?)").run(teamId, now);
     await stageTeamBillingMembershipChange(database, teamId); await drain(); await deliver();
-    assert.equal((await read()).quantity, 2);
+    assert.equal((await read()).quantity, trial ? 3 : 2);
     assert.equal((await read()).interval, 'year:1', 'seat changes preserve the observed annual Price');
   }
   await fake.subscriptions.setStatus(completed.subscription, 'past_due'); await deliver(); assert.equal((await read()).state, 'past-due'); assert.equal((await read()).interval, initial);
@@ -133,4 +149,5 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   const sub = fake.subscriptions.get(completed.subscription);
   await fake.clock.advance(sub.items.data[0].current_period_end - fake.state().now); await deliver();
   assert.equal((await read()).state, 'cancelled'); assert.equal((await read()).interval, initial);
+  if (trial) await assert.rejects(startTeamBillingCheckout(database, actor, teamId, randomUUID(), 'kitchen', opposite), { code: 'TEAM_BILLING_DENIED' });
 });

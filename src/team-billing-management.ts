@@ -85,7 +85,7 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
     try { await assertTeamBillingErasureInactive(database, transaction, teamId); }
     catch { return Object.freeze({ staged: false as const, reason: "erasure-active" as const }); }
     const subscription = await optionalCurrentSubscription(transaction, teamId);
-    if (!subscription || !["active", "past-due"].includes(subscription.state)) return Object.freeze({ staged: false as const });
+    if (!subscription || !["trialing", "active", "past-due"].includes(subscription.state)) return Object.freeze({ staged: false as const });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
     if (product?.quantity?.kind !== quantityKind) return Object.freeze({ staged: false as const });
     const quantity = await targetQuantity(database, transaction, teamId, product);
@@ -208,7 +208,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         return { superseded: true, dispatch: true };
       }
     } else {
-      if (!["active", "past-due"].includes(subscription.state)) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+      if (!["trialing", "active", "past-due"].includes(subscription.state)) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
       const targetProductKey = subscription.productKey;
       const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
       if (!isCountedProduct(currentProduct)) return { superseded: true };
@@ -376,7 +376,7 @@ export async function repairTeamBillingDesiredState(database: LooseRecord) {
   let queued = 0;
   await inTransaction(database, async (transaction) => {
     const subscriptions = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [teamId], [productKey], [quantity], [providerPriceId] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
+      "SELECT [teamId], [productKey], [quantity], [providerPriceId] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
     )).all();
     for (const candidate of subscriptions) {
       const candidateProduct = database.teamBillingDefinition?.catalogue?.[candidate.productKey];

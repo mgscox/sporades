@@ -48,6 +48,7 @@ export type StripeTeamBillingFake = {
   controlOrigin: string;
   close(): Promise<void>;
   checkout: {
+    /** Trial Checkouts create a trialing Subscription with trial_start/trial_end and no payment required. */
     complete(id: string, options?: { customerId?: string }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
@@ -68,6 +69,7 @@ export type StripeTeamBillingFake = {
     get(id: string): StripeFakeObject;
   };
   customers: { subscriptions(id: string): StripeFakeObject[] };
+  /** Advances due trials to active, or cancels them when scheduled; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {
     pending(): StripeFakeEvent[];

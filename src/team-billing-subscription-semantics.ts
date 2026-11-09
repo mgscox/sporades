@@ -1,12 +1,12 @@
-export type TeamBillingSubscriptionState = "active" | "past-due" | "cancelled" | "trialing";
+export type TeamBillingSubscriptionState = "trialing" | "active" | "past-due" | "cancelled";
 export type TeamBillingSubscriptionEventType =
   | "customer.subscription.created"
   | "customer.subscription.updated"
   | "customer.subscription.deleted";
 
 export type TeamBillingSubscriptionSemantics = Readonly<{
-  kind: "active" | "cancelling" | "past-due" | "cancelled" | "trialing";
-  rank: 20 | 30 | 40 | 45 | 50;
+  kind: "trialing" | "active" | "cancelling" | "past-due" | "cancelled";
+  rank: 15 | 20 | 30 | 40 | 50;
   terminalLatch: 0 | 1;
 }>;
 
@@ -30,8 +30,7 @@ export function teamBillingStoredSubscriptionSemantics(
 ): TeamBillingSubscriptionSemantics | null {
   if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
   if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
-  // Tied trial evidence must suppress paid access and automatic quantity writes.
-  if (state === "trialing") return Object.freeze({ kind: "trialing", rank: 45, terminalLatch: 0 });
+  if (state === "trialing") return Object.freeze({ kind: "trialing", rank: 15, terminalLatch: 0 });
   if (state !== "active") return null;
   return cancelAtPeriodEnd
     ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 })

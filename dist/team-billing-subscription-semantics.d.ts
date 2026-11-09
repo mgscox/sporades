@@ -1,8 +1,8 @@
-export type TeamBillingSubscriptionState = "active" | "past-due" | "cancelled";
+export type TeamBillingSubscriptionState = "trialing" | "active" | "past-due" | "cancelled";
 export type TeamBillingSubscriptionEventType = "customer.subscription.created" | "customer.subscription.updated" | "customer.subscription.deleted";
 export type TeamBillingSubscriptionSemantics = Readonly<{
-    kind: "active" | "cancelling" | "past-due" | "cancelled";
-    rank: 20 | 30 | 40 | 50;
+    kind: "trialing" | "active" | "cancelling" | "past-due" | "cancelled";
+    rank: 15 | 20 | 30 | 40 | 50;
     terminalLatch: 0 | 1;
 }>;
 /** One semantic map shared by normal convergence and provider-free legacy import. */
