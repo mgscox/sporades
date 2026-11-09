@@ -319,9 +319,12 @@ function attestManagedSubscription(
 
 function attestManagedItem(item: LooseRecord, input: LooseRecord, acceptedPriceIds: Set<string>, requireTarget: boolean) {
   const price = item?.price;
+  // A multi-currency Price keeps its default currency in price.currency and
+  // carries the subscription currency's override in price.currency_options.
   if (item?.object !== "subscription_item" || item.id !== input.subscriptionItemId
     || item.subscription !== input.subscriptionId || !acceptedPriceIds.has(price?.id)
-    || (input.currency && price?.currency !== input.currency)
+    || (input.currency && price?.currency !== input.currency
+      && !Object.hasOwn(price?.currency_options ?? {}, input.currency))
     || price?.object !== "price" || price.livemode !== (input.mode === "live")
     || !validProductId(price?.product) || price?.recurring?.usage_type !== "licensed"
     || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999_999

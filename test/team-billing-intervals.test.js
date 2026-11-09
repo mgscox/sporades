@@ -140,6 +140,10 @@ for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], 
     assert.equal(session.amount_total, currency === 'usd' ? 2900 : 1900);
     assert.equal((await read()).currency, currency);
     assert.ok(checks.some(c => c.operation === 'checkout' && c.currency === currency));
+    const shaped = fake.subscriptions.get(completed.subscription).items.data[0].price;
+    assert.equal(shaped.currency, 'gbp', 'the fake keeps the Price default currency, as the provider does');
+    assert.equal(shaped.unit_amount, 1900, 'the fake keeps the Price default amount, as the provider does');
+    assert.equal(shaped.currency_options.usd.unit_amount, 2900, 'regional amounts live in currency_options');
     await assert.rejects(startTeamBillingCheckout(database, actor, teamId, requestId, 'kitchen', initial, 'eur'), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
     const before = fake.requests().length;
     await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'kitchen', opposite, 'eur'), { code: 'TEAM_BILLING_CURRENCY_MISMATCH' });
@@ -148,6 +152,14 @@ for (const [initial, currency] of [['month:1'], ['year:1'], ['month:1', 'usd'], 
     invalid.items.data[0].price.unit_amount = 1;
     await fake.events.emit('customer.subscription.updated', invalid); await deliver();
     assert.deepEqual(await read(), { state: 'attention-required', teamId, reason: 'catalogue-mismatch' });
+    if (currency === 'usd') {
+      const regional = fake.subscriptions.get(completed.subscription);
+      regional.items.data[0].price.unit_amount = 1900;
+      regional.items.data[0].price.currency_options.usd.unit_amount = 2500;
+      await fake.events.emit('customer.subscription.updated', regional); await deliver();
+      assert.deepEqual(await read(), { state: 'attention-required', teamId, reason: 'catalogue-mismatch' });
+      regional.items.data[0].price.currency_options.usd.unit_amount = 2900;
+    }
     for (const mutate of [
       p => { p.unit_amount_decimal = '2900.1'; },
       p => { p.custom_unit_amount = { enabled: true }; },

@@ -240,12 +240,19 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
     throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   }
   const currency = object.currency ?? null;
-  const unitAmount = validBillingAmount(item.price?.unit_amount) ? item.price.unit_amount : null;
+  // A regional subscription charges the selected currency's amount from
+  // currency_options, while the Price keeps its default currency and amount
+  // in the base fields; comparing the base fields with the selected currency
+  // would quarantine legitimate regional subscriptions.
+  const regional = currency !== null && item.price?.currency !== currency
+    && isRecord(item.price?.currency_options) ? item.price.currency_options[currency] : null;
+  const charged = regional ?? item.price;
+  const unitAmount = validBillingAmount(charged?.unit_amount) ? charged.unit_amount : null;
   if ((currency !== null && !validBillingCurrency(currency))
-    || !matchesBillingCurrency(declaredPrice!, currency, unitAmount)
-    || (currency !== null && item.price.currency !== currency)
-    || (declaredPrice?.currency && !validBillingAmount(unitAmount))) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
-  if (declaredPrice?.currency && (!matchesBillingPriceAmount(item.price, unitAmount)
+    || !matchesBillingCurrency(declaredPrice!, currency, unitAmount)) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  if (declaredPrice?.currency && (item.price.currency !== declaredPrice.currency
+    || !matchesBillingPriceAmount(item.price, declaredPrice.unitAmount)
+    || !matchesBillingPriceAmount(charged, unitAmount)
     || item.price.billing_scheme !== "per_unit" || item.price.type !== "recurring" || item.price.transform_quantity != null)) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   }

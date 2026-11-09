@@ -5,7 +5,10 @@
 - Team Billing Prices can declare exact regional amounts through `currencyOptions`.
   Checkout selects a configured currency, verified billing truth records it, and
   plan/interval changes preserve it or return a currency mismatch. The Stripe
-  fake models regional charges, and the server-only `validateTeamBillingPriceEvidence`
+  fake models regional charges with provider-shaped Prices (regional amounts live
+  in `currency_options`, as Stripe does), convergence resolves the subscription's
+  charged amount from the selected currency, and the server-only
+  `validateTeamBillingPriceEvidence`
   checks every configured amount in saved expanded Prices (#352).
 
 - Team Billing products can offer several recurring Prices per environment, such as monthly and annual billing. Checkout and managed interval switches authorize the selected interval, verified billing truth reports it, and the Stripe test provider models interval changes. Existing single-Price bindings remain supported (#350).

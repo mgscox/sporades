@@ -221,8 +221,10 @@ same minor-unit contract as Team Billing bindings. For example:
 ```
 
 The fake accepts Checkout's `currency`, selects its regional amount, and exposes
-`currency` and `amount_total` on the Session. Subscription events and item Prices
-carry the selected currency and unit amount. Updates, pending payments, renewals,
+`currency` and `amount_total` on the Session. Like the real provider, its Prices keep
+the default currency and amount in the base fields and carry regional amounts in
+`currency_options`; convergence resolves the subscription's charged amount from the
+selected currency. Updates, pending payments, renewals,
 failed invoices and Portal switches preserve it. Unsupported Price currencies
 and incompatible Customer currencies are refused. Omitting currency facts keeps
 existing fixtures unchanged. Fake-backed tests certify the runtime protocol;
