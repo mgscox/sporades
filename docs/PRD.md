@@ -117,8 +117,9 @@ The repository currently includes:
   switches use durable `teamBilling.requestPlanTransition(...)`; opt-in
   `transitions.allowSamePolicy` also admits same-policy and retained legacy
   source switches. Transition authorization receives the verified source product
-  and interval. Cancelling, past-due, trialing and external-schedule states
-  refuse with distinct safe codes, and Checkout refuses non-terminal
+  and interval. Trial transitions preserve their end by default; server-only `transitions.endTrial`
+  may end them immediately. Portal attestation requires matching trial behavior.
+  Cancelling, past-due and external-schedule states refuse with distinct safe codes, and Checkout refuses non-terminal
   Subscriptions. Sporades
   reauthorizes the original actor, derives the exact current Team count where
   required, and changes the Subscription item Price and quantity together with
