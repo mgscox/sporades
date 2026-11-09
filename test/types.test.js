@@ -557,6 +557,10 @@ const app = capsule({
         quantity: { kind: "fixed", value: 1 },
         stripe: { sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" }, live: { productId: "prod_live_studio", priceId: "price_live_studio", portalConfigurationId: "bpc_live_studio" } },
       },
+      venues: {
+        quantity: { kind: "usage", meter: "maxVenues", minimum: 6, maximum: 50 },
+        stripe: { sandbox: { priceId: "price_test_venues" }, live: { priceId: "price_live_venues" } },
+      },
       agency: {
         quantity: { kind: "team-members", minimum: 5 },
         stripe: { sandbox: { productId: "prod_test_agency", priceId: "price_test_agency", portalConfigurationId: "bpc_test_agency" }, live: { productId: "prod_live_agency", priceId: "price_live_agency", portalConfigurationId: "bpc_live_agency" } },
@@ -568,6 +572,18 @@ const app = capsule({
       continuationTtlSeconds: 600,
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
+    usage: async (ctx, input) => {
+      const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
+      const signal: AbortSignal = ctx.signal;
+      // @ts-expect-error Usage reads have no write capability.
+      ctx.db.todos.insert({ title: "forbidden" });
+      // @ts-expect-error Usage has no current-user or provider authority.
+      ctx.auth.userId;
+      // @ts-expect-error Usage input is immutable.
+      input.teamId = "another-team";
+      void signal;
+      return { maxVenues: rows.length };
+    },
     authorize: async (ctx, input) => {
       const publicOrigin: string = ctx.app.publicOrigin;
       // @ts-expect-error Team Billing app identity is readonly.

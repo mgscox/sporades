@@ -774,9 +774,12 @@ async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | nu
   const tx = (database as any)[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
   if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true) throw teamPolicyDenied();
   let admitted = false;
+  let finishUsageChange: (() => Promise<void>) | undefined;
   beforeTeamCommit(tx, async () => {
     if (!admitted || context?.signal?.aborted) throw teamPolicyDenied();
     if (auth) await assertCurrentPolicyActor(database, tx, auth, context);
+    await finishUsageChange?.();
+    if (context?.signal?.aborted) throw teamPolicyDenied();
   });
   try {
     if (context?.signal?.aborted || typeof teamId !== "string"
@@ -792,6 +795,9 @@ async function lockPolicyLifecycle(database: LooseRecord, auth: LooseRecord | nu
     )).get(teamId, memberUserId);
     if (context?.signal?.aborted) throw teamPolicyDenied();
     assertActive?.();
+    finishUsageChange = await database.prepareTeamBillingUsageChange?.(teamId);
+    assertActive?.();
+    if (context?.signal?.aborted) throw teamPolicyDenied();
     // Admission must finish inside the Privileged callback. Once admitted,
     // retain the lock through outer commit even after that callback settles.
     admitted = true;
