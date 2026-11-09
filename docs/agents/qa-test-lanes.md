@@ -29,7 +29,9 @@ npm run test:qa -- --report="$CUBEFARM_JOB_SCRATCH/qa-times.json"
 The QA command builds and verifies generated CLI parity inside its overall
 **two-hour safety deadline**. QA starts **up to four file harnesses**, bounded by available CPUs, each using
 `node --test --test-concurrency=1`. The pool sets the file concurrency;
-compiler-heavy files run in a separate serial lane. `GOMAXPROCS`,
+compiler-heavy
+files run in a separate memory lane, **two at a time** by default
+(`SPORADES_TEST_HEAVY_CONCURRENCY=1` restores one-at-a-time). `GOMAXPROCS`,
 `UV_THREADPOOL_SIZE` and `RAYON_NUM_THREADS` are clamped to at most two in QA (or the smaller worker cap).
 This limits esbuild's Go pool, Tailwind/Lightning CSS's Rayon pool and native
 asynchronous work inherited by child
@@ -65,12 +67,18 @@ clock after one actual emulator reply, so a final short probe cannot replace
 that result with a startup timeout. Host process observations allow 15 seconds;
 dedicated timeout cases retain their short budgets.
 
-The measured profile placed every file at or above **512 MiB** in the serial
-memory lane, alongside the existing full Capsule/compiler and parser fixtures.
-That selects 44 files in this tree. Four remaining file trees budget about
-2 GiB at their measured upper bound, leaving headroom under the 6 GiB aggregate
-ceiling for warm-up and scheduling variation. The per-file table and CSV below
-record the calibration. The worker cap stays four even on this 18-CPU desk.
+The measured profile placed every file at or above **512 MiB** in the memory
+lane, alongside the existing full Capsule/compiler and parser fixtures. That
+selects 44 files in this tree. Two of them run at a time, measured rather than
+assumed: the six largest (`deploy`, `dev-part-2`, `host-part-2`, `dev`,
+`monitoring-release-verifier`, `file-ingress`) peak at **3,314 MiB together**
+and finish in 233 s against 930 s one-at-a-time, with the RSS watchdog and the
+available-memory floor still armed. Width two leaves about 2.8 GiB of the
+6,144 MiB ceiling free, so the watchdog rather than a fixed lane width is what
+bounds this lane: do not raise the width on a desk with a smaller budget, and
+`SPORADES_TEST_HEAVY_CONCURRENCY=1` restores strict isolation. The per-file
+table and CSV below record the original calibration. The worker cap stays four
+even on this 18-CPU desk.
 
 Seven files run serially because concurrent compiler/watch activity exposes
 fixture timing races: `dev-watch.test.js`, `container-services-dev.test.js`,
@@ -402,7 +410,7 @@ flags were selected.
 | Lane | Files | File concurrency | Peak tree RSS (MiB) | Wall time (s) |
 | --- | ---: | ---: | ---: | ---: |
 | parallel | 201 | 4 | 1620.0 | 857.28 |
-| serial memory-heavy | 44 | 1 | 1847.9 | 2221.32 |
+| memory lane | 44 | 2 | 3314.0 (six heaviest, width 2) | 2221.32 serial baseline |
 | serial shared-service | 7 | 1 | 1161.6 | 94.52 |
 
 | Measurement | Initial instrumented profile | Final calibrated QA |
@@ -431,25 +439,25 @@ This comparison does not recreate an OOM on the shared machine.
 
 | File (`test/`) | Peak tree RSS (MiB) | Wall time (s) | Lane |
 | --- | ---: | ---: | --- |
-| `dev.test.js` | 1774.5 | 104.83 | serial memory-heavy |
-| `deploy.test.js` | 1706.2 | 124.90 | serial memory-heavy |
-| `dev-part-6.test.js` | 1530.4 | 89.39 | serial memory-heavy |
-| `dev-part-2.test.js` | 1436.7 | 128.66 | serial memory-heavy |
-| `dev-part-5.test.js` | 1352.7 | 83.20 | serial memory-heavy |
-| `dev-part-3.test.js` | 1260.9 | 108.52 | serial memory-heavy |
-| `host-part-2.test.js` | 1221.4 | 155.62 | serial memory-heavy |
-| `doctor.test.js` | 1189.8 | 23.95 | serial memory-heavy |
-| `dev-part-4.test.js` | 1142.7 | 80.66 | serial memory-heavy |
-| `public-assets.test.js` | 1142.4 | 47.52 | serial memory-heavy |
+| `dev.test.js` | 1774.5 | 104.83 | memory lane |
+| `deploy.test.js` | 1706.2 | 124.90 | memory lane |
+| `dev-part-6.test.js` | 1530.4 | 89.39 | memory lane |
+| `dev-part-2.test.js` | 1436.7 | 128.66 | memory lane |
+| `dev-part-5.test.js` | 1352.7 | 83.20 | memory lane |
+| `dev-part-3.test.js` | 1260.9 | 108.52 | memory lane |
+| `host-part-2.test.js` | 1221.4 | 155.62 | memory lane |
+| `doctor.test.js` | 1189.8 | 23.95 | memory lane |
+| `dev-part-4.test.js` | 1142.7 | 80.66 | memory lane |
+| `public-assets.test.js` | 1142.4 | 47.52 | memory lane |
 | `dev-watch.test.js` | 1088.0 | 24.56 | serial shared-service |
-| `dev-stripe-origin.test.js` | 1039.0 | 14.39 | serial memory-heavy |
-| `server-bundle-module-graph.test.js` | 1022.0 | 61.65 | serial memory-heavy |
-| `host.test.js` | 1020.7 | 76.78 | serial memory-heavy |
-| `telemetry-jobs-bundle.test.js` | 977.9 | 53.93 | serial memory-heavy |
-| `html-document-injection.test.js` | 975.3 | 11.40 | serial memory-heavy |
-| `deploy-part-2.test.js` | 939.3 | 128.53 | serial memory-heavy |
-| `sealed-env.test.js` | 926.5 | 13.91 | serial memory-heavy |
-| `admission-evidence-lifecycle.test.js` | 890.2 | 22.97 | serial memory-heavy |
+| `dev-stripe-origin.test.js` | 1039.0 | 14.39 | memory lane |
+| `server-bundle-module-graph.test.js` | 1022.0 | 61.65 | memory lane |
+| `host.test.js` | 1020.7 | 76.78 | memory lane |
+| `telemetry-jobs-bundle.test.js` | 977.9 | 53.93 | memory lane |
+| `html-document-injection.test.js` | 975.3 | 11.40 | memory lane |
+| `deploy-part-2.test.js` | 939.3 | 128.53 | memory lane |
+| `sealed-env.test.js` | 926.5 | 13.91 | memory lane |
+| `admission-evidence-lifecycle.test.js` | 890.2 | 22.97 | memory lane |
 | `telemetry-websocket-bundle.test.js` | 870.0 | 33.14 | serial shared-service |
 
 ### Twenty longest files
@@ -457,25 +465,25 @@ This comparison does not recreate an OOM on the shared machine.
 | File (`test/`) | Peak tree RSS (MiB) | Wall time (s) | Lane |
 | --- | ---: | ---: | --- |
 | `job-scheduling.test.js` | 501.6 | 238.53 | parallel |
-| `file-ingress.test.js` | 435.4 | 194.05 | serial memory-heavy |
-| `collection-tunnel.test.js` | 835.6 | 186.80 | serial memory-heavy |
-| `host-part-2.test.js` | 1221.4 | 155.62 | serial memory-heavy |
+| `file-ingress.test.js` | 435.4 | 194.05 | memory lane |
+| `collection-tunnel.test.js` | 835.6 | 186.80 | memory lane |
+| `host-part-2.test.js` | 1221.4 | 155.62 | memory lane |
 | `database-adapter-conformance-coverage.test.js` | 286.2 | 149.21 | parallel |
-| `monitoring-release-verifier.test.js` | 662.4 | 137.33 | serial memory-heavy |
-| `dev-part-2.test.js` | 1436.7 | 128.66 | serial memory-heavy |
-| `deploy-part-2.test.js` | 939.3 | 128.53 | serial memory-heavy |
+| `monitoring-release-verifier.test.js` | 662.4 | 137.33 | memory lane |
+| `dev-part-2.test.js` | 1436.7 | 128.66 | memory lane |
+| `deploy-part-2.test.js` | 939.3 | 128.53 | memory lane |
 | `resource-transactions.test.js` | 238.1 | 127.60 | parallel |
-| `deploy.test.js` | 1706.2 | 124.90 | serial memory-heavy |
+| `deploy.test.js` | 1706.2 | 124.90 | memory lane |
 | `database-adapter.test.js` | 255.4 | 116.20 | parallel |
-| `dev-part-3.test.js` | 1260.9 | 108.52 | serial memory-heavy |
-| `dev.test.js` | 1774.5 | 104.83 | serial memory-heavy |
+| `dev-part-3.test.js` | 1260.9 | 108.52 | memory lane |
+| `dev.test.js` | 1774.5 | 104.83 | memory lane |
 | `database-adapter-conformance-auth-storage.test.js` | 410.1 | 104.25 | parallel |
 | `team-destructive-policy.test.js` | 320.3 | 100.28 | parallel |
 | `stripe-webhook.test.js` | 417.4 | 100.03 | parallel |
 | `email-events.test.js` | 172.5 | 93.68 | parallel |
 | `monitoring-maintenance.test.js` | 298.3 | 92.29 | parallel |
 | `postgres-emitted-sql-quoting.test.js` | 268.4 | 89.78 | parallel |
-| `dev-part-6.test.js` | 1530.4 | 89.39 | serial memory-heavy |
+| `dev-part-6.test.js` | 1530.4 | 89.39 | memory lane |
 
 ### Cleanup observations
 

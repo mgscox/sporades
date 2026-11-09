@@ -446,7 +446,29 @@ test('QA logs active files before stopping when free memory crosses the floor', 
   assert.equal(result.summary.timedOut, false);
 });
 
-test('QA isolates compiler-heavy Capsules in a serial lane', async t => {
+test('QA bounds compiler-heavy Capsules to the memory lane width', { skip: process.platform !== 'linux' }, async t => {
+  const { dir } = await fixture(t, '');
+  const slots = [path.join(dir, 'capsule-slot-0'), path.join(dir, 'capsule-slot-1')];
+  const source = `import test from 'node:test'; import { open, unlink } from 'node:fs/promises';
+    test('one Capsule fixture', async () => {
+      let handle, slot;
+      for (const candidate of ${JSON.stringify(slots)}) {
+        try { handle = await open(candidate, 'wx'); slot = candidate; break; }
+        catch (error) { if (error.code !== 'EEXIST') throw error; }
+      }
+      if (!handle) throw new Error('memory lane exceeded its two-file bound');
+      try { await new Promise(resolve => setTimeout(resolve, 150)); }
+      finally { await handle.close(); await unlink(slot); }
+    });`;
+  const files = ['dev.test.js', 'dev-part-2.test.js'].map(name => path.join(dir, name));
+  for (const file of files) await writeFile(file, source);
+  const result = await run(['--concurrency=2', ...files]);
+  assert.equal(result.code, 0, result.output);
+  assert.equal(result.summary.pass, 2);
+  assert.match(result.output, /LANE memory-heavy: 2 files; concurrency=2/);
+});
+
+test('an inherited heavy-concurrency override can force the memory lane back to one file', { skip: process.platform !== 'linux' }, async t => {
   const { dir } = await fixture(t, '');
   const lock = path.join(dir, 'capsule-slot');
   const source = `import test from 'node:test'; import { open, unlink } from 'node:fs/promises';
@@ -457,10 +479,10 @@ test('QA isolates compiler-heavy Capsules in a serial lane', async t => {
     });`;
   const files = ['dev.test.js', 'dev-part-2.test.js'].map(name => path.join(dir, name));
   for (const file of files) await writeFile(file, source);
-  const result = await run(['--concurrency=2', ...files]);
+  const result = await run(['--concurrency=2', ...files], { env: { SPORADES_TEST_HEAVY_CONCURRENCY: '1' } });
   assert.equal(result.code, 0, result.output);
   assert.equal(result.summary.pass, 2);
-  assert.match(result.output, /LANE serial memory-heavy: 2 files; concurrency=1/);
+  assert.match(result.output, /LANE memory-heavy: 2 files; concurrency=1/);
 });
 
 test('an inherited larger ceiling preserves the QA default of four files', async t => {
