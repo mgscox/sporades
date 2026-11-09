@@ -23,6 +23,10 @@
     "README.md"
   ],
   "exports": {
+    "./build": {
+      "types": "./src/types/build.d.ts",
+      "default": "./dist/build.js"
+    },
     "./server": {
       "types": "./src/types/server.d.ts",
       "default": "./dist/server.js"
