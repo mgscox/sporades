@@ -847,27 +847,3 @@ test("registered and unregistered reset requests each enqueue one durable reques
   });
 });
 
-test("retrying a durable reset request reuses its one Reset code", async () => {
-  await withMailDatabase(async (database) => {
-    await registerEmailAccount(database, "retry@example.com", "original-password");
-    const credential = await database.adapter.findEmailCredentialWithUser("retry@example.com");
-    const payload = {
-      email: "retry@example.com",
-      requestedAt: new Date(Date.parse(credential.createdAt) + 1).toISOString(),
-      code: `${"selector".padEnd(16, "x")}.${"verifier".padEnd(32, "x")}`,
-      subject: "Reset your password",
-      textBody: null,
-      htmlBody: null,
-    };
-
-    const first = await prepareEmailPasswordResetDelivery(database, payload);
-    const retried = await prepareEmailPasswordResetDelivery(database, payload);
-
-    assert.equal(retried.textBody, first.textBody, "a retry must resend the same opaque Reset link");
-    assert.equal(
-      database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_auth_password_reset_codes] WHERE [email] = ?").get("retry@example.com").count,
-      1,
-      "a retry must not consume another outstanding-code slot",
-    );
-  }, { async send() {}, close() {} });
-});

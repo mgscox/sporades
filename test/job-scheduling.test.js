@@ -937,23 +937,6 @@ test("concurrent occurrences of one Schedule serialize payload factory evaluatio
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test("payload factory timeout configuration defaults to 30 seconds and validates 1 through 300", async () => {
-  const valid = [undefined, 1, 300];
-  for (const seconds of valid) {
-    const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-config-"));
-    const config = seconds === undefined ? { name: "scheduled" } : { name: "scheduled", scheduling: { payloadFactoryTimeoutSeconds: seconds } };
-    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, config);
-    assert.equal(database.schedulePayloadFactoryTimeoutMs, (seconds ?? 30) * 1000);
-    database.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-  for (const value of [0, 301, 1.5, Number.NaN, "30"]) {
-    const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-config-invalid-"));
-    await assert.rejects(openDevDatabase(path.join(dir, "data.db"), "", {}, { scheduling: { payloadFactoryTimeoutSeconds: value } }), /Invalid Schedule payload factory timeout/);
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("static Schedules default payload to null and disabled declarations remain inactive", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-defaults-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");

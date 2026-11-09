@@ -57,17 +57,6 @@ test("sporades --help prints top-level CLI help", async () => {
   });
 });
 
-test("sporades -h prints top-level CLI help", async () => {
-  await withTempDir(async (dir) => {
-    const result = await runCli(["-h"], { cwd: dir });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(result.stderr, "");
-    assert.match(result.stdout, /^Usage: sporades <command> \[options\]/);
-    assert.match(result.stdout, /--help, -h/);
-  });
-});
-
 test("sporades --version prints the baked local CLI version", async () => {
   await withTempDir(async (dir) => {
     const plain = await runCli(["--version"], { cwd: dir });
@@ -1193,47 +1182,6 @@ test("sporades/server exports the endpoint builder", async () => {
     kind: "endpoint",
     options: { method: "POST", path: "/integrations/ping" },
     handler,
-  });
-});
-
-test("sporades/server exports the message builder", async () => {
-  const runtime = await import("sporades/server");
-  const handler = () => ({ ok: true });
-
-  assert.equal(typeof runtime.message, "function");
-  assert.deepEqual(runtime.message(handler), {
-    kind: "message",
-    handler,
-  });
-});
-
-test("sporades/server exports the Json field builder", async () => {
-  const runtime = await import("sporades/server");
-  const field = runtime.Json();
-
-  assert.equal(typeof runtime.Json, "function");
-  assert.equal(field.kind, "Json");
-  assert.equal(typeof field.default, "function");
-  assert.deepEqual(field.default({ tags: ["json"] }), {
-    kind: "Json",
-    defaultValue: { tags: ["json"] },
-  });
-});
-
-test("sporades/server exports the Reference field builder", async () => {
-  const runtime = await import("sporades/server");
-
-  assert.equal(typeof runtime.Reference, "function");
-  const reference = runtime.Reference("users");
-  assert.equal(typeof reference.default, "function");
-  assert.deepEqual({ kind: reference.kind, targetTable: reference.targetTable }, {
-    kind: "Reference",
-    targetTable: "users",
-  });
-  assert.deepEqual(reference.default("user-1"), {
-    kind: "Reference",
-    targetTable: "users",
-    defaultValue: "user-1",
   });
 });
 

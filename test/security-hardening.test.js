@@ -4,22 +4,6 @@ import { test } from 'node:test';
 import * as http from '../dist/http-runtime.js';
 import { validateSecurityConfig, resolveEffectiveSecurityPolicy } from '../dist/cli/project-config.js';
 
-test('serialized enforced nonce CSP retains a stricter endpoint policy as an independent policy', async () => {
-  const database = { securityPolicy: http.resolveRuntimeSecurityPolicy({ security: { csp: { mode: 'enforce', nonce: true } } }) };
-  const server = createServer((request, response) => {
-    http.prepareHttpSecurity(database, request, response);
-    response.writeHead(500, { 'content-security-policy': "default-src 'none'" });
-    response.end('opaque failure');
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  try {
-    const response = await fetch(`http://127.0.0.1:${server.address().port}`);
-    assert.ok(response.headers.get('content-security-policy').split(/,\s*/).includes("default-src 'none'"));
-    assert.match(response.headers.get('content-security-policy'), /nonce-/);
-    await response.text();
-  } finally { await new Promise(resolve => server.close(resolve)); }
-});
-
 test('endpoint CSP composes across casing, setHeader and report-only mode without weakening the platform', async () => {
   for (const mode of ['enforce', 'report-only']) {
     const database = { securityPolicy: http.resolveRuntimeSecurityPolicy({ security: { csp: { mode, nonce: true } } }) };

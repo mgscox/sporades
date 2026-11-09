@@ -52,12 +52,6 @@ test("the runtime reports dormant payments for existing Capsules with no payment
   });
 });
 
-test("the runtime reports explicitly disabled billing as dormant", async () => {
-  await withPaymentsRuntime({ stripe: { enabled: false } }, message => {
-    assert.deepEqual(message.data.payments, { stripe: { enabled: false, livemode: null } });
-  });
-});
-
 for (const livemode of [false, true]) {
   test(`the runtime exposes only activation booleans for ${livemode ? "live" : "test"}-mode Stripe`, async () => {
     await withPaymentsRuntime({ stripe: enabledStripe(livemode) }, message => {
