@@ -152,7 +152,11 @@ test("packed CLI exports through a private CA from a disposable Container", {
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.deploy = { ...config.deploy, port: await availablePort() };
     await writeFile(configPath, JSON.stringify(config));
-    await run("npm", ["install", "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
+    // Acceptance must also work before the candidate version is published.
+    await run("npm", ["install", "--save-dev", path.join(root, packed.stdout.trim()), "--ignore-scripts", "--package-lock=false"], { cwd: projectDir, timeout: 120_000 });
+    const candidate = JSON.parse(await readFile(path.join(packageDir, "node_modules", "sporades", "package.json"), "utf8"));
+    const installed = JSON.parse(await readFile(path.join(projectDir, "node_modules", "sporades", "package.json"), "utf8"));
+    assert.equal(installed.version, candidate.version, "Capsule SDK must use the packed candidate");
     const deployed = await run(process.execPath, [cli, "deploy", "--telemetry", "private", "--json"], { cwd: projectDir, env, timeout: 120_000 });
     const result = JSON.parse(deployed.stdout.trim().split("\n").at(-1));
     assert.equal(result.ok, true, deployed.stderr);
