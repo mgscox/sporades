@@ -380,6 +380,42 @@ test("Portal session creation rejects mismatched provider correlation and unsafe
   }
 });
 
+for (const apiVersion of ["2026-08-26.dahlia", "2026-09-30.endive"]) {
+  test(`longer-interval upgrades reset the anchor and invoice using ${apiVersion}`, async () => {
+    let payload;
+    await withProvider(async (request, response) => {
+      if (request.method === "POST") payload = new URLSearchParams(await readBody(request));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "GET"
+        ? validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency" })
+        : validManagedSubscription()));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config: { ...config, apiVersion }, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true });
+    });
+    assert.equal(payload.get("proration_behavior"), "always_invoice");
+    assert.equal(payload.get(apiVersion.endsWith(".endive") ? "billing_cycle_anchor[type]" : "billing_cycle_anchor"), "now");
+    assert.equal(payload.has(apiVersion.endsWith(".endive") ? "billing_cycle_anchor" : "billing_cycle_anchor[type]"), false);
+    assert.equal(payload.get("payment_behavior"), "pending_if_incomplete");
+  });
+}
+
+test("Portal attestation rejects proration, anchor and scheduling drift with a safe error", async () => {
+  for (const override of [
+    { proration_behavior: "none" },
+    { billing_cycle_anchor: "now" },
+    { schedule_at_period_end: { conditions: [{ type: "shortening_interval" }] } },
+  ]) {
+    await withProvider((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(mergePortalConfiguration(validPortalConfiguration(), { features: { subscription_update: override } })));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.retrievePortalConfiguration(portalConfigurationInput), rejectedProviderFailure);
+    });
+  }
+});
+
 test("managed subscription updates attest current state and send one stable atomic Price and quantity change", async () => {
   const observed = [];
   await withProvider(async (request, response) => {
@@ -582,6 +618,9 @@ function validPortalConfiguration() {
       subscription_update: {
         enabled: true,
         default_allowed_updates: ["price"],
+        proration_behavior: "create_prorations",
+        billing_cycle_anchor: "unchanged",
+        schedule_at_period_end: { conditions: [] },
         products: [
           { product: "prod_agency", prices: ["price_test_agency_monthly"], adjustable_quantity: { enabled: false } },
           { product: "prod_studio", prices: ["price_test_studio_monthly", "price_test_studio_yearly"], adjustable_quantity: { enabled: false } },

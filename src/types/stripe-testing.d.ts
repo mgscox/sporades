@@ -1,8 +1,8 @@
 /** The supported Stripe protocol subset, intended only for local app acceptance tests. */
 export type StripeFakeObject = Record<string, any>;
 export type StripeFakeCatalogue = {
-  products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number }> }>;
-  portalConfigurations: Array<{ id: string; products: Array<{ product: string; prices: string[] }> }>;
+  products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number; unitAmount?: number }> }>;
+  portalConfigurations: Array<{ id: string; prorationBehavior?: "create_prorations" | "always_invoice" | "none"; billingCycleAnchor?: "now" | "unchanged"; scheduleAtPeriodEnd?: ("decreasing_item_amount" | "shortening_interval")[]; products: Array<{ product: string; prices: string[] }> }>;
 };
 export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"
@@ -48,7 +48,7 @@ export type StripeTeamBillingFake = {
   controlOrigin: string;
   close(): Promise<void>;
   checkout: {
-    complete(id: string, options?: { customerId?: string }): Promise<StripeFakeObject>;
+    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible" }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
   portal: {

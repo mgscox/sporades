@@ -94,9 +94,18 @@ Price's `recurring` unit (`day`, `week`, `month`, or `year`) and optional
 Portal configuration. For example, one Product's `prices` can be
 `[{ id: "price_month", recurring: "month" }, { id: "price_year", recurring: "year" }]`.
 Calendar periods clamp month/year renewals to the last valid day. An applied
-interval change resets the period at the fake clock; a pending payment leaves
-the active Price and period intact until `completePayment`. The fake validates
-proration parameters but does not calculate invoice amounts or credits.
+interval change resets the period only in classic mode. Checkout completion
+accepts `{ billingMode: "classic" | "flexible" }` per subscription, defaulting to
+`flexible`. Flexible interval changes preserve the anchor unless the update
+explicitly resets it; `always_invoice` accompanies managed longer-interval resets.
+A pending payment leaves the active Price and period intact until `completePayment`.
+Optional Price `unitAmount` is integer USD cents (default 1000). `state().invoices`
+records successful reset invoices with a full-period target line and a simple
+second-based unused-period credit. This narrow model excludes taxes, discounts,
+foreign currencies, and general proration accounting; verify Stripe's actual
+amounts separately. Portal fixtures accept `prorationBehavior`, `billingCycleAnchor`,
+and `scheduleAtPeriodEnd`, with the same defaults as the Capsule declaration,
+to test policy attestation and drift.
 
 ## Control transitions and delivery
 
@@ -110,7 +119,7 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | --- | --- |
 | `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. An existing Session Customer cannot be replaced. |
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
-| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period if its recurring interval/count changes, and emits an update. |
+| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period on interval/count changes only in classic mode, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
 | `subscriptions.setQuantity(id, quantity)` | Changes seats and emits an update. |

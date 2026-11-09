@@ -1,3 +1,4 @@
+import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
 import Stripe from "stripe";
 
 type LooseRecord = Record<string, any>;
@@ -101,7 +102,8 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
             price: input.targetPriceId,
             quantity: input.targetQuantity,
           }],
-          proration_behavior: "create_prorations",
+          proration_behavior: input.resetBillingCycle ? "always_invoice" : "create_prorations",
+          ...(input.resetBillingCycle ? { billing_cycle_anchor: billingCycleAnchorNow(config.apiVersion) } : {}),
           proration_date: input.prorationDate,
           payment_behavior: "pending_if_incomplete",
         }, { idempotencyKey: input.idempotencyKey });
@@ -281,10 +283,12 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => key !== "targetProductId").sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resetBillingCycle"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
+    || (input.resetBillingCycle !== undefined && typeof input.resetBillingCycle !== "boolean")
+    || (input.resetBillingCycle === true && input.operationKind !== "plan-transition")
     || !["plan-transition", "seat-convergence"].includes(input.operationKind)
     || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
     || !validSubscriptionItemId(input.subscriptionItemId)
@@ -347,7 +351,7 @@ function validProductId(value: any) {
 
 function validatePortalConfigurationInput(input: LooseRecord) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || Object.keys(input).filter(key => key !== "expectedPolicy").sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
     || !validPortalConfigurationId(input.configurationId) || !["sandbox", "live"].includes(input.mode)
     || !Array.isArray(input.expectedProducts) || input.expectedProducts.length < 1) throw providerFailure(false);
 
@@ -381,6 +385,9 @@ function validatePortalInput(input: LooseRecord) {
 
 function attestPortalConfiguration(portalConfiguration: LooseRecord, input: LooseRecord, livemode: boolean) {
   const subscriptionUpdate = portalConfiguration?.features?.subscription_update;
+  let policy;
+  try { policy = normalizeTeamBillingPortalPolicy(input.expectedPolicy); } catch { throw providerFailure(false); }
+  const conditions = subscriptionUpdate?.schedule_at_period_end?.conditions;
   if (portalConfiguration?.object !== "billing_portal.configuration"
     || portalConfiguration.id !== input.configurationId || portalConfiguration.active !== true
     || portalConfiguration.livemode !== livemode || (input.mode === "live") !== livemode
@@ -389,6 +396,11 @@ function attestPortalConfiguration(portalConfiguration: LooseRecord, input: Loos
     || portalConfiguration.features?.subscription_cancel?.enabled !== true
     || portalConfiguration.features?.subscription_cancel?.mode !== "at_period_end"
     || subscriptionUpdate?.enabled !== true
+    || subscriptionUpdate.proration_behavior !== policy.prorationBehavior
+    || (subscriptionUpdate.billing_cycle_anchor === null ? "unchanged" : subscriptionUpdate.billing_cycle_anchor) !== policy.billingCycleAnchor
+    || !Array.isArray(conditions)
+    || conditions.some((condition: any) => !condition || Object.keys(condition).join(",") !== "type")
+    || !sameExactStringList(conditions.map((condition: any) => condition.type).sort(), [...policy.scheduleAtPeriodEnd])
     || !sameExactStringList(subscriptionUpdate.default_allowed_updates, ["price"])
     || !sameExactPortalProducts(subscriptionUpdate.products, input.expectedProducts)) throw providerFailure(false);
 }
@@ -525,4 +537,9 @@ function providerFailure(retryable: boolean) {
   error.code = retryable ? "TEAM_BILLING_PROVIDER_UNAVAILABLE" : "TEAM_BILLING_PROVIDER_REJECTED";
   error.retryable = retryable;
   return error;
+}
+
+// Stripe changed this parameter's wire shape in endive; the app may still pin dahlia.
+function billingCycleAnchorNow(apiVersion: string): any {
+  return apiVersion.slice(0, 10) >= "2026-09-30" ? { type: "now" } : "now";
 }

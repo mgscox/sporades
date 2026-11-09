@@ -1,3 +1,4 @@
+import { teamBillingIntervalEnd } from "../team-billing-subscription-semantics.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type {
@@ -47,6 +48,7 @@ function validateCatalogue(catalogue: StripeFakeCatalogue) {
     products.set(product.id, new Set());
     for (const price of product.prices) {
       requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring)
+        && Number.isSafeInteger(price.unitAmount ?? 1000) && (price.unitAmount ?? 1000) >= 0
         && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1
         && (price.intervalCount ?? 1) <= ({ day: 1095, week: 156, month: 36, year: 3 })[price.recurring]);
       prices.add(price.id); products.get(product.id)!.add(price.id);
@@ -125,6 +127,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const catalogue = copy(options.catalogue);
   const sessions = new Map<string, Obj>(); const customers = new Map<string, Obj>(); const subscriptions = new Map<string, Obj>();
   const portalSessions = new Map<string, Obj>();
+  const invoices: Obj[] = [];
   const eventLog: StripeFakeEvent[] = []; const delivered = new Set<string>(); const deliveryLog: StripeFakeDelivery[] = [];
   const requests: StripeFakeRequest[] = []; const faults: StripeFakeFault[] = [];
   // Keys are namespaced by the bearer key, which never appears in snapshots or logs.
@@ -142,19 +145,13 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     for (const product of catalogue.products) {
       const entry = product.prices.find((item) => item.id === priceId);
       if (entry) return { id: entry.id, object: "price", livemode: false, product: product.id,
+        unit_amount: entry.unitAmount ?? 1000, currency: "usd",
         recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" } };
     }
     return fail("Unknown catalogue Price.");
   }
   function periodEnd(start: number, priceValue: Obj) {
-    const { interval, interval_count: count } = priceValue.recurring;
-    if (interval === "day" || interval === "week") return start + count * 86400 * (interval === "week" ? 7 : 1);
-    const date = new Date(start * 1000);
-    // Calendar periods, clamped to the last day of the target month (including leap years).
-    const day = date.getUTCDate(); date.setUTCDate(1);
-    date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
-    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-    date.setUTCDate(Math.min(day, lastDay)); return Math.floor(date.getTime() / 1000);
+    return teamBillingIntervalEnd(start, priceValue.recurring.interval, priceValue.recurring.interval_count);
   }
   async function send(event: StripeFakeEvent, fault: StripeFakeDeliveryFault = {}): Promise<StripeFakeDelivery> {
     requireValue(!stopped, "Fake is closed.");
@@ -193,16 +190,17 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     await emit(subscription.status === "canceled" ? SUBSCRIPTION_DELETED : SUBSCRIPTION_UPDATED, subscription);
     return copy(subscription);
   }
-  async function complete(sessionId: string, input: { customerId?: string } = {}) {
+  async function complete(sessionId: string, input: { customerId?: string; billingMode?: "classic" | "flexible" } = {}) {
     const session = get(sessions, sessionId);
     requireValue(session.status === "open", "Checkout is not open.");
+    requireValue(input.billingMode === undefined || ["classic", "flexible"].includes(input.billingMode));
     requireValue(!input.customerId || /^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId));
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
     const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id);
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
-      status: "active", cancel_at_period_end: false, cancel_at: null, pending_update: null,
+      status: "active", billing_mode: { type: input.billingMode ?? "flexible" }, billing_cycle_anchor: now, cancel_at_period_end: false, cancel_at: null, pending_update: null,
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: periodEnd(now, itemPrice) }] } };
@@ -231,17 +229,33 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const subscription = liveSubscription(subscriptionId);
     subscription.items.data[0].quantity = integer(quantity); return subscriptionEvent(subscription);
   }
-  function applyPrice(item: Obj, targetPrice: Obj) {
-    if (item.price.recurring.interval !== targetPrice.recurring.interval
-      || item.price.recurring.interval_count !== targetPrice.recurring.interval_count) {
+  function applyPrice(subscription: Obj, targetPrice: Obj, quantity: number, reset = false, invoiceNow = false) {
+    const item = subscription.items.data[0];
+    const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval
+      || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
+    const resetPeriod = reset || subscription.billing_mode.type === "classic" && changedInterval;
+    if (resetPeriod && (invoiceNow || subscription.billing_mode.type === "classic")) {
+      const amount = targetPrice.unit_amount * quantity;
+      const credit = -Math.round(item.price.unit_amount * item.quantity
+        * Math.max(0, item.current_period_end - now) / (item.current_period_end - item.current_period_start));
+      invoices.push({ id: id("in"), object: "invoice", subscription: subscription.id, created: now,
+        status: "paid", currency: targetPrice.currency, amount_paid: Math.max(0, amount + credit),
+        lines: { object: "list", data: [
+          { price: targetPrice.id, amount, proration: false, quantity, period: { start: now, end: periodEnd(now, targetPrice) } },
+          { price: item.price.id, amount: credit, proration: true },
+        ] } });
+    }
+    if (resetPeriod) {
+      subscription.billing_cycle_anchor = now;
       item.current_period_start = now;
       item.current_period_end = periodEnd(now, targetPrice);
     }
-    item.price = copy(targetPrice);
+    item.price = copy(targetPrice); item.quantity = quantity;
   }
   async function switchPrice(subscriptionId: string, priceId: string) {
     const subscription = liveSubscription(subscriptionId);
-    applyPrice(subscription.items.data[0], price(priceId)); return subscriptionEvent(subscription);
+    applyPrice(subscription, price(priceId), subscription.items.data[0].quantity);
+    return subscriptionEvent(subscription);
   }
   async function setCancellation(subscriptionId: string, cancel: boolean) {
     const subscription = liveSubscription(subscriptionId);
@@ -256,6 +270,9 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       payment_method_update: { enabled: true }, invoice_history: { enabled: true },
       subscription_cancel: { enabled: true, mode: "at_period_end" },
       subscription_update: { enabled: true, default_allowed_updates: ["price"],
+        proration_behavior: entry.prorationBehavior ?? "create_prorations",
+        billing_cycle_anchor: entry.billingCycleAnchor ?? "unchanged",
+        schedule_at_period_end: { conditions: (entry.scheduleAtPeriodEnd ?? []).map(type => ({ type })) },
         products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } })) },
     } };
   }
@@ -295,17 +312,20 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       case "customers.retrieve": exactKeys(p, []); return copy(get(customers, resourceId));
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
-        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"]);
+        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor"]);
+        requireValue(p.billing_cycle_anchor === undefined || p.billing_cycle_anchor === "now");
         exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["id", "price", "quantity"]);
         const subscription = liveSubscription(resourceId); const item = subscription.items.data[0];
-        requireValue(p.items[0].id === item.id && p.proration_behavior === "create_prorations" && p.payment_behavior === "pending_if_incomplete");
+        requireValue(p.items[0].id === item.id && ["create_prorations", "always_invoice"].includes(p.proration_behavior) && p.payment_behavior === "pending_if_incomplete");
         integer(p.proration_date, 253_402_300_799);
         const targetPrice = price(p.items[0].price); const quantity = integer(p.items[0].quantity);
         if (fault?.status === "paymentActionRequired") {
           subscription.pending_update = { expires_at: now + 3600,
+            billing_cycle_anchor: p.billing_cycle_anchor === "now" ? now : null,
+            proration_behavior: p.proration_behavior,
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
         } else {
-          applyPrice(item, targetPrice); item.quantity = quantity;
+          applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice");
           subscription.pending_update = null;
         }
         return subscriptionEvent(subscription);
@@ -381,8 +401,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const subscription = liveSubscription(id); const pending = subscription.pending_update;
         requireValue(pending && pending.expires_at > now, "No payable pending update.");
         const requested = pending.subscription_items[0];
-        applyPrice(subscription.items.data[0], requested.price);
-        subscription.items.data[0].quantity = requested.quantity;
+        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice");
         subscription.pending_update = null; subscription.status = "active";
         return subscriptionEvent(subscription);
       },
@@ -441,10 +460,10 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     },
     requests: () => copy(requests),
     state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
-      checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
+      checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices, events: eventLog }),
     reset() {
       sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); idempotency.clear(); lastCreated.clear();
-      eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
+      invoices.length = 0; eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };
   function idForInvoice() { return id("in"); } function idForLine() { return id("il"); }

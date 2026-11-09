@@ -45,13 +45,16 @@ import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocke
 import { startTeamBillingCheckout, readCurrentUserTeamBilling, startTeamBillingPortal } from '../dist/team-billing-runtime.js';
 import { requestTeamBillingPlanTransition, repairTeamBillingDesiredState, stageTeamBillingMembershipChange } from '../dist/team-billing-management.js';
 
-for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}, interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
+for (const billingMode of ["classic", "flexible"]) for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial} (${billingMode}), interval transitions, Portal and cancellation converge through signed callbacks`, async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-intervals-'));
   const teamId = randomUUID();
   let actor;
   const checks = [];
   const d = declaration();
-  if (initial === "year:1") d.catalogue.kitchen.quantity = { kind: "team-members" };
+  if (initial === "year:1" || billingMode === "flexible") d.catalogue.kitchen.quantity = { kind: "team-members" };
+  if (initial === "month:1" && billingMode === "flexible") Object.assign(d.portal, {
+    prorationBehavior: "always_invoice", billingCycleAnchor: "now", scheduleAtPeriodEnd: ["shortening_interval"],
+  });
   d.authorize = (_ctx, input) => { checks.push(input); return { allow: true }; };
   const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
   const env = { STRIPE_SECRET_KEY: 'sk_test_intervals', STRIPE_WEBHOOK_SECRET: 'whsec_intervals' };
@@ -61,8 +64,8 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   callback.on('upgrade', (req, socket) => hub.accept(req, socket));
   callback.listen(0, '127.0.0.1'); await once(callback, 'listening');
   const fake = await createStripeTeamBillingFake({ webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${callback.address().port}/stripe/webhook`, delivery: 'manual', catalogue: {
-    products: [{ id: 'prod_kitchen', prices: [{ id: 'price_month', recurring: 'month' }, { id: 'price_year', recurring: 'year' }] }],
-    portalConfigurations: [{ id: 'bpc_kitchen', products: [{ product: 'prod_kitchen', prices: ['price_month', 'price_year'] }] }],
+    products: [{ id: 'prod_kitchen', prices: [{ id: 'price_month', recurring: 'month' }, { id: 'price_year', recurring: 'year', unitAmount: 10000 }] }],
+    portalConfigurations: [{ id: 'bpc_kitchen', prorationBehavior: d.portal.prorationBehavior, billingCycleAnchor: d.portal.billingCycleAnchor, scheduleAtPeriodEnd: d.portal.scheduleAtPeriodEnd, products: [{ product: 'prod_kitchen', prices: ['price_month', 'price_year'] }] }],
   } });
   t.after(async () => { await fake.close(); hub.disconnectAll(); callback.closeAllConnections(); await new Promise(resolve => callback.close(resolve)); await database.close(); await rm(dir, { recursive: true, force: true }); });
   database.stripeApiBaseUrl = fake.origin; await database.init();
@@ -91,8 +94,9 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   await assert.rejects(startTeamBillingCheckout(database, actor, teamId, requestId, 'kitchen', opposite), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
   assert.ok(checks.some(c => c.operation === 'checkout' && c.interval === initial));
   const session = fake.state().checkouts[0]; assert.equal(session.line_items.data[0].price.id, initial === 'month:1' ? 'price_month' : 'price_year');
-  const completed = await fake.checkout.complete(session.id); await deliver();
+  const completed = await fake.checkout.complete(session.id, { billingMode }); await deliver();
   assert.equal((await read()).interval, initial);
+  assert.equal(database.adapter.prepare('SELECT [billingMode] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ?').get(teamId).billingMode, billingMode);
   const originalDefinition = database.teamBillingDefinition;
   const redeclared = declaration();
   // A redeploy cannot relabel already-verified monthly evidence as annual.
@@ -110,12 +114,19 @@ for (const initial of ['month:1', 'year:1']) test(`WebSocket Checkout ${initial}
   const transition = randomUUID();
   const transitionReply = await send({ type: 'teamBilling.requestPlanTransition', input: { teamId, requestId: transition, productKey: 'kitchen', interval: opposite } });
   assert.equal(transitionReply.error, null, JSON.stringify(transitionReply));
+  if (initial === "month:1" && billingMode === "flexible") {
+    // Refreshing accepted seats before dispatch must retain the annual reset intent.
+    database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'queued-member', 'member', ?)").run(teamId, now);
+  }
   // A restart must not confuse equal product/quantity with an equal target Price.
   await repairTeamBillingDesiredState(database); await drain();
   assert.equal((await read()).state, 'pending');
   await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, transition, 'kitchen', initial), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
   assert.ok(checks.some(c => c.operation === 'plan-transition' && c.interval === opposite));
-  assert.ok(fake.requests().some(r => r.operation === 'subscriptions.update' && r.parameters.proration_behavior === 'create_prorations'));
+  const update = fake.requests().find(r => r.operation === 'subscriptions.update');
+  assert.equal(update.parameters.proration_behavior, initial === 'month:1' ? 'always_invoice' : 'create_prorations');
+  assert.equal(update.parameters.billing_cycle_anchor, initial === 'month:1' ? 'now' : undefined);
+  if (initial === 'month:1') assert.equal(fake.state().invoices[0].lines.data[0].amount, billingMode === "flexible" ? 20000 : 10000);
   await deliver(); assert.equal((await read()).interval, opposite); assert.equal((await read()).state, 'active');
   await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
   assert.equal(fake.state().portalSessions.length, 1, 'Portal attests both Prices for the same Product');

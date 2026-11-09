@@ -8,6 +8,8 @@
 
 ### Bug Fixes
 
+- Team Billing longer-interval upgrades explicitly reset the anchor and invoice immediately in flexible billing mode. Store observed billing mode, preserve retry payloads, encode dahlia/endive anchors correctly, and reject Portal proration, anchor or scheduling drift against declared policy. Existing Portal declarations now attest `create_prorations`, `unchanged`, and no scheduled conditions by default; review existing configurations when upgrading (#366).
+
 - Provide transaction-bound Team lifecycle locks in privileged Job resource scopes, including scheduled Jobs; keep ordinary nontransactional lock calls fail-closed (#356).
 - Chained `.where()` calls now combine equality predicates with AND for `get()`
   and `all()` across SQLite, PostgreSQL, and libSQL, including live queries

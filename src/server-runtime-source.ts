@@ -1004,6 +1004,7 @@ export async function openDevDatabase(
         prorationDate: input.prorationDate,
         idempotencyKey: input.idempotencyKey,
         operationKind: input.operationKind,
+        ...(input.resetBillingCycle === true ? { resetBillingCycle: true } : {}),
       }));
     },
     quiesceTeamBillingProvider: async (context: LooseRecord, input: LooseRecord) => {

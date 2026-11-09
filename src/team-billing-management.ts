@@ -2,6 +2,7 @@
 // browser mutations only stage durable intent; provider I/O runs later in a
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
+import { teamBillingIntervalEnd } from "./team-billing-subscription-semantics.js";
 
 import { countAcceptedTeamMembers, lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
@@ -52,6 +53,7 @@ export async function requestTeamBillingPlanTransition(
     const effectiveAt = nowSeconds(database);
     const staged = await stageDesired(transaction, database, {
       teamId, kind: "plan-transition", operationId, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt,
+      resetBillingCycle: longerInterval(currentInterval, price.interval, effectiveAt) ? 1 : 0,
     });
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
@@ -135,6 +137,10 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
           targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+          resetBillingCycle: longerInterval(
+            teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.interval,
+            price.interval, nowSeconds(database),
+          ) ? 1 : 0,
         });
         await enqueueIntent(database, transaction, replacement);
         return { superseded: true, dispatch: true };
@@ -182,6 +188,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         prorationDate: Number(desired.effectiveAt),
         idempotencyKey: desired.idempotencyKey,
         operationKind: desired.kind,
+        ...(desired.resetBillingCycle === 1 ? { resetBillingCycle: true } : {}),
       },
     };
   });
@@ -390,7 +397,7 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   const binding = modeBinding(database, database.teamBillingDefinition.catalogue[input.targetProductKey]);
   const targetPriceId = input.targetPriceId ?? (input.kind === "seat-convergence" && binding.prices
     ? (await currentSubscription(transaction, input.teamId)).providerPriceId : null);
-  input = { ...input, targetPriceId };
+  input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0 };
   const existing = await desiredForTeam(transaction, input.teamId);
   const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
     && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
@@ -409,13 +416,13 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   const now = nowIso(database);
   if (existing) {
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
-    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now, input.teamId);
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, idempotencyKey, now, now, input.teamId);
   } else {
     await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)",
-    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now);
+      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [resetBillingCycle], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)",
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, idempotencyKey, now, now);
   }
   await ensureLane(transaction, input.teamId, database);
   return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -634,3 +641,10 @@ function conflict() { return coded("The Team Billing request conflicts with an e
 function transitionNotRequired() { return coded("This Plan transition does not require managed quantity policy work.", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED"); }
 function attentionRequired() { return coded("Team Billing provider state requires attention.", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"); }
 function retryable(code: string) { return coded("Team Billing provider work should be retried.", code, true); }
+
+function longerInterval(source: string | undefined, target: string | undefined, at: number) {
+  if (!source || !target) return false;
+  const [sourceUnit, sourceCount] = source.split(":");
+  const [targetUnit, targetCount] = target.split(":");
+  return teamBillingIntervalEnd(at, targetUnit, Number(targetCount)) > teamBillingIntervalEnd(at, sourceUnit, Number(sourceCount));
+}
