@@ -498,6 +498,38 @@ Migrating an existing React or Preact esbuild Capsule requires replacing the
 Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source
 entry as a write-free preflight error and never rewrites the source shell.
 
+## Programmatic container bundles
+
+Node.js container build scripts can import `createBundle` from `sporades/build`.
+Pass the absolute project directory and its parsed `sporades.json`. The function
+uses the same Bundle pipeline as the CLI and publishes output beneath
+`.sporades/build`; it does not start Docker or a Container session.
+
+```js
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { createBundle } from "sporades/build";
+
+const projectDir = path.resolve(".");
+const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+const outputDir = path.join(projectDir, ".sporades", "container");
+const bundle = await createBundle(projectDir, config);
+try {
+  await mkdir(outputDir, { recursive: true });
+  await writeFile(path.join(outputDir, "server.mjs"), await readFile(bundle.paths.serverBundle));
+  await cp(bundle.staticFiles.publicDir, path.join(outputDir, "public"), { recursive: true });
+} finally {
+  await bundle.releasePublicTreeLease();
+}
+```
+
+The supported result contains `paths.serverBundle`, `staticFiles.publicDir`, and
+`releasePublicTreeLease()`. The public tree includes `index.html`, client output,
+and project public files. Finish copying it before releasing the lease, including
+when copying fails. `BundleConfig` and `BundleResult` are exported TypeScript
+types. Other pipeline fields and switches are internal; container scripts should
+use this entry point instead of importing from `sporades/dist/`.
+
 ## Project public files
 
 Scaffolded `index.html` declares an empty data-URL favicon (`href="data:,"`),

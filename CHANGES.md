@@ -5,6 +5,8 @@
 ### Features
 
 - Team Billing supports exact `usage` quantities for venues, locations, and other Capsule resources, with a billable floor, growth maximum, prorated convergence and restart repair (#351).
+- Export the typed container Bundle API as `sporades/build`, so build scripts can
+  call `createBundle` without importing private `dist/` paths (#355).
 
 ### Bug Fixes
 
