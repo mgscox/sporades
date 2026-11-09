@@ -2,7 +2,7 @@
 export type StripeFakeObject = Record<string, any>;
 export type StripeFakeCatalogue = {
   products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number }> }>;
-  portalConfigurations: Array<{ id: string; products: Array<{ product: string; prices: string[] }> }>;
+  portalConfigurations: Array<{ id: string; trialUpdateBehavior?: "continue_trial" | "end_trial"; products: Array<{ product: string; prices: string[] }> }>;
 };
 export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"

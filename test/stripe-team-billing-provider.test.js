@@ -327,6 +327,8 @@ test("the internal Team Billing provider attests one explicit Portal configurati
 test("Portal configuration attestation rejects mutable defaults and every catalogue drift", async () => {
   const invalidConfigurations = [
     { active: false },
+    { features: { subscription_update: { trial_update_behavior: "end_trial" } } },
+    { features: { subscription_update: { trial_update_behavior: null } } },
     { livemode: true },
     { features: { payment_method_update: { enabled: false } } },
     { features: { invoice_history: { enabled: false } } },
@@ -345,6 +347,21 @@ test("Portal configuration attestation rejects mutable defaults and every catalo
     }, async (apiBaseUrl) => {
       const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
       await assert.rejects(provider.retrievePortalConfiguration(portalConfigurationInput), rejectedProviderFailure);
+    });
+  }
+});
+
+test("Portal trial policy attestation requires the exact declared behavior", async () => {
+  for (const endTrial of [false, true]) {
+    await withProvider((_request, response) => {
+      const configuration = validPortalConfiguration();
+      configuration.features.subscription_update.trial_update_behavior = endTrial ? "end_trial" : "continue_trial";
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(configuration));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      assert.deepEqual(await provider.retrievePortalConfiguration({ ...portalConfigurationInput, endTrial }), { ok: true });
+      await assert.rejects(provider.retrievePortalConfiguration({ ...portalConfigurationInput, endTrial: !endTrial }), rejectedProviderFailure);
     });
   }
 });
@@ -468,11 +485,23 @@ test("an explicit resume clears scheduled cancellation inside the same managed u
   });
 });
 
+test("an already applied trial-ending target refuses newly scheduled cancellation without changing its provider tuple", async () => {
+  const writes = [];
+  await withProvider(async (request, response) => {
+    if (request.method === "POST") writes.push(new URLSearchParams(await readBody(request)));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(validManagedSubscription({ cancelAtPeriodEnd: request.method === "GET" })));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resume: true, endTrial: true }), { code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" });
+  });
+  assert.equal(writes.length, 0);
+});
+
 test("resume preserves all other guards even when cancellation is also scheduled", async () => {
   for (const [override, code] of [
     [{ status: "past_due" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
     [{ status: "unpaid" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
-    [{ status: "trialing" }, "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
     [{ schedule: "sub_sched_external" }, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
   ]) {
     for (const cancellation of [{ cancel_at_period_end: true }, { cancel_at: 2_000_086_523 }]) {
@@ -646,6 +675,7 @@ function validPortalConfiguration() {
       subscription_update: {
         enabled: true,
         default_allowed_updates: ["price"],
+        trial_update_behavior: "continue_trial",
         products: [
           { product: "prod_agency", prices: ["price_test_agency_monthly"], adjustable_quantity: { enabled: false } },
           { product: "prod_studio", prices: ["price_test_studio_monthly", "price_test_studio_yearly"], adjustable_quantity: { enabled: false } },

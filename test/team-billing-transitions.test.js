@@ -38,6 +38,49 @@ for (const source of ['basic', 'legacy']) test(`${source} to offered fixed plan 
   assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'month:1')).state, 'completed');
 });
 
+test('switching a trial plan preserves trial end and only verified evidence grants the target', async t => {
+  const f = await fixture(t, 'basic', false, { trialDays: 14 });
+  const before = f.fake.subscriptions.get(f.subscriptionId);
+  const requestId = randomUUID();
+  assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1')).state, 'pending');
+  await f.drain();
+  const updated = f.fake.subscriptions.get(f.subscriptionId);
+  assert.equal(updated.status, 'trialing');
+  assert.equal(updated.trial_end, before.trial_end);
+  assert.equal(updated.items.data[0].current_period_end, before.trial_end);
+  assert.equal(updated.items.data[0].price.id, 'price_offered_year');
+  assert.equal(f.fake.state().checkouts.length, 1);
+  assert.equal((await f.read()).state, 'pending');
+  await f.deliver();
+  assert.deepEqual(await f.read(), { state: 'trialing', teamId: f.teamId, productKey: 'offered', interval: 'year:1', quantity: 1,
+    trialEndsAt: new Date(before.trial_end * 1000).toISOString() });
+  assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1')).state, 'completed');
+});
+
+test('server endTrial policy ends and invoices the trial switch, settling only after callbacks', async t => {
+  const f = await fixture(t, 'basic', false, { trialDays: 14, endTrial: true });
+  const before = f.fake.subscriptions.get(f.subscriptionId);
+  const requestId = randomUUID();
+  await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1');
+  await f.drain();
+  const updated = f.fake.subscriptions.get(f.subscriptionId);
+  assert.equal(updated.status, 'active');
+  assert.ok(updated.trial_end < before.trial_end);
+  assert.equal(updated.items.data[0].current_period_start, updated.trial_end);
+  assert.equal(updated.items.data[0].price.id, 'price_offered_year');
+  const invoice = f.fake.state().invoices.find(i => i.id === updated.latest_invoice);
+  assert.equal(invoice.status, 'paid');
+  assert.equal(invoice.customer, updated.customer);
+  assert.equal(invoice.parent.subscription_details.subscription, updated.id);
+  const write = f.fake.requests().find(r => r.operation === 'subscriptions.update');
+  assert.equal(write.parameters.trial_end, 'now');
+  assert.equal((await f.read()).state, 'pending');
+  await f.deliver();
+  assert.equal((await f.read()).state, 'active');
+  assert.equal((await f.read()).productKey, 'offered');
+  assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1')).state, 'completed');
+});
+
 test('Checkout completion alone blocks a second purchase before Subscription evidence arrives', async t => {
   const f = await fixture(t, 'basic', true);
   await assert.rejects(startTeamBillingCheckout(f.database, f.actor, f.teamId, randomUUID(), 'offered', 'year:1'), { code: 'TEAM_BILLING_SUBSCRIPTION_EXISTS' });
@@ -66,15 +109,9 @@ test('verified unsafe states refuse transitions and Checkout, and terminal cance
   for (const [change, code] of [
     [() => fake.portal.cancelAtPeriodEnd(subscriptionId), 'TEAM_BILLING_SUBSCRIPTION_CANCELLING'],
     [() => fake.subscriptions.setStatus(subscriptionId, 'past_due'), 'TEAM_BILLING_SUBSCRIPTION_PAST_DUE'],
-    [() => fake.subscriptions.setStatus(subscriptionId, 'trialing'), 'TEAM_BILLING_SUBSCRIPTION_TRIALING'],
     [() => fake.subscriptions.setSchedule(subscriptionId, 'sub_sched_foreign'), 'TEAM_BILLING_UNKNOWN_SCHEDULE'],
   ]) {
     await change(); await f.deliver();
-    if (code.endsWith('TRIALING')) {
-      const truth = await f.read();
-      assert.equal(truth.state, 'trialing');
-      assert.equal(truth.trialEndsAt, new Date(fake.subscriptions.get(subscriptionId).trial_end * 1000).toISOString());
-    }
     const writes = fake.requests().filter(r => r.operation === 'subscriptions.update').length;
     const input = { teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
     assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input })).error.code, code);
@@ -97,7 +134,6 @@ test('provider read refuses an unsafe state before its callback has arrived', as
   for (const [change, code] of [
     [() => fake.portal.cancelAtPeriodEnd(subscriptionId), 'TEAM_BILLING_SUBSCRIPTION_CANCELLING'],
     [() => fake.subscriptions.setStatus(subscriptionId, 'past_due'), 'TEAM_BILLING_SUBSCRIPTION_PAST_DUE'],
-    [() => fake.subscriptions.setStatus(subscriptionId, 'trialing'), 'TEAM_BILLING_SUBSCRIPTION_TRIALING'],
     [() => fake.subscriptions.setSchedule(subscriptionId, 'sub_sched_foreign'), 'TEAM_BILLING_UNKNOWN_SCHEDULE'],
   ]) {
     const requestId = randomUUID();
@@ -183,13 +219,40 @@ test('resume-and-switch clears scheduled cancellation in one update; without it 
   assert.equal(read.interval, 'year:1');
 });
 
-async function fixture(t, source = 'basic', checkoutOnly = false) {
+test('resume and payment action preserve the server trial-switch policy', async t => {
+  for (const endTrial of [false, true]) {
+    const f = await fixture(t, 'basic', false, { trialDays: 14, endTrial });
+    const before = f.fake.subscriptions.get(f.subscriptionId);
+    await f.fake.portal.cancelAtPeriodEnd(f.subscriptionId);
+    await f.deliver();
+    const requestId = randomUUID();
+    await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true);
+    f.fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+    await f.drain();
+    const failed = await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true);
+    assert.equal(failed.reason, 'payment-action-required');
+    assert.ok(failed.paymentAction);
+    assert.equal((await f.read()).productKey, 'basic');
+    await f.fake.subscriptions.completePayment(f.subscriptionId);
+    await f.deliver();
+    const updated = f.fake.subscriptions.get(f.subscriptionId);
+    assert.equal(updated.cancel_at_period_end, false);
+    assert.equal(updated.cancel_at, null);
+    assert.equal(updated.status, endTrial ? 'active' : 'trialing');
+    if (!endTrial) assert.equal(updated.trial_end, before.trial_end);
+    else assert.equal(f.fake.state().invoices.find(i => i.id === updated.latest_invoice).status, 'paid');
+    assert.equal((await f.read()).productKey, 'offered');
+    assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true)).state, 'completed');
+  }
+});
+
+async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-transitions-'));
   const teamId = randomUUID();
   const checks = [];
   const offered = new Set([source, 'offered']);
   const catalogue = Object.fromEntries([source, 'offered'].map(key => [key, {
-    quantity: { kind: 'fixed', value: 1 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
+    ...(options.trialDays ? { trialDays: options.trialDays } : {}), quantity: { kind: 'fixed', value: 1 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
       productId: `prod_${mode === 'live' ? 'live_' : ''}${key}`, portalConfigurationId: `bpc_${mode}_${key}`,
       prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month` }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year` } },
     }])),
@@ -198,7 +261,7 @@ async function fixture(t, source = 'basic', checkoutOnly = false) {
   const env = { STRIPE_SECRET_KEY: 'sk_test_transitions', STRIPE_WEBHOOK_SECRET: 'whsec_transitions' };
   const database = await openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'transitions', auth: { providers: { email: true } }, payments: { stripe: config } }, {
     name: 'transitions', schema: {}, teamBilling: {
-      catalogue, transitions: { allowSamePolicy: true }, checkout: { successPath: '/billing', cancelPath: '/billing' },
+      catalogue, transitions: { allowSamePolicy: true, endTrial: options.endTrial ?? false }, checkout: { successPath: '/billing', cancelPath: '/billing' },
       authorize: (_ctx, input) => { checks.push(input); return { allow: input.operation === 'read' || offered.has(input.productKey) }; },
     },
   }, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
@@ -234,7 +297,7 @@ async function fixture(t, source = 'basic', checkoutOnly = false) {
   if (checkoutOnly) {
     const event = fake.events.pending().find(event => event.type === 'checkout.session.completed');
     assert.ok((await fake.events.deliver(event.id)).every(r => r.status === 200)); await drain();
-  } else { await deliver(); assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, 'active'); }
+  } else { await deliver(); assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, options.trialDays ? 'trialing' : 'active'); }
   // Keep source checkout available for setup; exclude it as a transition target afterwards.
   offered.delete(source);
   return { database, actor, teamId, fake, checks, send, drain, deliver, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };

@@ -62,7 +62,6 @@ test("Plan transition guards refuse each unsafe state at admission and worker ex
   for (const [column, value, code] of [
     ["cancelAtPeriodEnd", 1, "TEAM_BILLING_SUBSCRIPTION_CANCELLING"],
     ["state", "past-due", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
-    ["state", "trialing", "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
     ["hasSchedule", 1, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
   ]) {
     for (const phase of ["request", "worker"]) {
@@ -84,6 +83,31 @@ test("Plan transition guards refuse each unsafe state at admission and worker ex
   }
 });
 
+test("durable trial policy survives repair and configuration changes until ended evidence settles it", async () => {
+  const f = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+    f.database.teamBillingDefinition.transitions = { allowSamePolicy: true, endTrial: true };
+    await requestTeamBillingPlanTransition(f.database, actor, teamId, randomRequestId("a"), "agency");
+    f.database.teamBillingDefinition.transitions.endTrial = false;
+    await repairTeamBillingDesiredState(f.database);
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    const first = f.providerCalls[0];
+    assert.equal(first.endTrial, true);
+    // Even an exact target tuple must remain pending while verified truth is trialing.
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [productKey] = 'agency', [providerPriceId] = 'price_agency', [quantity] = 1").run();
+    assert.equal((await settleVerifiedTeamBillingTarget(f.database, { teamId, productKey: "agency", quantity: 1, subscriptionId: "sub_test" })).settled, false);
+    assert.equal(f.operation().status, "awaiting-observation");
+    await repairTeamBillingDesiredState(f.database);
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    assert.equal(f.providerCalls[1].endTrial, true);
+    assert.equal(f.providerCalls[1].idempotencyKey, first.idempotencyKey);
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'active'").run();
+    assert.equal((await settleVerifiedTeamBillingTarget(f.database, { teamId, productKey: "agency", quantity: 1, subscriptionId: "sub_test" })).settled, true);
+    assert.equal(f.operation().status, "completed");
+  } finally { f.close(); }
+});
+
 test("revoking same-policy opt-in fences an already queued transition", async () => {
   const fixture = openFixture({ productKey: "studio", quantity: 1 });
   try {
@@ -99,7 +123,7 @@ test("revoking same-policy opt-in fences an already queued transition", async ()
   } finally { fixture.close(); }
 });
 
-test("trial evidence retains automatic seat convergence while plan transitions stay guarded", async () => {
+test("trial evidence retains automatic seat convergence", async () => {
   const fixture = openFixture();
   try {
     fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
@@ -341,10 +365,14 @@ test("a newer exact member count supersedes a plan worker before Price and quant
 });
 
 test("resume intent survives a newer member or usage count before the plan worker runs", async () => {
-  for (const quantityKind of ["team-members", "usage"]) {
+  for (const [quantityKind, trial] of [["team-members", false], ["usage", false], ["team-members", true], ["usage", true]]) {
     const fixture = openFixture({ productKey: "studio", quantity: 1 });
     try {
       let usage = 2;
+      if (trial) {
+        fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+        fixture.database.teamBillingDefinition.transitions = { endTrial: true };
+      }
       if (quantityKind === "usage") {
         fixture.database.teamBillingDefinition.catalogue.agency.quantity = { kind: "usage", meter: "venues" };
         fixture.database.runTeamBillingUsage = () => ({ venues: usage });
@@ -361,6 +389,7 @@ test("resume intent survives a newer member or usage count before the plan worke
       await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
       assert.equal(fixture.providerCalls.length, 1);
       assert.equal(fixture.providerCalls[0].resume, true);
+      assert.equal(fixture.providerCalls[0].endTrial, trial ? true : undefined);
       assert.equal(fixture.providerCalls[0].targetQuantity, 3);
       assert.equal(fixture.operationForRequest(requestId).status, "awaiting-observation");
     } finally { fixture.close(); }
@@ -373,6 +402,8 @@ test("usage repair preserves the acknowledged plan's resume intent", async () =>
     try {
       fixture.database.teamBillingDefinition.catalogue.agency.quantity = { kind: "usage", meter: "venues" };
       fixture.database.runTeamBillingUsage = () => ({ venues: 2 });
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+      fixture.database.teamBillingDefinition.transitions = { endTrial: true };
       fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [cancelAtPeriodEnd] = 1").run();
       await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("b"), "agency", undefined, true);
       await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
@@ -385,6 +416,7 @@ test("usage repair preserves the acknowledged plan's resume intent", async () =>
       await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
       assert.equal(fixture.providerCalls.length, 2);
       assert.equal(fixture.providerCalls[1].resume, true);
+      assert.equal(fixture.providerCalls[1].endTrial, true);
     } finally { fixture.close(); }
   }
 });
@@ -521,10 +553,9 @@ test("resume stages a cancelling Subscription and clears its cancellation inside
   }
 });
 
-test("resume does not lift the past-due, trial or schedule refusals", async () => {
+test("resume does not lift the past-due or schedule refusals", async () => {
   for (const [column, value, code] of [
     ["state", "past-due", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
-    ["state", "trialing", "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
     ["hasSchedule", 1, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
   ]) {
     for (const cancelling of [0, 1]) {
@@ -1065,7 +1096,7 @@ function openFixture(options = {}) {
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   };
-  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [resume] INTEGER NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [endTrial] INTEGER NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [resume] INTEGER NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)");

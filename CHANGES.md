@@ -1,5 +1,12 @@
 # Changes
 
+## Unreleased
+
+- Team Billing plan switches during trials preserve the trial by default. Server-only
+  `transitions.endTrial` can end it immediately; Portal configuration attestation
+  requires matching trial behavior. Fake tests cover preservation and invoicing;
+  real Stripe trial preservation awaits a manager test-clock check (#370).
+
 ## v0.9.47 - 2026-11-09
 
 Changes since v0.9.46.

@@ -56,6 +56,7 @@ function validateCatalogue(catalogue: StripeFakeCatalogue) {
   }
   for (const config of catalogue.portalConfigurations) {
     requireValue(/^bpc_[A-Za-z0-9_]+$/.test(config.id) && !configs.has(config.id) && Array.isArray(config.products) && config.products.length);
+    requireValue(config.trialUpdateBehavior === undefined || ["continue_trial", "end_trial"].includes(config.trialUpdateBehavior));
     configs.add(config.id);
     const seen = new Set<string>();
     for (const product of config.products) {
@@ -127,6 +128,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const catalogue = copy(options.catalogue);
   const sessions = new Map<string, Obj>(); const customers = new Map<string, Obj>(); const subscriptions = new Map<string, Obj>();
   const portalSessions = new Map<string, Obj>();
+  const invoices = new Map<string, Obj>();
   const eventLog: StripeFakeEvent[] = []; const delivered = new Set<string>(); const deliveryLog: StripeFakeDelivery[] = [];
   const requests: StripeFakeRequest[] = []; const faults: StripeFakeFault[] = [];
   // Keys are namespaced by the bearer key, which never appears in snapshots or logs.
@@ -251,6 +253,18 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     }
     item.price = copy(targetPrice);
   }
+  function endTrial(subscription: Obj) {
+    const item = subscription.items.data[0];
+    subscription.status = "active";
+    subscription.trial_end = now;
+    item.current_period_start = now;
+    item.current_period_end = periodEnd(now, item.price);
+    const invoice = { id: idForInvoice(), object: "invoice", livemode: false, customer: subscription.customer,
+      billing_reason: "subscription_update", status: "paid", paid: true,
+      parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } } };
+    invoices.set(invoice.id, invoice);
+    subscription.latest_invoice = invoice.id;
+  }
   async function switchPrice(subscriptionId: string, priceId: string) {
     const subscription = liveSubscription(subscriptionId);
     applyPrice(subscription, price(priceId)); return subscriptionEvent(subscription);
@@ -267,7 +281,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     return { id: configId, object: "billing_portal.configuration", active: true, livemode: false, features: {
       payment_method_update: { enabled: true }, invoice_history: { enabled: true },
       subscription_cancel: { enabled: true, mode: "at_period_end" },
-      subscription_update: { enabled: true, default_allowed_updates: ["price"],
+      subscription_update: { enabled: true, default_allowed_updates: ["price"], trial_update_behavior: entry.trialUpdateBehavior ?? "continue_trial",
         products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } })) },
     } };
   }
@@ -308,7 +322,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       case "customers.retrieve": exactKeys(p, []); return copy(get(customers, resourceId));
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
-        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["cancel_at_period_end", "expand"]);
+        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["cancel_at_period_end", "expand", "trial_end"]);
+        requireValue(p.trial_end === undefined || p.trial_end === "now");
         exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["id", "price", "quantity"]);
         if (p.expand !== undefined) { exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "latest_invoice"); }
         const subscription = liveSubscription(resourceId); const item = subscription.items.data[0];
@@ -322,13 +337,16 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const targetPrice = price(p.items[0].price); const quantity = integer(p.items[0].quantity);
         if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
           subscription.pending_update = { expires_at: now + 3600,
+            ...(p.trial_end === "now" ? { trial_end: now } : {}),
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
           subscription.latest_invoice = { id: idForInvoice(), object: "invoice", livemode: false,
             hosted_invoice_url: fault.status === "paymentActionRequiredOffHost"
               ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id("in")}?s=em` };
         } else {
           applyPrice(subscription, targetPrice); item.quantity = quantity;
-          subscription.pending_update = null; subscription.latest_invoice = null;
+          subscription.latest_invoice = null;
+          if (p.trial_end === "now") endTrial(subscription);
+          subscription.pending_update = null;
         }
         return subscriptionEvent(subscription);
       }
@@ -412,8 +430,9 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const requested = pending.subscription_items[0];
         applyPrice(subscription, requested.price);
         subscription.items.data[0].quantity = requested.quantity;
-        subscription.pending_update = null;
         subscription.latest_invoice = null;
+        if (pending.trial_end != null) endTrial(subscription);
+        subscription.pending_update = null;
         if (subscription.status !== "trialing") subscription.status = "active";
         await emit(PENDING_UPDATE_APPLIED, subscription);
         return copy(subscription);
@@ -475,9 +494,9 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     },
     requests: () => copy(requests),
     state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
-      checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
+      invoices: [...invoices.values()], checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
     reset() {
-      sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); idempotency.clear(); lastCreated.clear();
+      sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); invoices.clear(); idempotency.clear(); lastCreated.clear();
       eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };
