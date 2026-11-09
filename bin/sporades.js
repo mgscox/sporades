@@ -165093,7 +165093,7 @@ jobs:
 }
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.46";
+var CLI_VERSION = "0.9.47";
 
 // src/cli/sporades.ts
 var containerSecretResolutions = /* @__PURE__ */ new WeakMap();
