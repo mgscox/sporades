@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Team Billing products can offer several recurring Prices per environment, such as monthly and annual billing. Checkout and managed interval switches authorize the selected interval, verified billing truth reports it, and the Stripe test provider models interval changes. Existing single-Price bindings remain supported (#350).
 - Export the typed container Bundle API as `sporades/build`, so build scripts can
   call `createBundle` without importing private `dist/` paths (#355).
 

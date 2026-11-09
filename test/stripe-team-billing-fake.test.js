@@ -442,7 +442,7 @@ import { createStripeTeamBillingFake, type StripeFakeFault, type StripeTeamBilli
 import { createStripeTeamBillingFake as generatedFactory } from ${JSON.stringify(path.resolve("dist/testing/stripe.js"))};
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
-const options: StripeTeamBillingFakeOptions = { catalogue: { products: [], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
+const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
 await fake.checkout.complete("cs_test_types");
 await fake.events.deliver(undefined, { badSignature: true });
@@ -493,4 +493,28 @@ test("lost managed and Portal acknowledgements replay the committed result; GET 
   await assert.rejects(provider.updateManagedSubscription(update), (error) => error.code === "TEAM_BILLING_PROVIDER_REJECTED" && !error.retryable);
   await assert.rejects(provider.updateManagedSubscription(update), (error) => error.code === "TEAM_BILLING_PROVIDER_REJECTED" && !error.retryable);
   fake.faults.clear();
+});
+
+test('multi-interval Prices reset calendar periods only when an applied interval changes', async (t) => {
+  const multi = { products: [{ id: 'prod_team', prices: [
+    { id: 'price_team', recurring: 'month' }, { id: 'price_annual', recurring: 'year' },
+    { id: 'price_quarter', recurring: 'month', intervalCount: 3 },
+  ] }], portalConfigurations: [{ id: 'bpc_team', products: [{ product: 'prod_team', prices: ['price_team', 'price_annual', 'price_quarter'] }] }] };
+  const f = await fixture(t, { catalogue: multi });
+  const { fake, provider } = f;
+  const { subscription, item } = await paid(f);
+  await fake.clock.advance(86400);
+  const annual = await fake.portal.switchPrice(subscription.id, 'price_annual');
+  const annualItem = annual.items.data[0];
+  assert.equal(annualItem.current_period_start, fake.state().now);
+  assert.equal(new Date(annualItem.current_period_end * 1000).getUTCFullYear(), new Date(annualItem.current_period_start * 1000).getUTCFullYear() + 1);
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await provider.updateManagedSubscription(updateInput(subscription, item, { sourcePriceId: 'price_annual', targetPriceId: 'price_quarter', targetProductId: 'prod_team' }));
+  assert.equal(fake.subscriptions.get(subscription.id).items.data[0].price.id, 'price_annual');
+  await fake.clock.advance(60);
+  const applied = await fake.subscriptions.completePayment(subscription.id);
+  assert.equal(applied.items.data[0].price.recurring.interval_count, 3);
+  assert.equal(applied.items.data[0].current_period_start, fake.state().now);
+  const start = new Date(fake.state().now * 1000);
+  assert.equal(new Date(applied.items.data[0].current_period_end * 1000).getUTCMonth(), (start.getUTCMonth() + 3) % 12);
 });

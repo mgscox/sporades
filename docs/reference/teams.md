@@ -341,12 +341,66 @@ capsule({
 ```
 
 Product keys are lowercase stable application identities. Each product binds
-one exact sandbox Price and one different live Price and declares either a
+exact sandbox and live Prices and declares either a
 positive fixed quantity or `team-members`. A `team-members` policy may declare
 an optional positive integer `minimum`; Sporades then bills the greater of the
 accepted-member count and that floor. Omitting `minimum` preserves the existing
 one-seat minimum. The declaration is server-only; the browser cannot select a
 mode or Price.
+
+A product can offer several recurring intervals with a `prices` map in each
+mode binding. Product identity and reviewed Portal configuration stay per
+product:
+
+```ts
+stripe: {
+  sandbox: {
+    productId: "prod_test_kitchen",
+    portalConfigurationId: "bpc_test_kitchen",
+    prices: {
+      "month:1": { priceId: "price_test_kitchen_month" },
+      "year:1": { priceId: "price_test_kitchen_year" },
+    },
+  },
+  live: {
+    productId: "prod_live_kitchen",
+    portalConfigurationId: "bpc_live_kitchen",
+    prices: {
+      "month:1": { priceId: "price_live_kitchen_month" },
+      "year:1": { priceId: "price_live_kitchen_year" },
+    },
+  },
+}
+```
+
+Each mode declares either `priceId` or `prices`, never both. A `prices` map
+contains 1–32 entries keyed by canonical `day:N`, `week:N`, `month:N`, or
+`year:N` intervals with positive integer counts (maximum 1095 days, 156 weeks,
+36 months, or 3 years). Every Price ID is unique across the entire catalogue,
+including both environments. Verified recurring interval/count must match its
+declaration. Existing single-`priceId` bindings and callers remain unchanged;
+Sporades does not infer an interval for those legacy declarations.
+
+For a `prices` binding, Checkout and managed Plan requests require the exact
+`interval` key, even when the map contains only one Price. For example:
+
+```ts
+await teamBilling.startCheckout({
+  teamId, requestId: crypto.randomUUID(), productKey: "kitchen", interval: "year:1",
+});
+await teamBilling.requestPlanTransition({
+  teamId, requestId: crypto.randomUUID(), productKey: "kitchen", interval: "month:1",
+});
+```
+
+`authorize` receives `productKey` and `interval` at admission and again before
+provider I/O. Unsupported or omitted intervals fail closed. Reusing a request ID
+for a different interval conflicts. Verified `active`, `cancelling`, `past-due`,
+and `cancelled` billing truth includes the declared `interval`; legacy bindings
+omit it. The stored verified interval is checked against the active Price declaration across
+restarts. Reassigning a Price to a different interval returns `attention-required`
+until fresh valid provider evidence arrives. When migrating a legacy binding to
+`prices`, obtain a fresh verified Subscription observation before relying on its interval.
 
 Every operation re-reads the exact Team membership inside its transaction. A
 current linked Team administrator reaches the Capsule policy for every
@@ -438,9 +492,9 @@ unvalidated URL. Cross-Team, former-holder, anonymous, non-admin, and stale
 Session requests receive the same generic `TEAM_BILLING_DENIED` result.
 
 Checkout admission and its reserved Job are committed together. Repeating the
-same Team/request/product reads the same `pending`, `ready`, `completed`,
+same Team/request/product/interval reads the same `pending`, `ready`, `completed`,
 `expired`, `superseded`, or safe `failed` operation without another provider
-call; reusing the request for another product is a safe conflict. Immediately
+call; reusing the request for another product or interval is a safe conflict. Immediately
 before every provider attempt Sporades locks the Team lifecycle, rechecks the
 original actor and Capsule policy, recounts accepted Team membership, and
 derives mode, exact Price, optional existing Customer, return paths, business
@@ -480,9 +534,12 @@ it at local expiry even when the app is abandoned. The app renders every
 button, progress state, error, retry, and navigation action; Portal return and
 provider acknowledgement never update billing truth.
 
-Portal remains the surface for switches whose source and target share the same
-quantity policy. A switch between fixed quantity and accepted-Team-member
-quantity uses the managed command instead:
+Portal supports switches whose source and target share the same quantity
+policy, including monthly/annual switches within one product. Its exact
+Product-to-Price allow-list must include every declared Price for the products
+sharing that configuration. Interval changes also use the managed command,
+within one product or across products. A switch between fixed quantity and
+accepted-Team-member quantity uses the managed command:
 
 ```ts
 const transition = await teamBilling.requestPlanTransition({
@@ -495,8 +552,8 @@ const transition = await teamBilling.requestPlanTransition({
 The app renders the returned `pending`, `completed`, `superseded`, or safe
 `failed` state. The response contains no intent, Job, Price, Customer,
 Subscription, item, or idempotency identity. Repeating the same
-Team/request/product observes the same operation; reusing its request ID for a
-different product is a safe conflict. Capsule `authorize` remains the local
+Team/request/product/interval observes the same operation; reusing its request ID for a
+different product or interval is a safe conflict. Capsule `authorize` remains the local
 business-policy seam, including whether a downgrade is allowed.
 
 Admission and the desired-state Job commit together. Before each provider

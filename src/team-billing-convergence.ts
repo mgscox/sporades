@@ -1,3 +1,4 @@
+import { teamBillingPriceById } from "./team-billing-runtime.js";
 // Transaction-pure convergence of verified Stripe facts into runtime-owned Team
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
@@ -161,7 +162,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId)
     ? await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerCustomerId], [providerSubscriptionId] " +
+      "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
       "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
     )).get(metadataOperationId) : null;
   const teamId = existing?.teamId ?? operation?.teamId ?? null;
@@ -186,16 +187,16 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.itemId, normalized.productKey, normalized.quantity,
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity,
       normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
       event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0);
   } else {
     await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
+      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
       "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?",
-    )).run(normalized.priceId, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state,
+    )).run(normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state,
       normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
       event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0, subscriptionId);
   }
@@ -223,11 +224,16 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
     || !Number.isSafeInteger(item.quantity) || item.quantity < 1) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   const matches = Object.entries(definition.catalogue).filter(([, product]: any) => {
     const binding = product.stripe?.[mode];
-    return binding?.priceId === priceId && (!binding.productId || binding.productId === productId);
+    return teamBillingPriceById(binding, priceId) && (!binding.productId || binding.productId === productId);
   });
   if (matches.length !== 1) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   const [productKey, product]: any = matches[0];
-  if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  const declaredPrice = teamBillingPriceById(product.stripe[mode], priceId);
+  if (declaredPrice?.interval && declaredPrice.interval !== `${item.price.recurring.interval}:${item.price.recurring.interval_count}`) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  }
+  if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity
+    || (operation.providerPriceId && operation.providerPriceId !== priceId))) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
@@ -260,7 +266,7 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   const semantics = teamBillingSubscriptionSemantics(eventType as any, state, cancel);
   if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  return { productKey, priceId, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
+  return { productKey, priceId, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
     cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
 }
 
@@ -288,7 +294,7 @@ async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mo
   const pricing = line?.pricing?.price_details;
   const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
   const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
-  if (!binding || binding.priceId !== subscription.providerPriceId
+  if (!teamBillingPriceById(binding, subscription.providerPriceId)
     || !isRecord(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? ""))
     || line.invoice !== object.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details"
     || details?.proration !== false || details?.subscription !== subscriptionId
