@@ -19,6 +19,7 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
     }> | null;
     transitions: Readonly<{
         allowSamePolicy: any;
+        endTrial: any;
     }> | null;
     usage?: any;
     catalogue: Readonly<LooseRecord>;

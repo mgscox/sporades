@@ -1006,6 +1006,7 @@ export async function openDevDatabase(
         prorationDate: input.prorationDate,
         idempotencyKey: input.idempotencyKey,
         operationKind: input.operationKind,
+        ...(input.endTrial === true ? { endTrial: true } : {}),
       }));
     },
     quiesceTeamBillingProvider: async (context: LooseRecord, input: LooseRecord) => {
@@ -6266,7 +6267,7 @@ export function createWebSocketHub(
         sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
       } catch (error: any) {
         const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
-          "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_SUBSCRIPTION_TRIALING", "TEAM_BILLING_UNKNOWN_SCHEDULE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
+          "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_UNKNOWN_SCHEDULE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
           ? error.code : "TEAM_BILLING_DENIED";
         sendJson(client, {
           id: message.id ?? null,

@@ -110,6 +110,7 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "endTrial", "INTEGER"),
   ]);
 }
 
@@ -146,9 +147,9 @@ export function normalizeTeamBillingDefinition(value: any) {
     });
   }
   if (value.transitions !== undefined && (!isRecord(value.transitions)
-    || Object.keys(value.transitions).some((key) => key !== "allowSamePolicy")
-    || (value.transitions.allowSamePolicy !== undefined && typeof value.transitions.allowSamePolicy !== "boolean"))) throw invalidDeclaration();
-  const transitions = value.transitions === undefined ? null : Object.freeze({ allowSamePolicy: value.transitions.allowSamePolicy ?? false });
+    || Object.keys(value.transitions).some((key) => !["allowSamePolicy", "endTrial"].includes(key))
+    || ["allowSamePolicy", "endTrial"].some((key) => value.transitions[key] !== undefined && typeof value.transitions[key] !== "boolean"))) throw invalidDeclaration();
+  const transitions = value.transitions === undefined ? null : Object.freeze({ allowSamePolicy: value.transitions.allowSamePolicy ?? false, endTrial: value.transitions.endTrial ?? false });
   if ((value.usage !== undefined && typeof value.usage !== "function")
     || Object.values(catalogue).some((product: any) => product.quantity.kind === "usage") && typeof value.usage !== "function") throw invalidDeclaration();
   const checkout = value.checkout === undefined ? null : normalizeCheckoutDefinition(value.checkout);
@@ -564,7 +565,8 @@ export async function performTeamBillingPortal(database: LooseRecord, context: L
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?",
       )).run(now, now, operationId);
-      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts };
+      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts,
+        endTrial: database.teamBillingDefinition.transitions?.endTrial === true };
     });
   } catch (error: any) {
     if (transientSqliteLock(error)) { error.retryable = true; throw error; }

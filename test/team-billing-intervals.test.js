@@ -147,7 +147,7 @@ for (const [initial, currency, trial] of [['month:1', undefined, false], ['year:
     assert.equal(shaped.currency_options.usd.unit_amount, 2900, 'regional amounts live in currency_options');
     await assert.rejects(startTeamBillingCheckout(database, actor, teamId, requestId, 'kitchen', initial, 'eur'), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
     const before = fake.requests().length;
-    await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'kitchen', opposite, 'eur'), { code: trial ? 'TEAM_BILLING_SUBSCRIPTION_TRIALING' : 'TEAM_BILLING_CURRENCY_MISMATCH' });
+    await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'kitchen', opposite, 'eur'), { code: 'TEAM_BILLING_CURRENCY_MISMATCH' });
     assert.equal(fake.requests().length, before);
     const invalid = fake.subscriptions.get(completed.subscription);
     invalid.items.data[0].price.unit_amount = 1;

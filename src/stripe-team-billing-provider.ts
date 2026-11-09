@@ -101,7 +101,18 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
         if (refusal) throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
       }
-
+      if (input.endTrial === true && current.status !== "trialing") {
+        const item = current.items.data[0];
+        if (current.status !== "active" || current.pending_update != null
+          || item.price.id !== input.targetPriceId || item.quantity !== input.targetQuantity) {
+          throw Object.assign(new Error("Team Billing trial state changed before the switch."), {
+            code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", retryable: false,
+          });
+        }
+        // An applied target needs no replay of trial_end=now, which can reset a paid period.
+        attestManagedSubscription(current, input, new Set([input.targetPriceId]), true);
+        return Object.freeze({ ok: true, outcome: "acknowledged" });
+      }
 
       let updated: LooseRecord;
       try {
@@ -114,6 +125,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
           proration_behavior: "create_prorations",
           proration_date: input.prorationDate,
           payment_behavior: "pending_if_incomplete",
+          ...(input.endTrial === true ? { trial_end: "now" as const } : {}),
         }, { idempotencyKey: input.idempotencyKey });
       } catch (error: any) {
         throwProviderOperationFailure(error);
@@ -293,12 +305,13 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "currency"].includes(key)).sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "currency", "endTrial"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
     || !["plan-transition", "seat-convergence"].includes(input.operationKind)
     || (input.currency !== undefined && !validBillingCurrency(input.currency))
+    || (input.endTrial !== undefined && (typeof input.endTrial !== "boolean" || input.operationKind !== "plan-transition"))
     || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
     || !validSubscriptionItemId(input.subscriptionItemId)
     || !validPriceId(input.sourcePriceId) || !validPriceId(input.targetPriceId)
@@ -365,7 +378,8 @@ function validProductId(value: any) {
 
 function validatePortalConfigurationInput(input: LooseRecord) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || Object.keys(input).filter((key) => key !== "endTrial").sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || (input.endTrial !== undefined && typeof input.endTrial !== "boolean")
     || !validPortalConfigurationId(input.configurationId) || !["sandbox", "live"].includes(input.mode)
     || !Array.isArray(input.expectedProducts) || input.expectedProducts.length < 1) throw providerFailure(false);
 
@@ -406,6 +420,7 @@ function attestPortalConfiguration(portalConfiguration: LooseRecord, input: Loos
     || portalConfiguration.features?.invoice_history?.enabled !== true
     || portalConfiguration.features?.subscription_cancel?.enabled !== true
     || portalConfiguration.features?.subscription_cancel?.mode !== "at_period_end"
+    || subscriptionUpdate?.trial_update_behavior !== (input.endTrial === true ? "end_trial" : "continue_trial")
     || subscriptionUpdate?.enabled !== true
     || !sameExactStringList(subscriptionUpdate.default_allowed_updates, ["price"])
     || !sameExactPortalProducts(subscriptionUpdate.products, input.expectedProducts)) throw providerFailure(false);

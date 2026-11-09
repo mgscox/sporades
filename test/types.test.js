@@ -577,7 +577,7 @@ const app = capsule({
       continuationTtlSeconds: 600,
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
-    transitions: { allowSamePolicy: true },
+    transitions: { allowSamePolicy: true, endTrial: true },
     usage: async (ctx, input) => {
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       const signal: AbortSignal = ctx.signal;
@@ -1231,6 +1231,8 @@ teamBilling.prepareErasure({
 teamBilling.prepareErasure({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "44444444-4444-4444-8444-444444444444", customerId: "cus_browser_owned" });
 // @ts-expect-error managed Plan inputs never accept provider Price identifiers.
 teamBilling.requestPlanTransition({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "33333333-3333-4333-8333-333333333333", productKey: "agency", priceId: "price_browser_owned" });
+// @ts-expect-error Ending a trial is server policy, never browser authority.
+teamBilling.requestPlanTransition({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "22222222-2222-4222-8222-222222222222", productKey: "studio", endTrial: true });
 // @ts-expect-error Portal inputs never accept Customer or configuration identifiers.
 teamBilling.openPortal({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "22222222-2222-4222-8222-222222222222", customerId: "cus_browser_owned" });
 // @ts-expect-error Checkout inputs never accept a browser-selected Stripe Price.
