@@ -112,6 +112,77 @@ test('provider read refuses an unsafe state before its callback has arrived', as
   }
 });
 
+test('an SCA-required switch returns an expiring hosted-invoice capability and settles as done from pending evidence', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  const requestId = randomUUID();
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1')).state, 'pending');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await f.drain();
+  const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.reason, 'payment-action-required');
+  assert.match(failed.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\//);
+  assert.equal((await f.read()).productKey, 'basic', 'entitlement is unchanged until the pending update is applied');
+  await fake.subscriptions.completePayment(subscriptionId);
+  assert.equal(fake.events.pending().at(-1).type, 'customer.subscription.pending_update_applied');
+  await f.deliver();
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1')).state, 'completed');
+  assert.equal((await f.read()).productKey, 'offered');
+});
+
+test('an expired pending update settles the switch as refused with entitlement unchanged', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  const requestId = randomUUID();
+  await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await f.drain();
+  await fake.clock.advance(3601);
+  assert.equal(fake.events.pending().at(-1).type, 'customer.subscription.pending_update_expired');
+  await f.deliver();
+  const refused = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(refused.state, 'failed');
+  assert.equal(refused.reason, 'payment-action-required');
+  assert.equal((await f.read()).productKey, 'basic');
+});
+
+test('a hostile hosted-invoice URL outside invoice.stripe.com is rejected', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake } = f;
+  const requestId = randomUUID();
+  await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequiredOffHost' });
+  await f.drain();
+  const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.reason, 'unavailable');
+  assert.equal(failed.paymentAction, undefined);
+});
+
+test('resume-and-switch clears scheduled cancellation in one update; without it the refusal stands', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await fake.portal.cancelAtPeriodEnd(subscriptionId);
+  await f.deliver();
+  assert.equal((await f.read()).state, 'cancelling');
+  await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'year:1'),
+    { code: 'TEAM_BILLING_SUBSCRIPTION_CANCELLING' });
+  const requestId = randomUUID();
+  const input = { teamId, requestId, productKey: 'offered', interval: 'year:1', resume: true };
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input })).data.state, 'pending');
+  await f.drain();
+  const subscription = fake.subscriptions.get(subscriptionId);
+  assert.equal(subscription.cancel_at_period_end, false);
+  assert.equal(subscription.cancel_at, null);
+  assert.equal(subscription.items.data[0].price.id, 'price_offered_year');
+  await f.deliver();
+  const read = await f.read();
+  assert.equal(read.state, 'active');
+  assert.equal(read.productKey, 'offered');
+  assert.equal(read.interval, 'year:1');
+});
+
 async function fixture(t, source = 'basic', checkoutOnly = false) {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-transitions-'));
   const teamId = randomUUID();

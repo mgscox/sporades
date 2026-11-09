@@ -22,10 +22,12 @@ export async function requestTeamBillingPlanTransition(
   requestId: any,
   productKey: any,
   interval?: any,
+  resume?: any,
 ) {
   const definition = database.teamBillingDefinition;
   if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))
-    || typeof productKey !== "string" || !definition?.catalogue?.[productKey]) throw denied();
+    || typeof productKey !== "string" || !definition?.catalogue?.[productKey]
+    || (resume !== undefined && typeof resume !== "boolean")) throw denied();
   const price = teamBillingPrice(modeBinding(database, definition.catalogue[productKey]), interval);
   if (!price) throw denied();
   let enqueued = false;
@@ -34,15 +36,16 @@ export async function requestTeamBillingPlanTransition(
     await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql(
-      "SELECT [id], [kind], [productKey], [providerPriceId], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+      "SELECT [id], [kind], [productKey], [providerPriceId], [status], [safeFailureCode], [createdAt], [paymentActionUrl], [paymentActionExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
     )).get(teamId, requestId);
     if (repeated) {
       if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey || (repeated.providerPriceId ?? null) !== (price.interval ? price.priceId : null)) throw conflict();
-      return planOperationResult(teamId, requestId, productKey, repeated);
+      return planOperationResult(database, teamId, requestId, productKey, repeated);
     }
     const subscription = await currentSubscription(transaction, teamId);
     const refusal = transitionRefusal(subscription);
-    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
+    // An explicit resume clears a scheduled cancellation in the same update.
+    if (refusal && !(resume === true && refusal === "TEAM_BILLING_SUBSCRIPTION_CANCELLING")) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
     const currentProduct = definition.catalogue[subscription.productKey];
     const targetProduct = definition.catalogue[productKey];
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
@@ -53,7 +56,7 @@ export async function requestTeamBillingPlanTransition(
     const now = nowIso(database);
     const effectiveAt = nowSeconds(database);
     const staged = await stageDesired(transaction, database, {
-      teamId, kind: "plan-transition", operationId, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt,
+      teamId, kind: "plan-transition", operationId, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
     });
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
@@ -187,7 +190,9 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     if (!price) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
     if (kind === "plan-transition") {
       const refusal = transitionRefusal(subscription);
-      if (refusal) return attention(transaction, database, desired, refusal);
+      if (refusal && !(desired.resume === 1 && refusal === "TEAM_BILLING_SUBSCRIPTION_CANCELLING")) {
+        return attention(transaction, database, desired, refusal);
+      }
       // Verified target usage can still drift after a cross-policy or interval switch.
       const repairsUsageQuantity = product.quantity.kind === "usage"
         && subscription.productKey === desired.targetProductKey && subscription.providerPriceId === price.priceId;
@@ -248,6 +253,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         prorationDate: Number(desired.effectiveAt),
         idempotencyKey: desired.idempotencyKey,
         operationKind: desired.kind,
+        resume: desired.resume === 1,
       },
     };
   });
@@ -261,7 +267,8 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
       "Team Billing provider returned an invalid acknowledgement.", "TEAM_BILLING_PROVIDER_REJECTED",
     );
     if (providerResult?.outcome === "payment-action-required") {
-      await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" });
+      const paymentAction = validPaymentAction(providerResult.paymentAction) ? providerResult.paymentAction : null;
+      await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" }, paymentAction);
       return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
     }
   } catch (error: any) {
@@ -479,14 +486,15 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   input = { ...input, targetPriceId };
   const existing = await desiredForTeam(transaction, input.teamId);
   const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
-    && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
+    && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId
+    && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
   if (unchanged) {
     const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string"
       && input.operationId !== existing.operationId;
     const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
     if (enqueue) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?",
-    )).run(transfersPlanOwnership ? input.operationId : existing.operationId, nowIso(database), existing.intentId);
+      "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [resume] = ?, [updatedAt] = ? WHERE [intentId] = ?",
+    )).run(transfersPlanOwnership ? input.operationId : existing.operationId, input.resume ?? 0, nowIso(database), existing.intentId);
     return { ...existing, operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
       status: enqueue ? "queued" : existing.status, enqueue };
   }
@@ -495,13 +503,13 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   const now = nowIso(database);
   if (existing) {
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
-    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now, input.teamId);
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now, input.teamId);
   } else {
     await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)",
-    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, now, now);
+      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)",
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now);
   }
   await ensureLane(transaction, input.teamId, database);
   return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -619,7 +627,7 @@ async function releaseLane(transaction: LooseRecord, teamId: string, token: stri
   return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
 }
 
-async function releaseAfterFailure(database: LooseRecord, desired: LooseRecord, token: string, classified: LooseRecord) {
+async function releaseAfterFailure(database: LooseRecord, desired: LooseRecord, token: string, classified: LooseRecord, paymentAction: { url: string; expiresAt: string } | null = null) {
   await inTransaction(database, async (transaction) => {
     await releaseLane(transaction, desired.teamId, token, database);
     const current = await desiredByIntent(transaction, desired.intentId);
@@ -629,8 +637,8 @@ async function releaseAfterFailure(database: LooseRecord, desired: LooseRecord, 
       "WHERE [intentId] = ? AND [activeJobGenerationId] = ?",
     )).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
     if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current.operationId) await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?",
-    )).run(classified.code, nowIso(database), current.operationId);
+      "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [paymentActionUrl] = ?, [paymentActionExpiresAt] = ?, [updatedAt] = ? WHERE [id] = ?",
+    )).run(classified.code, paymentAction?.url ?? null, paymentAction?.expiresAt ?? null, nowIso(database), current.operationId);
   });
 }
 
@@ -703,12 +711,23 @@ function safeCode(value: any) {
 }
 
 function validProviderAcknowledgement(value: any) {
-  return value && typeof value === "object" && !Array.isArray(value)
-    && Object.keys(value).sort().join("\0") === "ok\0outcome"
-    && value.ok === true && ["acknowledged", "payment-action-required"].includes(value.outcome);
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !Object.keys(value).every((key) => ["ok", "outcome", "paymentAction"].includes(key))) return false;
+  if (value.ok !== true || !["acknowledged", "payment-action-required"].includes(value.outcome)) return false;
+  return value.paymentAction === undefined
+    ? true : value.outcome === "payment-action-required" && validPaymentAction(value.paymentAction);
 }
 
-function planOperationResult(teamId: string, requestId: string, productKey: string, operation: LooseRecord) {
+/** The hosted-invoice capability is revalidated at this seam: never an arbitrary URL. */
+function validPaymentAction(action: any) {
+  if (!action || typeof action !== "object" || Array.isArray(action)
+    || Object.keys(action).sort().join("\0") !== "expiresAt\0url") return false;
+  return typeof action.url === "string" && typeof action.expiresAt === "string"
+    && /^https:\/\/invoice\.stripe\.com\/i\/[A-Za-z0-9_~=-]{4,2048}$/.test(action.url)
+    && !Number.isNaN(Date.parse(action.expiresAt));
+}
+
+function planOperationResult(database: LooseRecord, teamId: string, requestId: string, productKey: string, operation: LooseRecord) {
   if (operation.status === "completed" || operation.status === "superseded") {
     return Object.freeze({ state: operation.status, teamId, requestId, productKey });
   }
@@ -717,7 +736,11 @@ function planOperationResult(teamId: string, requestId: string, productKey: stri
       : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required"
         : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)
           ? "provider-state-ambiguous" : "unavailable";
-    return Object.freeze({ state: "failed" as const, teamId, requestId, productKey, reason });
+    const paymentAction = reason === "payment-action-required" && operation.paymentActionExpiresAt
+      && operation.paymentActionExpiresAt > nowIso(database)
+      ? Object.freeze({ url: operation.paymentActionUrl, expiresAt: operation.paymentActionExpiresAt }) : null;
+    return Object.freeze({ state: "failed" as const, teamId, requestId, productKey, reason,
+      ...(paymentAction ? { paymentAction } : {}) });
   }
   return Object.freeze({ state: "pending" as const, teamId, requestId, productKey, requestedAt: operation.createdAt });
 }

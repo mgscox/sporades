@@ -683,6 +683,12 @@ codes. Worker refusals settle the operation as failed without a provider update:
 | `trialing` | `TEAM_BILLING_SUBSCRIPTION_TRIALING` |
 | An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
 
+Passing `resume: true` lifts only the cancellation refusal: the same provider
+update switches the plan and clears `cancel_at_period_end` / `cancel_at`, so a
+Team that changes its mind while cancelling keeps its existing Subscription.
+Every other guard still stands, and without `resume: true` the cancellation
+refusal is unchanged.
+
 Sporades does not own Subscription Schedules yet, so every attached schedule
 is unknown. Verified trials retain their entitled product and automatic quantity
 convergence; managed plan switches still refuse. These guards apply to existing cross-policy and interval switches
@@ -702,7 +708,15 @@ floored by the target's declared `minimum` when it uses `team-members`. It
 updates the one attested Subscription item Price and quantity together using Stripe
 `create_prorations`, the desired intent's stable `proration_date`, and
 `pending_if_incomplete`; it does not create an immediate standalone invoice.
-Payment action required becomes a safe failed state for app-owned recovery.
+Payment action required becomes a safe failed state whose `payment-action-required`
+reason carries an expiring `paymentAction` capability: a validated
+`https://invoice.stripe.com/i/…` hosted-invoice URL plus its expiry, taken from
+the pending update. A URL on any other host is rejected before it reaches the
+app, and the capability disappears once expired. Entitlement stays on the
+applied Subscription items until the customer pays, so it is unchanged while the
+update is pending; `customer.subscription.pending_update_applied` then settles
+the same operation as done and `customer.subscription.pending_update_expired`
+settles it as refused.
 Retries preserve the exact provider tuple and idempotency key.
 
 For an active `team-members` Plan, a committed Join, removal, or leave stages
