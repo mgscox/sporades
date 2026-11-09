@@ -3,6 +3,7 @@
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
 
+import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
 import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
@@ -40,12 +41,12 @@ export async function requestTeamBillingPlanTransition(
       return planOperationResult(teamId, requestId, productKey, repeated);
     }
     const subscription = await currentSubscription(transaction, teamId);
+    const refusal = transitionRefusal(subscription);
+    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
     const currentProduct = definition.catalogue[subscription.productKey];
     const targetProduct = definition.catalogue[productKey];
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
-    const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
-    const changesInterval = price.interval !== undefined && price.interval !== currentInterval;
-    if (!currentProduct || (sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity) && !changesInterval)) throw transitionNotRequired();
+    if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
     const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
     assertUsageMaximum(targetProduct, quantity);
     const operationId = randomUUID();
@@ -84,7 +85,7 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
     try { await assertTeamBillingErasureInactive(database, transaction, teamId); }
     catch { return Object.freeze({ staged: false as const, reason: "erasure-active" as const }); }
     const subscription = await optionalCurrentSubscription(transaction, teamId);
-    if (!subscription) return Object.freeze({ staged: false as const });
+    if (!subscription || !["trialing", "active", "past-due"].includes(subscription.state)) return Object.freeze({ staged: false as const });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
     if (product?.quantity?.kind !== quantityKind) return Object.freeze({ staged: false as const });
     const quantity = await targetQuantity(database, transaction, teamId, product);
@@ -185,6 +186,14 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     const price = desired.targetPriceId ? teamBillingPriceById(binding, desired.targetPriceId) : teamBillingPrice(binding, undefined);
     if (!price) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
     if (kind === "plan-transition") {
+      const refusal = transitionRefusal(subscription);
+      if (refusal) return attention(transaction, database, desired, refusal);
+      // Verified target usage can still drift after a cross-policy or interval switch.
+      const repairsUsageQuantity = product.quantity.kind === "usage"
+        && subscription.productKey === desired.targetProductKey && subscription.providerPriceId === price.priceId;
+      if (!repairsUsageQuantity && !managedTransitionAllowed(database, subscription, product, price)) {
+        return attention(transaction, database, desired, "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED");
+      }
       const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
       const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey, price.interval);
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
@@ -199,6 +208,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         return { superseded: true, dispatch: true };
       }
     } else {
+      if (!["trialing", "active", "past-due"].includes(subscription.state)) return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
       const targetProductKey = subscription.productKey;
       const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
       if (!isCountedProduct(currentProduct)) return { superseded: true };
@@ -534,8 +544,10 @@ async function tryAdmitPlanTransition(database: LooseRecord, transaction: LooseR
     "SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?",
   )).get(teamId, auth.userId);
   if (membership?.role !== "admin") return false;
+  const source = await optionalCurrentSubscription(transaction, teamId);
   const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
     operation: "plan-transition", teamId, teamRole: "admin", productKey, ...(interval ? { interval } : {}),
+    ...(source ? { fromProductKey: source.productKey, ...(source.interval ? { fromInterval: source.interval } : {}) } : {}),
   }));
   return decision?.allow === true;
 }
@@ -553,11 +565,14 @@ async function targetQuantity(database: LooseRecord, transaction: LooseRecord, t
 
 async function currentSubscription(transaction: LooseRecord, teamId: string) {
   const rows = await transaction.prepare(transaction.dialect.sql(
-    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [interval], [productKey], [quantity] " +
-    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [id]",
+    "SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' AND [terminalLatch] = 0 ORDER BY [id]",
   )).all(teamId);
   if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
   return rows[0];
+}
+
+function transitionRefusal(subscription: LooseRecord) {
+  return teamBillingTransitionRefusal(subscription.state, subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
 }
 
 async function optionalCurrentSubscription(transaction: LooseRecord, teamId: string) {
@@ -643,6 +658,14 @@ function assertCurrentModeAndCatalogue(database: LooseRecord, subscription: Loos
   const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
   if (!product || subscription.mode !== mode || !teamBillingPriceById(product.stripe?.[mode], subscription.providerPriceId)
     || (product.stripe[mode].prices && teamBillingPriceById(product.stripe[mode], subscription.providerPriceId)?.interval !== subscription.interval)) throw attentionRequired();
+}
+
+function managedTransitionAllowed(database: LooseRecord, subscription: LooseRecord, targetProduct: LooseRecord, price: LooseRecord) {
+  const source = database.teamBillingDefinition.catalogue[subscription.productKey];
+  const sourceInterval = teamBillingPriceById(modeBinding(database, source), subscription.providerPriceId)?.interval;
+  return database.teamBillingDefinition.transitions?.allowSamePolicy === true
+    || !sameQuantityPolicy(source.quantity, targetProduct.quantity)
+    || (price.interval !== undefined && price.interval !== sourceInterval);
 }
 
 function sameQuantityPolicy(left: LooseRecord, right: LooseRecord) {

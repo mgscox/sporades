@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -93,6 +94,11 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       }
       throwIfAborted(options.signal);
       attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
+      if (input.operationKind === "plan-transition") {
+        const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
+        if (refusal) throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
+      }
+
 
       let updated: LooseRecord;
       try {

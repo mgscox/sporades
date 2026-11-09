@@ -36,3 +36,12 @@ export function teamBillingStoredSubscriptionSemantics(
     ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 })
     : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
 }
+
+/** Provider-free refusals shared by durable admission and the final provider read. */
+export function teamBillingTransitionRefusal(state: string, cancelling: boolean, hasSchedule: boolean): string | null {
+  if (cancelling) return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";
+  if (["past-due", "past_due", "unpaid"].includes(state)) return "TEAM_BILLING_SUBSCRIPTION_PAST_DUE";
+  if (state === "trialing") return "TEAM_BILLING_SUBSCRIPTION_TRIALING";
+  if (hasSchedule) return "TEAM_BILLING_UNKNOWN_SCHEDULE";
+  return state === "active" ? null : "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS";
+}

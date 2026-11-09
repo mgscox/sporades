@@ -106,7 +106,7 @@ test("trial Checkout is free until its end and the fake converts or cancels it",
 });
 
 test("interval switches during a trial preserve its end for conversion and cancellation", async (t) => {
-  for (const via of ["portal", "managed", "pending-payment"]) for (const cancel of [false, true]) {
+  for (const via of ["portal", "provider-update", "pending-payment"]) for (const cancel of [false, true]) {
     await t.test(`${via}: ${cancel ? "cancel" : "convert"}`, async (t) => {
       const { fake, provider } = await fixture(t);
       const checkout = await provider.create({ ...input, trialDays: 14 });
@@ -116,7 +116,12 @@ test("interval switches during a trial preserve its end for conversion and cance
       if (via === "portal") await fake.portal.switchPrice(subscription.id, "price_studio");
       else {
         if (via === "pending-payment") fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
-        await provider.updateManagedSubscription(updateInput(subscription, item));
+        await assert.rejects(provider.updateManagedSubscription(updateInput(subscription, item)), { code: "TEAM_BILLING_SUBSCRIPTION_TRIALING" });
+        await sdk(fake).subscriptions.update(subscription.id, {
+          items: [{ id: item.id, price: "price_studio", quantity: 5 }],
+          proration_behavior: "create_prorations", proration_date: item.current_period_start,
+          payment_behavior: "pending_if_incomplete",
+        });
         if (via === "pending-payment") await fake.subscriptions.completePayment(subscription.id);
       }
       const switched = fake.subscriptions.get(subscription.id);
@@ -579,6 +584,13 @@ const invalidProduct: TeamBillingProductDeclaration = { ...product, trialDays: "
 void [serverTrial, invalidProduct];
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
+async function guardControls(fake: Awaited<ReturnType<typeof createStripeTeamBillingFake>>) {
+  await fake.subscriptions.setStatus("sub_fixture", "trialing");
+  await fake.subscriptions.setSchedule("sub_fixture", "sub_sched_foreign");
+  await fake.subscriptions.setSchedule("sub_fixture", null);
+  // @ts-expect-error trial control uses a Stripe status, not a public projection state.
+  await fake.subscriptions.setStatus("sub_fixture", "cancelling");
+}
 const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
 await fake.checkout.complete("cs_test_types");

@@ -4,6 +4,8 @@
 
 ### Features
 
+- Team Billing can opt into in-place same-policy plan switches with `transitions.allowSamePolicy`, including transitions from retained legacy catalogue entries. Authorization receives the source product and interval; cancelling, past-due, trialing and scheduled Subscriptions refuse with distinct safe codes. The Stripe fake supports trial and external-schedule guard tests (#365).
+
 - Team Billing products can declare `trialDays: 1–90`. One trial Checkout is
   reserved per Team across products; verified `trialing` truth exposes the paid
   product and `trialEndsAt`. The stateful Stripe fake supports trial conversion
@@ -14,6 +16,8 @@
   call `createBundle` without importing private `dist/` paths (#355).
 
 ### Bug Fixes
+
+- Team Billing Checkout refuses new purchases while a non-terminal Subscription exists, including a recheck before deferred provider creation (#365).
 
 - Provide transaction-bound Team lifecycle locks in privileged Job resource scopes, including scheduled Jobs; keep ordinary nontransactional lock calls fail-closed (#356).
 - Chained `.where()` calls now combine equality predicates with AND for `get()`

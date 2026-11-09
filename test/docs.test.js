@@ -301,7 +301,7 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /Verified[\s\S]*terminal[\s\S]*cannot revive the URL/i);
   assert.match(reference, /Checkout\s+completion[\s\S]*never establishes paid entitlement/i);
   assert.match(reference, /single\s+licensed item[\s\S]*declared Price[\s\S]*quantity[\s\S]*period[\s\S]*supported status/i);
-  assert.match(reference, /cancellation outranks failed payment[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
+  assert.match(reference, /cancellation outranks failed payment[\s\S]*active outranks trialing[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
   assert.match(reference, /Deletion permanently latches[\s\S]*no delayed update can resurrect/i);
   assert.match(reference, /Malformed supported evidence[\s\S]*Raw Stripe JSON[\s\S]*never enter Team Billing tables/i);
   assert.match(reference, /privilegedCtx\.teamBilling\.listQuarantines[\s\S]*provider object and Event IDs[\s\S]*capped at 100/i);

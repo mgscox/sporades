@@ -545,6 +545,9 @@ The provider-free projection validates the persisted Subscription's complete
 convergence ratchet: canonical event time plus state, cancellation flag, event
 kind, rank, and terminal latch must agree. Missing or contradictory evidence
 returns `attention-required`; it never grants paid entitlement.
+Tied observations retain an attached schedule until newer verified evidence
+clears it. Below-floor usage evidence for an existing Subscription retains
+terminal latches without staging quantity repair.
 
 The client exposes a safe observation seam and one operation-specific Checkout
 command. Apps create the button, progress, retry, and navigation UI:
@@ -595,6 +598,16 @@ read. A demotion or holder transfer already holding that lock commits first;
 the waiting transition then observes the new authority and records
 `AUTHORITY_CHANGED` without calling the provider.
 
+New Checkout requests refuse with `TEAM_BILLING_SUBSCRIPTION_EXISTS` while the
+Team has any non-terminal Subscription, including cancelling, past-due or
+trialing subscriptions. A completed Checkout with a known Subscription also
+blocks a new purchase while Subscription evidence is missing or quarantined;
+only exact verified terminal evidence releases that guard. The worker
+rechecks this before creating a Session.
+Verified terminal cancellation or `incomplete_expired` permits a new Checkout;
+expiry is exposed as provider-free `cancelled` state. Repeating an already
+completed request still returns its historical `completed` result.
+
 Only `ready` contains a strictly validated `checkout.stripe.com` URL and a
 bounded local expiry. A durable runtime Job erases the retained capability at
 expiry even if the app is abandoned and never polls again. Verified
@@ -638,6 +651,42 @@ const transition = await teamBilling.requestPlanTransition({
   productKey: "agency",
 });
 ```
+
+To use the same command for fixed→fixed or other same-quantity-policy product
+switches, opt in on the trusted declaration:
+
+```ts
+teamBilling: {
+  catalogue,
+  transitions: { allowSamePolicy: true },
+  authorize,
+}
+```
+
+Omitting `transitions` or setting `allowSamePolicy: false` preserves
+`TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED` for same-policy switches without
+an interval change. With the option enabled, every declared target can use the
+existing Subscription in place. Keep legacy Prices as catalogue entries even
+when they are no longer offered: `authorize` decides which targets are offered
+and receives `fromProductKey` and, for a `prices` binding, `fromInterval` from
+the verified source under the Team lifecycle lock. `productKey` and `interval`
+remain the requested target. Source entries need not be purchasable. Repeating
+a completed transition authorizes against the current source.
+
+Admission and the final Stripe read refuse these states with distinct safe
+codes. Worker refusals settle the operation as failed without a provider update:
+
+| Subscription state | Safe code |
+| --- | --- |
+| Cancellation scheduled | `TEAM_BILLING_SUBSCRIPTION_CANCELLING` |
+| `past_due` or `unpaid` | `TEAM_BILLING_SUBSCRIPTION_PAST_DUE` |
+| `trialing` | `TEAM_BILLING_SUBSCRIPTION_TRIALING` |
+| An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
+
+Sporades does not own Subscription Schedules yet, so every attached schedule
+is unknown. Verified trials retain their entitled product and automatic quantity
+convergence; managed plan switches still refuse. These guards apply to existing cross-policy and interval switches
+as well as the opt-in same-policy path.
 
 The app renders the returned `pending`, `completed`, `superseded`, or safe
 `failed` state. The response contains no intent, Job, Price, Customer,
