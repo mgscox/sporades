@@ -60,6 +60,9 @@ _Avoid_: build (that's the act), artifact (too abstract)
 
 **Bundle pipeline**:
 The build-time path that turns a Capsule's server entry, client entry, `sporades.json`, `index.html`, and Server env into the server Bundle and normalized public tree in the Runtime directory. The optional project `public/` directory contributes explicitly unauthenticated regular files at their original paths and bytes through the same pipeline for esbuild and Vite. Dev, Container, and Hosted consumers use this release-owned tree; failed candidates retain the last successful tree.
+Node.js container build scripts use the supported `sporades/build` entry point's
+`createBundle(projectDir, config)` and copy `paths.serverBundle` and
+`staticFiles.publicDir`, then call `releasePublicTreeLease()` in `finally`.
 _Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
 
 **Base image**:
