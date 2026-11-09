@@ -1,4 +1,5 @@
 import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
+import { teamBillingIntervalEnd } from "./team-billing-subscription-semantics.js";
 import Stripe from "stripe";
 
 type LooseRecord = Record<string, any>;
@@ -94,21 +95,34 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
 
-      let updated: LooseRecord;
-      try {
-        updated = await stripe.subscriptions.update(input.subscriptionId, {
-          items: [{
-            id: input.subscriptionItemId,
-            price: input.targetPriceId,
-            quantity: input.targetQuantity,
-          }],
-          proration_behavior: input.resetBillingCycle ? "always_invoice" : "create_prorations",
-          ...(input.resetBillingCycle ? { billing_cycle_anchor: billingCycleAnchorNow(config.apiVersion) } : {}),
-          proration_date: input.prorationDate,
-          payment_behavior: "pending_if_incomplete",
-        }, { idempotencyKey: input.idempotencyKey });
-      } catch (error: any) {
-        throwProviderOperationFailure(error);
+      // An applied reset needs no second POST, even after provider keys expire.
+      const item = current.items.data[0];
+      const recurring = item.price.recurring;
+      const appliedReset = input.resetBillingCycle === true && current.pending_update == null
+        && ["active", "trialing", "incomplete", "past_due", "unpaid"].includes(current.status)
+        && item.price.id === input.targetPriceId && item.quantity === input.targetQuantity
+        && Number.isSafeInteger(current.billing_cycle_anchor) && current.billing_cycle_anchor >= input.prorationDate
+        && Number.isSafeInteger(item.current_period_start) && item.current_period_start >= current.billing_cycle_anchor
+        && ["day", "week", "month", "year"].includes(recurring.interval)
+        && Number.isSafeInteger(recurring.interval_count) && recurring.interval_count > 0
+        && item.current_period_end === teamBillingIntervalEnd(item.current_period_start, recurring.interval, recurring.interval_count);
+      let updated: LooseRecord = current;
+      if (!appliedReset) {
+        try {
+          updated = await stripe.subscriptions.update(input.subscriptionId, {
+            items: [{
+              id: input.subscriptionItemId,
+              price: input.targetPriceId,
+              quantity: input.targetQuantity,
+            }],
+            proration_behavior: input.resetBillingCycle ? "always_invoice" : "create_prorations",
+            ...(input.resetBillingCycle ? { billing_cycle_anchor: billingCycleAnchorNow(config.apiVersion) } : {}),
+            proration_date: input.prorationDate,
+            payment_behavior: "pending_if_incomplete",
+          }, { idempotencyKey: input.idempotencyKey });
+        } catch (error: any) {
+          throwProviderOperationFailure(error);
+        }
       }
       throwIfAborted(options.signal);
       if (updated.pending_update != null) {

@@ -590,7 +590,13 @@ A longer declared recurring interval (for example monthly → annual) explicitly
 resets `billing_cycle_anchor` to `now` and sends `proration_behavior: always_invoice`,
 so flexible subscriptions invoice the new full period at the switch, with unused
 previous-period credit. The reset decision is stored with the intent for restart
-and idempotent retries. Other changes retain `create_prorations`. The anchor is
+and idempotent retries. Once a reset has been attempted, quantity changes wait
+for verified Subscription evidence before a seat-only follow-up preserves the
+applied period. Recovery retrieves the provider Subscription and avoids another
+reset POST when the exact target, reset anchor and full recurring period are
+already applied. Before the first attempt,
+the target still refreshes to the latest
+accepted-member count. Other changes retain `create_prorations`. The anchor is
 encoded as a string before `2026-09-30.endive` (including the pinned dahlia API),
 and as `{ type: "now" }` from endive. Legacy single-Price bindings have no declared
 interval and retain their existing update behavior. Verified observations store

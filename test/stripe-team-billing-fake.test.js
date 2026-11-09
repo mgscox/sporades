@@ -546,8 +546,12 @@ for (const billingMode of ["classic", "flexible"]) test(`managed annual upgrade 
   assert.equal(invoice.status, "paid");
   assert.equal(invoice.lines.data[0].amount, 50000, "five annual units billed in full before unused monthly credit");
   assert.equal(invoice.lines.data[0].period.end, updated.items.data[0].current_period_end);
+  const attempts = f.fake.requests().filter(r => r.operation === 'subscriptions.update').length;
+  await f.fake.clock.advance(86400);
   await f.provider.updateManagedSubscription(update);
-  assert.equal(f.fake.state().invoices.length, 1, "lost acknowledgements replay the exact reset payload without charging twice");
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, attempts,
+    'recovery of an exact applied reset must not depend on retained provider idempotency keys');
+  assert.equal(f.fake.state().invoices.length, 1, "lost acknowledgements resolve the applied reset without charging twice");
 });
 
 test("flexible subscriptions preserve their anchor on an implicit interval change", async t => {
@@ -560,6 +564,18 @@ test("flexible subscriptions preserve their anchor on an implicit interval chang
   assert.equal(updated.billing_cycle_anchor, subscription.billing_cycle_anchor);
   assert.equal(updated.items.data[0].current_period_end, item.current_period_end);
   assert.equal(f.fake.state().invoices.length, 0);
+});
+
+for (const elapsed of [0, 86400]) test(`an implicit flexible change does not satisfy an explicit reset after ${elapsed} seconds`, async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f);
+  await f.fake.clock.advance(elapsed);
+  const update = updateInput(subscription, item, { prorationDate: f.fake.state().now });
+  await f.provider.updateManagedSubscription(update);
+  assert.equal(f.fake.state().invoices.length, 0);
+  await f.provider.updateManagedSubscription({ ...update, resetBillingCycle: true, idempotencyKey: 'reset-after-implicit-change' });
+  assert.equal(f.fake.state().invoices.length, 1, 'matching items with the old monthly period still require the annual reset');
+  assert.equal(f.fake.subscriptions.get(subscription.id).items.data[0].current_period_start, f.fake.state().now);
 });
 
 test("pending flexible annual upgrades charge and reset only after successful payment", async t => {

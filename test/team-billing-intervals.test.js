@@ -51,14 +51,15 @@ for (const billingMode of ["classic", "flexible"]) for (const initial of ['month
   let actor;
   const checks = [];
   const d = declaration();
-  if (initial === "year:1" || billingMode === "flexible") d.catalogue.kitchen.quantity = { kind: "team-members" };
+  d.catalogue.kitchen.quantity = { kind: "team-members" };
   if (initial === "month:1" && billingMode === "flexible") Object.assign(d.portal, {
     prorationBehavior: "always_invoice", billingCycleAnchor: "now", scheduleAtPeriodEnd: ["shortening_interval"],
   });
   d.authorize = (_ctx, input) => { checks.push(input); return { allow: true }; };
   const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
   const env = { STRIPE_SECRET_KEY: 'sk_test_intervals', STRIPE_WEBHOOK_SECRET: 'whsec_intervals' };
-  const database = await openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'intervals', auth: { providers: { anonymous: true, email: true } }, payments: { stripe: config } }, { name: 'intervals', schema: {}, teamBilling: d }, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  const open = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'intervals', auth: { providers: { anonymous: true, email: true } }, payments: { stripe: config } }, { name: 'intervals', schema: {}, teamBilling: d }, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  let database = await open();
   const callback = createServer(async (req, res) => { try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); } catch { res.writeHead(500).end(); } });
   const hub = createWebSocketHub(() => database);
   callback.on('upgrade', (req, socket) => hub.accept(req, socket));
@@ -118,6 +119,9 @@ for (const billingMode of ["classic", "flexible"]) for (const initial of ['month
     // Refreshing accepted seats before dispatch must retain the annual reset intent.
     database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'queued-member', 'member', ?)").run(teamId, now);
   }
+  if (initial === 'month:1' && billingMode === 'classic') {
+    fake.faults.inject({ operation: 'subscriptions.update', status: 503, when: 'after' });
+  }
   // A restart must not confuse equal product/quantity with an equal target Price.
   await repairTeamBillingDesiredState(database); await drain();
   assert.equal((await read()).state, 'pending');
@@ -127,6 +131,35 @@ for (const billingMode of ["classic", "flexible"]) for (const initial of ['month
   assert.equal(update.parameters.proration_behavior, initial === 'month:1' ? 'always_invoice' : 'create_prorations');
   assert.equal(update.parameters.billing_cycle_anchor, initial === 'month:1' ? 'now' : undefined);
   if (initial === 'month:1') assert.equal(fake.state().invoices[0].lines.data[0].amount, billingMode === "flexible" ? 20000 : 10000);
+  if (initial === 'month:1') {
+    const annual = fake.subscriptions.get(completed.subscription);
+    const annualPeriod = annual.items.data[0];
+    await fake.clock.advance(86400);
+    await database.close();
+    database = await open(); database.stripeApiBaseUrl = fake.origin; await database.init();
+    database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'delayed-member', 'member', ?)").run(teamId, now);
+    await stageTeamBillingMembershipChange(database, teamId);
+    if (billingMode === 'classic') {
+      // A new request for the same Plan must also resolve the attempted tuple.
+      await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'kitchen', opposite);
+    }
+    // Repair may run before the already-applied upgrade's callbacks arrive.
+    await repairTeamBillingDesiredState(database); await drain();
+    assert.equal(fake.state().invoices.length, 1, 'a delayed callback and seat refresh must not invoice another annual reset');
+    assert.equal((await read()).state, 'pending', 'provider acknowledgement alone never settles the upgrade');
+    await deliver();
+    // The accepted annual evidence stages the latest seats at the annual Price.
+    await deliver();
+    assert.equal((await read()).quantity, billingMode === 'flexible' ? 3 : 2);
+    assert.equal(fake.subscriptions.get(completed.subscription).billing_cycle_anchor, annual.billing_cycle_anchor);
+    const refreshed = fake.subscriptions.get(completed.subscription).items.data[0];
+    assert.equal(refreshed.current_period_start, annualPeriod.current_period_start);
+    assert.equal(refreshed.current_period_end, annualPeriod.current_period_end);
+    const seatUpdate = fake.requests().filter(r => r.operation === 'subscriptions.update').at(-1);
+    assert.equal(seatUpdate.parameters.billing_cycle_anchor, undefined);
+    assert.equal(seatUpdate.parameters.proration_behavior, 'create_prorations');
+    assert.equal(fake.state().invoices.length, 1);
+  }
   await deliver(); assert.equal((await read()).interval, opposite); assert.equal((await read()).state, 'active');
   await startTeamBillingPortal(database, actor, teamId, randomUUID()); await drain();
   assert.equal(fake.state().portalSessions.length, 1, 'Portal attests both Prices for the same Product');

@@ -133,7 +133,10 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
       const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey, price.interval);
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
       const billableQuantity = await targetQuantity(transaction, desired.teamId, product);
-      if (billableQuantity !== Number(desired.targetQuantity)) {
+      // Resolve an attempted reset with its original idempotent tuple first.
+      // Verified evidence then stages seats against the applied annual period.
+      if (billableQuantity !== Number(desired.targetQuantity)
+        && !(desired.resetBillingCycle === 1 && desired.providerAttemptedAt)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
           targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
@@ -169,8 +172,8 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
     if (!claimed) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?",
-    )).run(nowIso(database), desired.intentId);
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [providerAttemptedAt] = COALESCE([providerAttemptedAt], ?), [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?",
+    )).run(nowIso(database), nowIso(database), desired.intentId);
     return {
       desired: { ...desired },
       provider: {
@@ -400,7 +403,8 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0 };
   const existing = await desiredForTeam(transaction, input.teamId);
   const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
-    && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
+    && (existing.targetPriceId ?? null) === input.targetPriceId
+    && (Number(existing.targetQuantity) === input.targetQuantity || (existing.resetBillingCycle === 1 && existing.providerAttemptedAt));
   if (unchanged) {
     const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string"
       && input.operationId !== existing.operationId;
@@ -416,7 +420,7 @@ async function stageDesired(transaction: LooseRecord, database: LooseRecord, inp
   const now = nowIso(database);
   if (existing) {
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAttemptedAt] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?",
     )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, idempotencyKey, now, now, input.teamId);
   } else {
     await transaction.prepare(transaction.dialect.sql(

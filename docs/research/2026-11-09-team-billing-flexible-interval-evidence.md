@@ -9,8 +9,11 @@ observed mode and exercise monthly/annual transitions in both modes. Provider
 wire tests cover `billing_cycle_anchor=now` on `2026-08-26.dahlia` and
 `billing_cycle_anchor[type]=now` on `2026-09-30.endive`. Managed longer-interval
 changes send `always_invoice`; same/shorter intervals retain `create_prorations`.
-Reset intent survives restart repair and a lost response replays without a second
-charge. Pending payment leaves the original applied tuple unchanged.
+Reset intent survives restart repair and seat changes while callbacks are delayed.
+A lost response is resolved by retrieving the exact applied target without another
+reset POST, including after a day has passed. Verified annual evidence stages any
+remaining seats without moving the annual anchor or period. Pending payment leaves
+the original applied tuple unchanged.
 
 Sources checked on 2026-11-09:
 
