@@ -131848,10 +131848,12 @@ function bindJobResources(database, context2, claim, hooks) {
           return [name2, wrapTable(table)];
         }));
         const intentIds = [];
+        const teams = privileged ? hooks.createTeams(adapter, scopeContext) : void 0;
         const scope = Object.freeze({
           app: database.app,
           db: Object.freeze(db),
           signal: controller.signal,
+          ...teams ? { teams: Object.freeze({ lockLifecycle: (...args) => track(() => teams.lockLifecycle(...args)) }) } : {},
           jobs: Object.freeze({ enqueue: (...args) => track(() => scopeContext.jobs.enqueue(...args)) }),
           log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
             assertLive(true);
@@ -135927,6 +135929,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           }
           begun = true;
           const result = await fn2(transaction);
+          await runTransactionBeforeCommitChecks(transaction);
           beforeCommit?.(transaction);
           revokeTransactionScopedAdapter(transaction);
           commitIssued = true;
@@ -136327,6 +136330,7 @@ async function createPostgresDatabaseAdapter(options) {
         });
         try {
           const result = await fn2(transaction);
+          await runTransactionBeforeCommitChecks(transaction);
           await beforeCommit?.(transaction);
           revokeTransactionScopedAdapter(transaction);
           commitIssued = true;
@@ -152268,6 +152272,9 @@ function bindOrdinaryJobResourceContext(database, context2, claim, privileged = 
   const scopeLogEvents = /* @__PURE__ */ new WeakMap();
   return bindJobResources(database, context2, claim, {
     privileged,
+    createTeams(adapter, scoped) {
+      return createPrivilegedTeamsApi(createTransactionDatabase(database, adapter), () => scoped);
+    },
     createContext(adapter, signal) {
       const scopedDatabase = createTransactionDatabase(database, adapter);
       scopedDatabase.log = { emit() {
