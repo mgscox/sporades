@@ -38,7 +38,7 @@ test("usage quantity declares an exact meter and bounded optional floor and ceil
 });
 
 
-async function fixture(t, run) {
+async function fixture(t, run, { intervals = false } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-billing-usage-"));
   const state = { capturedDb: null, invalidUsage: null, reads: [], beforeUsage: null };
   const capsule = { name: "usage-billing", schema: {
@@ -76,6 +76,10 @@ async function fixture(t, run) {
       return { removed: true };
     }),
   } };
+  if (intervals) capsule.teamBilling.catalogue.multi.stripe = {
+    sandbox: { prices: { "month:1": { priceId: "price_venues" }, "year:1": { priceId: "price_venues_year" } } },
+    live: { prices: { "month:1": { priceId: "price_live_venues" }, "year:1": { priceId: "price_live_venues_year" } } },
+  };
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {
     STRIPE_SECRET_KEY: "sk_test_usage", STRIPE_WEBHOOK_SECRET: "whsec_usage",
   }, { name: capsule.name, auth: { providers: { email: true } }, payments: { stripe: {
@@ -89,7 +93,7 @@ async function fixture(t, run) {
   server.on("upgrade", (request, socket) => hub.accept(request, socket));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const fake = await createStripeTeamBillingFake({ catalogue: { products: [
-    { id: "prod_venues", prices: [{ id: "price_venues", recurring: "month" }] },
+    { id: "prod_venues", prices: [{ id: "price_venues", recurring: "month" }, ...(intervals ? [{ id: "price_venues_year", recurring: "year" }] : [])] },
     { id: "prod_solo", prices: [{ id: "price_solo", recurring: "month" }] },
   ], portalConfigurations: [] }, webhookSecret: "whsec_usage", webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: "manual" });
   database.stripeApiBaseUrl = fake.origin;
@@ -357,3 +361,41 @@ test("cross-policy acknowledged usage transition repairs below-floor drift befor
     assert.equal((await truth()).quantity, 7);
   });
 });
+
+
+for (const source of ["solo", "multi"]) for (const driftQuantity of [5, 6]) {
+  test(`${source}-to-annual usage transition preserves its selected Price through drift to ${driftQuantity}`, async t => {
+    await fixture(t, async ({ database, fake, change, settle, teamId, auth, truth }) => {
+      await startTeamBillingCheckout(database, auth, teamId, randomUUID(), source, source === "multi" ? "month:1" : undefined);
+      await settle();
+      const session = await fake.checkout.complete(fake.state().checkouts[0].id);
+      await fake.events.deliver(); await settle();
+      for (let index = 0; index < 7; index++) assert.equal((await change("add")).error, null);
+      await settle(); await fake.events.deliver(); await settle();
+      await requestTeamBillingPlanTransition(database, auth, teamId, randomUUID(), "multi", "year:1");
+      await settle();
+      assert.equal(fake.subscriptions.get(session.subscription).items.data[0].price.id, "price_venues_year");
+      const initial = fake.requests().filter(request => request.operation === "subscriptions.update").at(-1);
+      // Deliver drift before the first verified annual target observation.
+      await fake.subscriptions.setQuantity(session.subscription, driftQuantity);
+      await fake.events.deliver(fake.events.pending().at(-1).id); await settle();
+      const repaired = fake.subscriptions.get(session.subscription).items.data[0];
+      assert.equal(repaired.quantity, 7);
+      assert.equal(repaired.price.id, "price_venues_year");
+      const repair = fake.requests().filter(request => request.operation === "subscriptions.update").at(-1);
+      assert.notEqual(repair.idempotencyKey, initial.idempotencyKey);
+      assert.equal(repair.parameters.proration_behavior, "create_prorations");
+      assert.equal((await truth()).state, "pending");
+      await fake.events.deliver(); await settle();
+      assert.equal((await truth()).state, "active");
+      assert.equal((await truth()).interval, "year:1");
+      assert.equal((await truth()).quantity, 7);
+      // Later quantity changes and restart repair retain the verified interval.
+      assert.equal((await change("add")).error, null);
+      await repairTeamBillingDesiredState(database); await settle();
+      await fake.events.deliver(); await settle();
+      assert.equal((await truth()).interval, "year:1");
+      assert.equal((await truth()).quantity, 8);
+    }, { intervals: true });
+  });
+}

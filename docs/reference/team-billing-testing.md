@@ -88,6 +88,16 @@ const stripe = new Stripe("sk_test_app_fixture", {
 });
 ```
 
+A fake Product may contain monthly and annual Prices together. Declare each
+Price's `recurring` unit (`day`, `week`, `month`, or `year`) and optional
+`intervalCount` (default `1`), then include all offered Price IDs in the reviewed
+Portal configuration. For example, one Product's `prices` can be
+`[{ id: "price_month", recurring: "month" }, { id: "price_year", recurring: "year" }]`.
+Calendar periods clamp month/year renewals to the last valid day. An applied
+interval change resets the period at the fake clock; a pending payment leaves
+the active Price and period intact until `completePayment`. The fake validates
+proration parameters but does not calculate invoice amounts or credits.
+
 ## Control transitions and delivery
 
 All returned objects are independent JSON snapshots of the supported provider
@@ -100,7 +110,7 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | --- | --- |
 | `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. An existing Session Customer cannot be replaced. |
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
-| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change and emits an update. |
+| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period if its recurring interval/count changes, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
 | `subscriptions.setQuantity(id, quantity)` | Changes a licensed seat or usage quantity and emits an update. |

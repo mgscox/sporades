@@ -6001,7 +6001,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         if (message.type === "teamBilling.startCheckout") {
             try {
                 const input = message.input;
-                const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+                const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
             }
             catch (error) {
@@ -6052,7 +6052,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         if (message.type === "teamBilling.requestPlanTransition") {
             try {
                 const input = message.input;
-                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey);
+                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
             }
             catch (error) {

@@ -1740,3 +1740,13 @@ through enable, disable and database restore. Absent configuration stays console
 Resource refusal, retry convergence,
 disable/uninstall, scheduled restic database backups and monitored health are
 part of this contract. See [the operator runbook](./reference/host-observability.md).
+
+### Team Billing recurring intervals
+
+A Team Billing product may declare per-environment `prices` keyed by recurring
+interval (`month:1`, `year:1`) while retaining product-level Portal configuration.
+Checkout and managed interval changes carry the exact interval to authorization;
+verified Subscription Prices resolve to product and interval in billing truth.
+Desired state retains the target Price through retries and restart repair, and
+seat convergence preserves the observed interval. Single-Price declarations and
+callers remain compatible. See [Team Billing](reference/teams.md#declare-headless-team-billing).

@@ -36,7 +36,7 @@ export function createTeamBillingTables(adapter) {
             ")")),
         () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] (" +
             "[id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, " +
-            "[providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, " +
+            "[providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, " +
             "[cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, " +
             "[lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0" +
             ")")),
@@ -75,7 +75,7 @@ export function createTeamBillingTables(adapter) {
             ")")),
         ...(["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
-        ...(["providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
+        ...(["interval", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
         ...(["lastEventRank", "terminalLatch"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
@@ -83,6 +83,7 @@ export function createTeamBillingTables(adapter) {
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
     ]);
 }
 export function normalizeTeamBillingDefinition(value) {
@@ -108,10 +109,12 @@ export function normalizeTeamBillingDefinition(value) {
             throw invalidDeclaration();
         const sandbox = normalizeModeBinding(stripe.sandbox);
         const live = normalizeModeBinding(stripe.live);
-        if (prices.has(sandbox.priceId) || prices.has(live.priceId) || sandbox.priceId === live.priceId)
-            throw invalidDeclaration();
-        prices.add(sandbox.priceId);
-        prices.add(live.priceId);
+        for (const binding of [sandbox, live])
+            for (const { priceId } of teamBillingPrices(binding)) {
+                if (prices.has(priceId))
+                    throw invalidDeclaration();
+                prices.add(priceId);
+            }
         catalogue[productKey] = Object.freeze({
             quantity,
             stripe: Object.freeze({ sandbox, live }),
@@ -176,14 +179,57 @@ function normalizeQuantity(value) {
     }
     throw invalidDeclaration();
 }
+/** Canonical Stripe recurring interval key; Stripe limits recurrence to three years. */
+export function validTeamBillingInterval(value) {
+    if (typeof value !== "string")
+        return false;
+    const match = /^(day|week|month|year):([1-9][0-9]{0,3})$/.exec(value);
+    return Boolean(match && Number(match[2]) <= { day: 1095, week: 156, month: 36, year: 3 }[match[1]]);
+}
+export function teamBillingPrices(binding) {
+    if (!binding)
+        return [];
+    return binding.prices
+        ? Object.entries(binding.prices).map(([interval, price]) => ({ interval, priceId: price.priceId }))
+        : [{ priceId: binding.priceId }];
+}
+export function teamBillingPrice(binding, interval) {
+    if (!binding)
+        return null;
+    if (binding.prices)
+        return typeof interval === "string" && Object.hasOwn(binding.prices, interval)
+            ? { interval, priceId: binding.prices[interval].priceId } : null;
+    return interval === undefined ? { priceId: binding.priceId } : null;
+}
+export function teamBillingPriceById(binding, priceId) {
+    return teamBillingPrices(binding).find((price) => price.priceId === priceId) ?? null;
+}
 function normalizeModeBinding(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).some((key) => !["priceId", "productId", "portalConfigurationId"].includes(key))
-        || typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId)
+    if (!isRecord(value)
+        || Object.keys(value).some((key) => !["priceId", "prices", "productId", "portalConfigurationId"].includes(key))
         || (value.productId !== undefined && (typeof value.productId !== "string" || !PRODUCT_ID_PATTERN.test(value.productId)))
         || (value.portalConfigurationId !== undefined && (typeof value.portalConfigurationId !== "string" || !PORTAL_CONFIGURATION_ID_PATTERN.test(value.portalConfigurationId))))
         throw invalidDeclaration();
-    return Object.freeze({ priceId: value.priceId, ...(value.productId ? { productId: value.productId } : {}), ...(value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {}) });
+    let priceBinding;
+    if (Object.hasOwn(value, "prices")) {
+        if (Object.hasOwn(value, "priceId") || !isRecord(value.prices)
+            || Object.keys(value.prices).length < 1 || Object.keys(value.prices).length > 32)
+            throw invalidDeclaration();
+        const prices = {};
+        for (const [interval, price] of Object.entries(value.prices)) {
+            if (!validTeamBillingInterval(interval) || !isRecord(price) || Object.keys(price).join(",") !== "priceId"
+                || typeof price.priceId !== "string" || !PRICE_ID_PATTERN.test(price.priceId))
+                throw invalidDeclaration();
+            prices[interval] = Object.freeze({ priceId: price.priceId });
+        }
+        priceBinding = { prices: Object.freeze(prices) };
+    }
+    else {
+        if (typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId))
+            throw invalidDeclaration();
+        priceBinding = { priceId: value.priceId };
+    }
+    return Object.freeze({ ...priceBinding, ...(value.productId ? { productId: value.productId } : {}), ...(value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {}) });
 }
 function invalidDeclaration() {
     return commandError("Invalid Team Billing declaration.", "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.", "INVALID_TEAM_BILLING_DECLARATION");
@@ -224,26 +270,30 @@ export async function readCapsuleTeamBillingProjection(database, transaction, au
         throw teamBillingDenied();
     return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
 }
-export async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey) {
+export async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey, interval) {
     requireAuth({ auth }, { linked: true });
     const definition = database.teamBillingDefinition;
     if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled
         || !TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))
         || typeof productKey !== "string" || !definition.catalogue[productKey])
         throw teamBillingDenied();
+    const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
+    const price = teamBillingPrice(definition.catalogue[productKey].stripe[mode], interval);
+    if (!price)
+        throw teamBillingDenied();
     let enqueued = false;
     const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
-        await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey });
+        await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey, interval: price.interval });
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         const sql = transaction.dialect.sql;
-        const existing = await transaction.prepare(sql("SELECT [requestId], [productKey], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
+        const existing = await transaction.prepare(sql("SELECT [requestId], [productKey], [providerPriceId], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
             "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
         if (existing) {
-            if (existing.productKey !== productKey)
+            if (existing.productKey !== productKey || existing.providerPriceId !== price.priceId)
                 throw checkoutConflict();
             return checkoutOperationResult(database, transaction, teamId, requestId, existing);
         }
-        const desired = await checkoutDesiredState(database, transaction, teamId, productKey);
+        const desired = await checkoutDesiredState(database, transaction, teamId, productKey, interval);
         const now = database.clock.now().toISOString();
         const active = await transaction.prepare(sql("SELECT [id], [status], [continuationExpiresAt] FROM [sporades_team_billing_operations] " +
             "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] IN ('running', 'retrying', 'ready') ORDER BY [createdAt] LIMIT 1")).get(teamId);
@@ -341,7 +391,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
     try {
         providerInput = await database.adapter.withTransaction(async (transaction) => {
             const sql = transaction.dialect.sql;
-            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] " +
+            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt] " +
                 "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'")).get(operationId);
             if (!operation || !["queued", "running", "retrying"].includes(operation.status))
                 return null;
@@ -359,9 +409,13 @@ export async function performTeamBillingCheckout(database, context, payload, att
                 provider: actor.provider,
                 ...(actor.userKind === "service" ? { userKind: "service" } : {}),
             };
-            await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey });
-            const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey);
-            if (operation.mode !== desired.mode || operation.quantity !== desired.quantity) {
+            const binding = database.teamBillingDefinition.catalogue[operation.productKey]?.stripe?.[operation.mode];
+            const price = teamBillingPriceById(binding, operation.providerPriceId);
+            if (!price)
+                throw checkoutUnavailable();
+            await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey, interval: price.interval });
+            const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey, price.interval);
+            if (operation.mode !== desired.mode || operation.quantity !== desired.quantity || operation.providerPriceId !== desired.priceId) {
                 await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'DESIRED_STATE_CHANGED', [updatedAt] = ? WHERE [id] = ?")).run(database.clock.now().toISOString(), operationId);
                 return null;
             }
@@ -636,6 +690,7 @@ export async function admitTeamBillingActor(database, transaction, auth, input) 
         teamId: input.teamId,
         teamRole: "admin",
         ...(input.productKey === undefined ? {} : { productKey: input.productKey }),
+        ...(input.interval === undefined ? {} : { interval: input.interval }),
     }));
     if (!decision || typeof decision !== "object" || Array.isArray(decision)
         || Object.keys(decision).join(",") !== "allow" || decision.allow !== true)
@@ -691,12 +746,12 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
             requestedAt,
         });
     }
-    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+    const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
     if (currentRows.length > 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
-    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
+    const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     const quarantine = await transaction.prepare(sql("SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] " +
         "WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1")).get(teamId);
@@ -711,7 +766,8 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
     const binding = (row.mode === "sandbox" || row.mode === "live") ? product?.stripe?.[row.mode] : null;
     const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1
         ? row.quantity : null;
-    if (!product || !binding || row.providerPriceId !== binding.priceId
+    const price = teamBillingPriceById(binding, row.providerPriceId);
+    if (!product || !price || (price.interval && price.interval !== row.interval)
         || quantity === null || (product.quantity.kind === "fixed" && quantity !== product.quantity.value)
         || (product.quantity.kind === "team-members" && quantity < (product.quantity.minimum ?? 1))) {
         return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
@@ -725,7 +781,7 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
         || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
-    const common = { teamId, productKey: row.productKey, quantity };
+    const common = { teamId, productKey: row.productKey, quantity, ...(price.interval ? { interval: price.interval } : {}) };
     if (row.state === "active") {
         const currentPeriodEnd = canonicalTimestamp(row.currentPeriodEnd);
         if (!currentPeriodEnd) {
@@ -809,7 +865,7 @@ function canonicalReturnPath(value) {
         return null;
     }
 }
-async function checkoutDesiredState(database, transaction, teamId, productKey) {
+async function checkoutDesiredState(database, transaction, teamId, productKey, interval) {
     const product = database.teamBillingDefinition.catalogue[productKey];
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
     const quantity = product.quantity.kind === "fixed"
@@ -817,13 +873,16 @@ async function checkoutDesiredState(database, transaction, teamId, productKey) {
         : billableTeamMemberQuantity(product.quantity, Number((await transaction.prepare(transaction.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0));
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX)
         throw checkoutUnavailable();
-    return { mode, quantity, priceId: product.stripe[mode].priceId };
+    const price = teamBillingPrice(product.stripe[mode], interval);
+    if (!price)
+        throw checkoutUnavailable();
+    return { mode, quantity, priceId: price.priceId };
 }
 async function portalDesiredState(database, transaction, teamId) {
     const sql = transaction.dialect.sql;
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
     const customer = await transaction.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
-    const subscriptions = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
+    const subscriptions = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
         "WHERE [teamId] = ? AND [state] IN ('active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC")).all(teamId);
     const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
     const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
@@ -833,7 +892,8 @@ async function portalDesiredState(database, transaction, teamId) {
         : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0));
     if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? ""))
         || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state)
-        || !binding?.productId || !binding?.portalConfigurationId || subscription.providerPriceId !== binding.priceId
+        || !binding?.productId || !binding?.portalConfigurationId || !teamBillingPriceById(binding, subscription.providerPriceId)
+        || (binding.prices && teamBillingPriceById(binding, subscription.providerPriceId)?.interval !== subscription.interval)
         || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity)
         throw checkoutUnavailable();
     const grouped = new Map();
@@ -842,7 +902,8 @@ async function portalDesiredState(database, transaction, teamId) {
         if (candidateBinding.portalConfigurationId !== binding.portalConfigurationId)
             continue;
         const prices = grouped.get(candidateBinding.productId) ?? new Set();
-        prices.add(candidateBinding.priceId);
+        for (const price of teamBillingPrices(candidateBinding))
+            prices.add(price.priceId);
         grouped.set(candidateBinding.productId, prices);
     }
     const expectedProducts = [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right))
