@@ -7,8 +7,37 @@ import { test } from "node:test";
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { createTeamBillingTables, normalizeTeamBillingDefinition, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 
+test("same-policy transition declaration is optional, boolean and closed", () => {
+  const definition = { catalogue: { legacy: { quantity: { kind: "fixed", value: 1 }, stripe: {
+    sandbox: { priceId: "price_legacy" }, live: { priceId: "price_live_legacy" },
+  } } }, authorize: () => ({ allow: true }) };
+  for (const allowSamePolicy of [true, false]) {
+    const normalized = normalizeTeamBillingDefinition({ ...definition, transitions: { allowSamePolicy } });
+    assert.deepEqual(normalized.transitions, { allowSamePolicy });
+    assert.ok(Object.isFrozen(normalized.transitions));
+  }
+  for (const transitions of [null, [], true, { allowSamePolicy: "true" }, { timing: "now" }]) {
+    assert.throws(() => normalizeTeamBillingDefinition({ ...definition, transitions }), { code: "INVALID_TEAM_BILLING_DECLARATION" });
+  }
+});
+
 test("Team Checkout is an operation-specific runtime command", () => {
   assert.equal(typeof startTeamBillingCheckout, "function");
+});
+
+test("Team Billing products accept only integer trial days from 1 through 90", () => {
+  const declaration = (trialDays) => ({
+    catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, trialDays,
+      stripe: { sandbox: { priceId: "price_trial_test" }, live: { priceId: "price_trial_live" } } } },
+    authorize: async () => ({ allow: true }),
+  });
+  for (const days of [1, 14, 90]) {
+    assert.equal(normalizeTeamBillingDefinition(declaration(days)).catalogue.studio.trialDays, days);
+  }
+  for (const days of [0, -1, 91, 1.5, "14", null, NaN, Infinity]) {
+    assert.throws(() => normalizeTeamBillingDefinition(declaration(days)), error => error.code === "INVALID_TEAM_BILLING_DECLARATION");
+  }
+  assert.equal(normalizeTeamBillingDefinition(declaration(undefined)).catalogue.studio.trialDays, undefined);
 });
 
 test("Team Billing declaration is dormant when omitted and validates an exact two-mode catalogue", async () => {

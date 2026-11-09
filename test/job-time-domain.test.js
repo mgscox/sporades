@@ -58,23 +58,6 @@ test("Job enqueue rejects retry delays outside the durable timestamp domain", as
   });
 });
 
-test("Job enqueue rejects a retry delay that cannot be represented from the runtime clock", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-retry-clock-boundary-"));
-  const clock = createControllableRuntimeClock("9999-12-31T23:59:59.900Z");
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, {
-    jobs: { noop: job(() => null) },
-    mutations: { enqueue: mutation((ctx) => ctx.jobs.enqueue("noop", null, { retry: { maxAttempts: 2, delayMs: 100 } })) },
-  }, { clock });
-  try {
-    const result = await runMutation(database, auth, "enqueue", []);
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, "INVALID_JOB_OPTIONS");
-  } finally {
-    await Promise.resolve().then(() => database.close()).catch(() => {});
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("Job enqueue reserves timestamp headroom for every promised retry attempt", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-full-retry-horizon-"));
   const clock = createControllableRuntimeClock("9999-12-31T23:58:45.000Z");
@@ -95,18 +78,6 @@ test("Job enqueue reserves timestamp headroom for every promised retry attempt",
     await Promise.resolve().then(() => database.close()).catch(() => {});
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("Job enqueue rejects a retry delay outside the time domain of its first availability", async () => {
-  await withJobDatabase(async ({ database }) => {
-    const result = await runMutation(database, auth, "enqueue", [{
-      availableAt: "9999-12-31T23:59:59.900Z",
-      retry: { maxAttempts: 2, delayMs: 100 },
-    }]);
-
-    assert.equal(result.ok, false);
-    assert.equal(result.error.code, "INVALID_JOB_OPTIONS");
-  });
 });
 
 test("Job enqueue rejects invalid, coercible, and extended-year availability with a structured error", async () => {

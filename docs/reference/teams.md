@@ -316,6 +316,7 @@ capsule({
     portal: { returnPath: "/settings/billing" },
     catalogue: {
       studio: {
+        trialDays: 14,
         quantity: { kind: "fixed", value: 1 },
         stripe: {
           sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" },
@@ -340,9 +341,29 @@ capsule({
 });
 ```
 
+A product may declare `trialDays`, an integer from 1 through 90. Checkout passes
+it as Stripe's `subscription_data.trial_period_days`; omitting it preserves
+ordinary paid Checkout. The allowance belongs to the Team across products,
+Sessions, and recurring intervals.
+A second trial Checkout is refused with opaque `TEAM_BILLING_DENIED`.
+The runtime durably reserves the allowance before the first provider request:
+a lost reply, local expiry, abandoned Checkout, or provider failure does not reset it.
+A verified `checkout.session.expired` observation releases an unused reservation;
+local timeouts alone cannot prove that no trial started. Retry the same request
+ID to recover the original operation. The trial length
+is frozen when Checkout is admitted, including retries and erasure recovery.
+Verified historical trial evidence also prevents another trial after cancellation.
+
+Only verified Subscription evidence grants the paid product's entitlement.
+`trialing` includes `productKey`, `quantity`, and an ISO UTC `trialEndsAt`;
+apps should treat it as entitled to that product, including a trial scheduled
+for cancellation. Subscription updates converge to `active` or `past-due`,
+and deletion converges to `cancelled`, through the normal webhook fence.
+Checkout completion or the browser return alone grants nothing.
+
 Product keys are lowercase stable application identities. Each product binds
-exact sandbox and live Prices and declares either a
-positive fixed quantity or `team-members`. A `team-members` policy may declare
+exact sandbox and live Prices and declares a positive fixed quantity,
+`team-members`, or `usage`. A `team-members` policy may declare
 an optional positive integer `minimum`; Sporades then bills the greater of the
 accepted-member count and that floor. Omitting `minimum` preserves the existing
 one-seat minimum. The declaration is server-only; the browser cannot select a
@@ -395,7 +416,7 @@ await teamBilling.requestPlanTransition({
 
 `authorize` receives `productKey` and `interval` at admission and again before
 provider I/O. Unsupported or omitted intervals fail closed. Reusing a request ID
-for a different interval conflicts. Verified `active`, `cancelling`, `past-due`,
+for a different interval conflicts. Verified `trialing`, `active`, `cancelling`, `past-due`,
 and `cancelled` billing truth includes the declared `interval`; legacy bindings
 omit it. The stored verified interval is checked against the active Price declaration across
 restarts. Reassigning a Price to a different interval returns `attention-required`
@@ -425,6 +446,74 @@ Sporades does not edit Stripe configuration. A mismatch fails with a safe operat
 error and issues no Portal URL. Existing declarations now enforce the documented
 defaults, so review existing Portal configurations when upgrading. These Portal
 settings govern Portal switches; managed transitions use the rules below.
+
+### Resource-counted quantities
+
+Use `usage` for licensed per-venue, per-location, or per-project pricing. It is
+an exact resource count, not Stripe metered event billing:
+
+```ts
+teamBilling: {
+  catalogue: {
+    multi: {
+      quantity: { kind: "usage", meter: "maxVenues", minimum: 6, maximum: 50 },
+      stripe: {
+        sandbox: { priceId: "price_test_venues" },
+        live: { priceId: "price_live_venues" },
+      },
+    },
+  },
+  usage: async (ctx, { teamId }) => ({
+    maxVenues: (await ctx.db.venues.where("teamId", teamId).all()).length,
+  }),
+  authorize: async (ctx, input) => ({ allow: await isBillingHolder(ctx, input.teamId) }),
+  checkout: { successPath: "/billing/success", cancelPath: "/billing/cancelled" },
+}
+```
+
+The required `usage(ctx, { teamId })` hook returns counts keyed by meter, so an
+existing `billingUsage(ctx.db, teamId)` function can supply the result. Counts
+must be exact safe integers from zero through 999999, including resources from
+every creator in the Team and any legacy rows that belong to it. Never return
+a partial or estimated count. Missing meters, failed or unfinished reads,
+invalid results, exceptions, and five-second budget expiry fail closed. Hook
+access bypasses row ACLs for read-only Capsule tables, expires on settlement,
+and carries no current-user, write, runtime-table, or provider capability.
+All calls run inside the exact Team lifecycle lock and transaction.
+
+Meter names match `[a-zA-Z][a-zA-Z0-9_]{0,63}`. Optional `minimum` and `maximum`
+are positive integers through 999999, with maximum at least minimum. The
+billable quantity is `max(count, minimum ?? 1)`. Zero resources therefore bill
+one unit unless a larger floor is declared. `maximum` is an admission ceiling;
+it never truncates the resource count billed for existing data.
+
+Every resource mutation must first `await ctx.teams.lockLifecycle(teamId)`
+before reading or writing resources. For an active or past-due usage Plan,
+Sporades compares the initial and final exact counts before commit, refuses
+increases above `maximum`, and stages quantity convergence in the resource
+transaction. A failed mutation rolls back both resources and billing intent.
+Decreases remain possible when existing data already exceeds a newly lowered
+maximum. The same behavior applies to transaction-bound
+`privilegedCtx.teams.lockLifecycle(teamId)`. This lock does not grant row ACL
+permissions or replace the Capsule's resource authorization.
+
+Checkout and managed Plan transitions refuse a usage target above maximum.
+Before subscribing, or when an app imposes tighter product limits, its own
+admission/`authorize` policy must check the exact count in the locked
+transaction. Writes that omit the lifecycle lock do not trigger immediate
+quantity staging; startup repair reconstructs missing intent from the exact
+hook count. Provider updates use the existing latest-wins durable controller,
+stable proration date and `create_prorations`, with no Stripe I/O inside the
+resource transaction. If usage changes while Checkout is open, the first
+Subscription observation must still match the issued Checkout. Sporades retains
+that validated association and stages the latest exact quantity; billing stays
+pending until corrected Subscription evidence arrives. Only verified
+Subscription evidence settles the target. Usage quantity changes, drift repair,
+and startup repair preserve the selected recurring interval and exact Price.
+The stateful Stripe fake accepts these licensed quantities and can inject drift
+with `subscriptions.setQuantity(...)`.
+
+### Billing authority
 
 Every operation re-reads the exact Team membership inside its transaction. A
 current linked Team administrator reaches the Capsule policy for every
@@ -480,6 +569,9 @@ The provider-free projection validates the persisted Subscription's complete
 convergence ratchet: canonical event time plus state, cancellation flag, event
 kind, rank, and terminal latch must agree. Missing or contradictory evidence
 returns `attention-required`; it never grants paid entitlement.
+Tied observations retain an attached schedule until newer verified evidence
+clears it. Below-floor usage evidence for an existing Subscription retains
+terminal latches without staging quantity repair.
 
 The client exposes a safe observation seam and one operation-specific Checkout
 command. Apps create the button, progress, retry, and navigation UI:
@@ -507,7 +599,7 @@ superseded, or failed state themselves. Sporades permits only one active
 Checkout per Team; the app should continue polling its original request until
 that Checkout finishes or expires before it offers another.
 
-The result is a closed `inactive`, `pending`, `active`, `cancelling`,
+The result is a closed `inactive`, `pending`, `trialing`, `active`, `cancelling`,
 `past-due`, `cancelled`, or `attention-required` projection containing Team ID,
 declared product key, safe quantity, and bounded lifecycle timestamps where
 appropriate. It never contains Stripe Customer, Subscription, Price, Event, or
@@ -529,6 +621,16 @@ membership read and every Billing Holder, app-usage, and exact-seat policy
 read. A demotion or holder transfer already holding that lock commits first;
 the waiting transition then observes the new authority and records
 `AUTHORITY_CHANGED` without calling the provider.
+
+New Checkout requests refuse with `TEAM_BILLING_SUBSCRIPTION_EXISTS` while the
+Team has any non-terminal Subscription, including cancelling, past-due or
+trialing subscriptions. A completed Checkout with a known Subscription also
+blocks a new purchase while Subscription evidence is missing or quarantined;
+only exact verified terminal evidence releases that guard. The worker
+rechecks this before creating a Session.
+Verified terminal cancellation or `incomplete_expired` permits a new Checkout;
+expiry is exposed as provider-free `cancelled` state. Repeating an already
+completed request still returns its historical `completed` result.
 
 Only `ready` contains a strictly validated `checkout.stripe.com` URL and a
 bounded local expiry. A durable runtime Job erases the retained capability at
@@ -562,8 +664,9 @@ Portal supports switches whose source and target share the same quantity
 policy, including monthly/annual switches within one product. Its exact
 Product-to-Price allow-list must include every declared Price for the products
 sharing that configuration. Interval changes also use the managed command,
-within one product or across products. A switch between fixed quantity and
-accepted-Team-member quantity uses the managed command:
+within one product or across products. A switch between fixed,
+accepted-Team-member, or usage quantities uses the managed command instead.
+Changing a usage meter, floor, or maximum also changes its quantity policy:
 
 ```ts
 const transition = await teamBilling.requestPlanTransition({
@@ -572,6 +675,42 @@ const transition = await teamBilling.requestPlanTransition({
   productKey: "agency",
 });
 ```
+
+To use the same command for fixed→fixed or other same-quantity-policy product
+switches, opt in on the trusted declaration:
+
+```ts
+teamBilling: {
+  catalogue,
+  transitions: { allowSamePolicy: true },
+  authorize,
+}
+```
+
+Omitting `transitions` or setting `allowSamePolicy: false` preserves
+`TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED` for same-policy switches without
+an interval change. With the option enabled, every declared target can use the
+existing Subscription in place. Keep legacy Prices as catalogue entries even
+when they are no longer offered: `authorize` decides which targets are offered
+and receives `fromProductKey` and, for a `prices` binding, `fromInterval` from
+the verified source under the Team lifecycle lock. `productKey` and `interval`
+remain the requested target. Source entries need not be purchasable. Repeating
+a completed transition authorizes against the current source.
+
+Admission and the final Stripe read refuse these states with distinct safe
+codes. Worker refusals settle the operation as failed without a provider update:
+
+| Subscription state | Safe code |
+| --- | --- |
+| Cancellation scheduled | `TEAM_BILLING_SUBSCRIPTION_CANCELLING` |
+| `past_due` or `unpaid` | `TEAM_BILLING_SUBSCRIPTION_PAST_DUE` |
+| `trialing` | `TEAM_BILLING_SUBSCRIPTION_TRIALING` |
+| An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
+
+Sporades does not own Subscription Schedules yet, so every attached schedule
+is unknown. Verified trials retain their entitled product and automatic quantity
+convergence; managed plan switches still refuse. These guards apply to existing cross-policy and interval switches
+as well as the opt-in same-policy path.
 
 The app renders the returned `pending`, `completed`, `superseded`, or safe
 `failed` state. The response contains no intent, Job, Price, Customer,
@@ -634,7 +773,7 @@ licensed item, declared Price, quantity, period, and supported status.
 
 Newer periods and observations advance the projection. At the same provider
 time, cancellation outranks failed payment, failed payment outranks
-cancelling, and cancelling outranks active; provider Event identifiers are not
+cancelling, and cancelling outranks active, and active outranks trialing; provider Event identifiers are not
 invented as business ordering. Deletion permanently latches that Subscription
 ID, so no delayed update can resurrect it. A later verified recovery may clear
 past-due state for a non-terminal Subscription. Duplicate and out-of-order

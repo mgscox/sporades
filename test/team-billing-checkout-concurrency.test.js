@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { String as Text, table } from "../dist/server.js";
-import { performTeamBillingPortal, startTeamBillingCheckout, startTeamBillingPortal, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_JOB } from "../dist/team-billing-runtime.js";
+import { performTeamBillingCheckout, performTeamBillingPortal, startTeamBillingCheckout, startTeamBillingPortal, TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_PORTAL_JOB } from "../dist/team-billing-runtime.js";
 import { promoteTeamMember } from "../dist/teams-runtime.js";
 import { requestTeamBillingPlanTransition } from "../dist/team-billing-management.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
@@ -97,6 +97,29 @@ const engines = [
 ];
 
 for (const engine of engines) {
+  test(`${engine.name} Checkout refuses non-terminal subscriptions and rechecks queued work`, { skip: engine.skip }, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-checkout-subscription-"));
+    try {
+      await engine.run(dir, async (database) => {
+        const sql = database.adapter.dialect.sql;
+        const now = database.clock.now().toISOString();
+        await seedTeam(database, sql, now);
+        await startTeamBillingCheckout(database, auth, teamId, requestId, "agency");
+        const queued = await database.adapter.prepare(sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [requestId] = ?")).get(requestId);
+        await database.adapter.prepare(sql(
+          "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [observedAt], [updatedAt]) VALUES ('live', ?, 'sandbox', 'sub_live', 'price_test_agency', 'agency', 1, 'active', 0, ?, ?)",
+        )).run(teamId, now, now);
+        for (const state of ["active", "past-due", "trialing", "incomplete", "unknown"]) {
+          await database.adapter.prepare(sql("UPDATE [sporades_team_billing_subscriptions] SET [state] = ?")).run(state);
+          await assert.rejects(startTeamBillingCheckout(database, auth, teamId, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "agency"), { code: "TEAM_BILLING_SUBSCRIPTION_EXISTS" });
+        }
+        await assert.rejects(performTeamBillingCheckout(database, {}, { operationId: queued.id }), { code: "TEAM_BILLING_SUBSCRIPTION_EXISTS" });
+        await database.adapter.prepare(sql("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'cancelled', [terminalLatch] = 1")).run();
+        assert.equal((await startTeamBillingCheckout(database, auth, teamId, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "agency")).state, "pending");
+      });
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   for (const operation of ["checkout", "plan-transition"]) {
     test(`${engine.name} ${operation} policy counts exact administrators and serializes promotion`, { skip: engine.skip }, async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-staff-count-"));
@@ -169,6 +192,48 @@ for (const engine of engines) {
       }
     });
   }
+  test(`${engine.name} trial allowance survives lost replies and concurrent runtimes across products`, { skip: engine.skip }, async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-trial-"));
+    const selectedCapsule = { ...capsule, teamBilling: { ...capsule.teamBilling, catalogue: {
+      agency: { ...capsule.teamBilling.catalogue.agency, trialDays: 14 },
+      studio: { ...capsule.teamBilling.catalogue.agency, trialDays: 7, stripe: {
+        sandbox: { productId: "prod_trial_studio", priceId: "price_trial_studio", portalConfigurationId: "bpc_trial_studio" },
+        live: { productId: "prod_live_trial_studio", priceId: "price_live_trial_studio", portalConfigurationId: "bpc_live_trial_studio" },
+      } },
+    } } };
+    try {
+      await engine.run(dir, async (first, second) => {
+        const sql = first.adapter.dialect.sql;
+        await seedTeam(first, sql, new Date().toISOString());
+        const enqueue = first.enqueueTeamBillingCheckoutJob;
+        first.enqueueTeamBillingCheckoutJob = async () => { throw new Error("synthetic rollback"); };
+        await assert.rejects(startTeamBillingCheckout(first, auth, teamId, requestId, "agency"), /synthetic rollback/);
+        first.enqueueTeamBillingCheckoutJob = enqueue;
+        await startTeamBillingCheckout(first, auth, teamId, requestId, "agency");
+        const operation = await first.adapter.prepare(sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [requestId] = ?")).get(requestId);
+        let calls = 0;
+        const create = async input => {
+          assert.equal(input.trialDays, 14);
+          if (++calls === 1) throw Object.assign(new Error("synthetic lost reply"), { retryable: true });
+          return { ok: true, sessionId: "cs_test_trial", url: "https://checkout.stripe.com/c/pay/cs_test_trial" };
+        };
+        first.createStripeTeamBillingProvider = second.createStripeTeamBillingProvider = () => ({ create });
+        await assert.rejects(performTeamBillingCheckout(first, {}, { operationId: operation.id }), error => error.retryable === true);
+        const otherRequestId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        await assert.rejects(startTeamBillingCheckout(second, auth, teamId, otherRequestId, "studio"), error => error.code === "TEAM_BILLING_DENIED");
+        second.teamBillingDefinition = { ...second.teamBillingDefinition, catalogue: {
+          ...second.teamBillingDefinition.catalogue,
+          agency: { ...second.teamBillingDefinition.catalogue.agency, trialDays: 7 },
+        } };
+        assert.deepEqual(await performTeamBillingCheckout(second, {}, { operationId: operation.id }, 2), { ready: true });
+        assert.equal((await startTeamBillingCheckout(first, auth, teamId, requestId, "agency")).state, "ready");
+        await first.adapter.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired' WHERE [id] = ?")).run(operation.id);
+        await assert.rejects(startTeamBillingCheckout(second, auth, teamId, otherRequestId, "studio"), error => error.code === "TEAM_BILLING_DENIED");
+        assert.equal(calls, 2);
+      }, selectedCapsule);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
   test(`${engine.name} serializes duplicate Team Checkout admission across runtimes`, { skip: engine.skip }, async () => {
     const dir = await mkdtemp(path.join(tmpdir(), `sporades-team-checkout-${engine.name.toLowerCase()}-`));
     try {

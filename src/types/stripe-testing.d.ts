@@ -48,6 +48,7 @@ export type StripeTeamBillingFake = {
   controlOrigin: string;
   close(): Promise<void>;
   checkout: {
+    /** Trial Checkouts create a trialing Subscription with trial_start/trial_end and no payment required. */
     complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible" }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
@@ -57,7 +58,9 @@ export type StripeTeamBillingFake = {
     resume(id: string): Promise<StripeFakeObject>;
   };
   subscriptions: {
-    setStatus(id: string, status: "active" | "past_due" | "unpaid" | "canceled"): Promise<StripeFakeObject>;
+    setStatus(id: string, status: "active" | "past_due" | "unpaid" | "trialing" | "incomplete" | "incomplete_expired" | "canceled"): Promise<StripeFakeObject>;
+    /** Attaches or clears an external schedule and emits a Subscription update. */
+    setSchedule(id: string, scheduleId: string | null): Promise<StripeFakeObject>;
     setQuantity(id: string, quantity: number): Promise<StripeFakeObject>;
     /** Applies an unexpired pending update after simulated successful payment. */
     completePayment(id: string): Promise<StripeFakeObject>;
@@ -66,6 +69,7 @@ export type StripeTeamBillingFake = {
     get(id: string): StripeFakeObject;
   };
   customers: { subscriptions(id: string): StripeFakeObject[] };
+  /** Advances due trials to active, or cancels them when scheduled; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {
     pending(): StripeFakeEvent[];

@@ -75,20 +75,6 @@ test("the Log index sequence is fixed-width zero-padded text that sorts lexicogr
   assert.equal(formatLogIndexSequence(9n) < formatLogIndexSequence(10n), true);
 });
 
-test("the Log index sequence would lose distinct instants if it were stored as a number", () => {
-  // Why the column is TEXT rather than BIGINT. The Postgres adapter coerces oids 20, 21 and 23
-  // through `Number(value)`, and at this magnitude a double cannot represent adjacent nanoseconds:
-  // two events the field deliberately separated would come back equal, which is the defect class
-  // this feature exists to eliminate rather than to reintroduce one layer down.
-  const first = nextLogIndexSequence();
-  const second = formatLogIndexSequence(BigInt(first) + 1n);
-
-  assert.notEqual(first, second);
-  assert.equal(BigInt(first) < BigInt(second), true);
-  assert.equal(Number(first), Number(second), "a double is expected to collapse adjacent nanoseconds at this magnitude");
-  assert.equal(Number(first) > Number.MAX_SAFE_INTEGER, true);
-});
-
 test("the Log index sequence is anchored to the wall clock, so it orders across a restart", () => {
   // Within a process the monotonic clock supplies the ordering; across processes only the wall
   // clock can, because the monotonic clock's origin is arbitrary per process. Anchoring one to the

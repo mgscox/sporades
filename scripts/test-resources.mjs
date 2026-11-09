@@ -29,9 +29,20 @@ export function processes() {
 const cgroupPath = read('/proc/self/cgroup').split('\n').find(line => line.startsWith('0::'))?.slice(3);
 const cgroups = ['/sys/fs/cgroup'];
 for (let parent = cgroupPath; parent && parent !== '/'; parent = path.posix.dirname(parent)) cgroups.push(path.posix.join('/sys/fs/cgroup', parent));
+// macOS reports only the free page list through freemem(); inactive, speculative
+// and purgeable pages are immediately reclaimable, so a bare free figure aborts
+// the gate on a healthy desk. vm_stat is the available-memory proxy there.
+const darwinAvailableMb = () => {
+  const pageBytesDarwin = Number(spawnSync('sysctl', ['-n', 'hw.pagesize'], { encoding: 'utf8', timeout: 1000, killSignal: 'SIGKILL' }).stdout) || 16384;
+  const output = spawnSync('vm_stat', [], { encoding: 'utf8', timeout: 1000, killSignal: 'SIGKILL' }).stdout || '';
+  const pages = Object.fromEntries([...output.matchAll(/^(Pages [a-z ]+):\s+(\d+)\./gm)].map(([, key, value]) => [key, Number(value)]));
+  const reclaimable = (pages['Pages free'] ?? 0) + (pages['Pages inactive'] ?? 0)
+    + (pages['Pages speculative'] ?? 0) + (pages['Pages purgeable'] ?? 0);
+  return reclaimable ? mb(reclaimable * pageBytesDarwin) : null;
+};
 export function systemMemory() {
   const info = Object.fromEntries([...read('/proc/meminfo').matchAll(/^(\w+):\s+(\d+) kB/gm)].map(([, key, value]) => [key, Number(value) / 1024]));
-  let freeMb = info.MemAvailable ?? mb(freemem());
+  let freeMb = info.MemAvailable ?? (process.platform === 'darwin' ? darwinAvailableMb() : null) ?? mb(freemem());
   let swapFreeMb = info.SwapFree ?? null;
   let oomKills = 0;
   for (const dir of cgroups) {

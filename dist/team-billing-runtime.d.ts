@@ -8,8 +8,6 @@ export declare const TEAM_BILLING_PORTAL_EXPIRY_JOB = "_sporades.team-billing-po
 export declare const TEAM_BILLING_PORTAL_MAX_ATTEMPTS = 4;
 export declare function createTeamBillingTables(adapter: LooseRecord): any;
 export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
-    catalogue: Readonly<LooseRecord>;
-    authorize: any;
     checkout: Readonly<{
         successPath: string;
         cancelPath: string;
@@ -19,6 +17,12 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
         returnPath: string;
         continuationTtlSeconds: any;
     }> | null;
+    transitions: Readonly<{
+        allowSamePolicy: any;
+    }> | null;
+    usage?: any;
+    catalogue: Readonly<LooseRecord>;
+    authorize: any;
 }>;
 /** Canonical Stripe recurring interval key; Stripe limits recurrence to three years. */
 export declare function validTeamBillingInterval(value: any): value is string;
@@ -51,6 +55,14 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
 }> | Readonly<{
     state: "inactive";
     teamId: string;
+}> | Readonly<{
+    trialEndsAt: string;
+    interval?: any;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "trialing";
+    reason?: undefined;
 }> | Readonly<{
     endsAt: string;
     interval?: any;
@@ -125,6 +137,14 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     state: "inactive";
     teamId: string;
+}> | Readonly<{
+    trialEndsAt: string;
+    interval?: any;
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    state: "trialing";
+    reason?: undefined;
 }> | Readonly<{
     endsAt: string;
     interval?: any;

@@ -121,14 +121,26 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
 | `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period on interval/count changes only in classic mode, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
-| `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
-| `subscriptions.setQuantity(id, quantity)` | Changes seats and emits an update. |
+| `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `trialing`, `incomplete`, `incomplete_expired`, `canceled`; canceled and expired Subscriptions stay terminal. |
+| `subscriptions.setSchedule(id, scheduleId)` | Attaches an external `sub_sched_…` identity or clears it with `null`, emitting an update for transition-guard tests. |
+| `subscriptions.setQuantity(id, quantity)` | Changes a licensed seat or usage quantity and emits an update. |
 | `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits an active update. |
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
 | `subscriptions.get(id)`, `customers.subscriptions(customerId)` | Inspects provider state. |
-| `clock.advance(seconds)` | Moves forward, expiring due Checkouts, pending updates and scheduled cancellations. |
+| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates, applying scheduled cancellations, and converting due trials to active. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
+
+Team Billing catalogue products declared with `trialDays` use trial Checkout through the real
+provider boundary. `checkout.complete` produces `payment_status: "no_payment_required"`
+and a `trialing` Subscription with Unix `trial_start` and `trial_end`. Advance
+`14 * 86400` seconds for a 14-day trial to emit an active Subscription update;
+calling `portal.cancelAtPeriodEnd` first emits deletion at that trial end instead.
+Price interval changes during a trial preserve its end, including Portal changes,
+managed updates, and pending-payment completion; conversion starts the new paid
+interval at the trial end.
+Use `subscriptions.failPayment` to exercise the ordinary past-due path.
+The fake models this state and protocol; it does not contact Stripe or charge money.
 
 Delivery defaults to `"auto"`. With `delivery: "manual"`, `events.pending()`
 returns undelivered events. Use `events.deliver(id?)`,

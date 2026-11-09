@@ -4,17 +4,25 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { createConnection } from 'node:net';
 import { availableParallelism } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { processes, systemMemory, descendants } from './test-resources.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const reporter = fileURLToPath(new URL('./test-reporter.mjs', import.meta.url));
+// --test-reporter is loaded through the ESM loader, which on Windows only accepts
+// file: URLs, not bare drive-letter paths; a URL form works on every platform.
+const reporterUrl = pathToFileURL(reporter).href;
 const args = process.argv.slice(2);
 const qa = args.includes('--qa');
 const option = (name, fallback) => args.find(a => a.startsWith(`--${name}=`))?.split('=').slice(1).join('=') ?? fallback;
 const deadlineMs = Number(option('timeout-ms', qa ? 7200000 : 3600000));
 const workerCap = Number(process.env.SPORADES_TEST_MAX_WORKERS ?? (qa ? 4 : 16));
 const concurrency = Math.min(workerCap, Number(option('concurrency', Math.min(qa ? 4 : 16, workerCap, availableParallelism()))));
+// Measured: the six largest measured trees peak at 3.3 GiB together against the
+// 6,144 MiB cap, so the memory lane runs two at a time by default and the RSS
+// watchdog (not a fixed concurrency of one) is what bounds it. Serialising this
+// lane was 70% of the gate's wall time.
+const heavyConcurrency = Math.min(workerCap, Number(option('heavy-concurrency', process.env.SPORADES_TEST_HEAVY_CONCURRENCY ?? 2)));
 const memoryLimitMb = Number(option('memory-limit-mb', process.env.SPORADES_TEST_MEMORY_LIMIT_MB ?? (qa ? 6144 : Infinity)));
 const freeFloorMb = Number(option('free-memory-floor-mb', process.env.SPORADES_TEST_FREE_MEMORY_FLOOR_MB ?? (qa ? 1536 : 0)));
 const report = option('report', null);
@@ -277,6 +285,7 @@ try {
   sampleMemory();
   memoryTimer = setInterval(sampleMemory, 100);
   if (!Number.isFinite(deadlineMs) || deadlineMs <= 0 || !Number.isInteger(concurrency) || concurrency < 1) throw Error('Positive timeout-ms and integer concurrency required');
+  if (!Number.isInteger(heavyConcurrency) || heavyConcurrency < 1) throw Error('Positive integer heavy-concurrency required');
   timer = setTimeout(() => {
     sampleMemory();
     if (resourceExhaustion) return;
@@ -407,7 +416,7 @@ try {
     ];
     const priority = file => { const i = slow.indexOf(path.basename(file)); return i < 0 ? slow.length : i; };
     parallel.sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
-    for (const [name, files, limit] of [['parallel', parallel, concurrency], ['serial memory-heavy', heavy, 1], ['serial shared-service', serial, 1]]) {
+    for (const [name, files, limit] of [['parallel', parallel, concurrency], ['memory-heavy', heavy, heavyConcurrency], ['serial shared-service', serial, 1]]) {
       if (!files.length || timedOut || interrupted || resourceExhaustion) continue;
       console.log(`LANE ${name}: ${files.length} files; concurrency=${limit}`);
       currentLane = { name, concurrency: limit, peakRssMb: 0, started: performance.now() };
@@ -418,7 +427,7 @@ try {
       await Promise.all(Array.from({ length: Math.min(limit, files.length) }, async () => {
         while (next < files.length && !timedOut && !interrupted && !resourceExhaustion) {
           const file = files[next++];
-          const code = await command(process.execPath, ['--test', '--test-concurrency=1', `--test-reporter=${reporter}`, file], { structured: true, file });
+          const code = await command(process.execPath, ['--test', '--test-concurrency=1', `--test-reporter=${reporterUrl}`, file], { structured: true, file });
           if (code && !resourceExhaustion && !completed.get(file)?.failed && !partial.get(file)?.failed) infrastructureFailures++;
         }
       }));

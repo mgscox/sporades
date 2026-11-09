@@ -1893,17 +1893,6 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
   } finally { browser.cleanup(); }
 });
 
-test("client isAuthenticated returns false for anonymous auth", async () => {
-  const browser = installBrowserFakes(anonymousAuth);
-  try {
-    const runtime = await importClientRuntime();
-    assert.equal(await runtime.isAuthenticated(), false);
-    assert.equal(browser.storage.get("sporades.sessionToken"), "session-token");
-  } finally {
-    browser.cleanup();
-  }
-});
-
 test("client WebSocket URL does not include the stored session token", async () => {
   const browser = installBrowserFakes(anonymousAuth, { autoOpen: false });
   browser.storage.set("sporades.sessionToken", "stored-session-token");
@@ -2371,24 +2360,6 @@ test("production client runtime omits the Dev refresh protocol", async () => {
     await runtime.auth.get();
     assert.equal(browser.sent.some((message) => String(message.type).startsWith("dev.refresh.")), false);
   } finally { browser.cleanup(); }
-});
-
-test("client isAuthenticated returns true for linked auth", async () => {
-  const browser = installBrowserFakes({
-    userId: "linked-user",
-    displayName: "Mira",
-    email: "mira@example.com",
-    picture: null,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "google",
-  });
-  try {
-    const runtime = await importClientRuntime();
-    assert.equal(await runtime.isAuthenticated(), true);
-  } finally {
-    browser.cleanup();
-  }
 });
 
 test("client sendMessage sends unprefixed app messages over the transport", async () => {

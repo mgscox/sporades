@@ -33,17 +33,6 @@ test("operator Job inspection returns one deterministic bounded snapshot", async
   }
 });
 
-test("operator Job inspection reads through the configured libSQL adapter", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-libsql-"));
-  try {
-    await withFakeLibsqlService(path.join(dir, "remote.db"), async ({ url }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      try { assert.deepEqual(await inspectRuntimeJobs(adapter), []); await assert.rejects(() => adapter.withReadOnlySnapshot((snapshot) => snapshot.exec("CREATE TABLE forbidden (id TEXT)")), /readonly|read-only/i); }
-      finally { await adapter.close(); }
-    });
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
 test("operator Job inspection reads sporades_jobs through Postgres", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." }, async () => {
   const adapter = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
   try {

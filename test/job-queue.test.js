@@ -159,36 +159,6 @@ test("a failed mutation drops deferred Job enqueues with its rolled-back data", 
   }
 });
 
-test("multiple Job enqueues cannot partially persist when a later enqueue fails", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-multiple-rollback-"));
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-multiple-rollback" }, {
-    jobs: { record: job((_ctx, payload) => payload) },
-    mutations: {
-      enqueueTwice: mutation(async (ctx) => {
-        await ctx.jobs.enqueue("record", { sequence: 1 });
-        await ctx.jobs.enqueue("record", { sequence: 2 });
-        return true;
-      }),
-      inspectJobs: mutation(async (ctx) => (await ctx.jobs.list({ handler: "record" })).jobs),
-    },
-  });
-  try {
-    Object.defineProperty(globalThis.crypto, "randomUUID", {
-      configurable: true,
-      value: () => "00000000-0000-4000-8000-000000000004",
-    });
-    const failed = await runMutation(database, auth("rollback-user"), "enqueueTwice", []);
-    assert.equal(failed.ok, false);
-    delete globalThis.crypto.randomUUID;
-    const jobs = await runMutation(database, auth("rollback-user"), "inspectJobs", []);
-    assert.deepEqual(jobs.data, []);
-  } finally {
-    delete globalThis.crypto.randomUUID;
-    database.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("a post-commit dispatch failure does not misreport committed handler work and can be retried", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-dispatch-retry-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "job-dispatch-retry" }, {

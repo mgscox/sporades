@@ -3,8 +3,8 @@ import { teamBillingPriceById } from "./team-billing-runtime.js";
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
-import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
-import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
+import { settleVerifiedTeamBillingTarget, stageTeamBillingUsageRepair, stageAcknowledgedTeamBillingUsageTransitionRepair } from "./team-billing-management.js";
+import { teamBillingStoredSubscriptionSemantics, teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 
 type LooseRecord = Record<string, any>;
@@ -157,7 +157,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
   }
   const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] " +
+    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] " +
     "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?",
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId)
@@ -176,29 +176,45 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
   )).get(teamId))?.count ?? 0);
-  const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
+  const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
+  const product = database.teamBillingDefinition.catalogue[normalized.productKey];
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }
-  if (existing && !deleted && !winsRatchet(normalized.periodStart, event.occurredAt, normalized.rank,
+  const addsScheduleAtTie = existing && normalized.hasSchedule === 1 && existing.hasSchedule !== 1
+    && normalized.periodStart === existing.currentPeriodStart && event.occurredAt === existing.lastEventOccurredAt
+    && normalized.rank === Number(existing.lastEventRank ?? 0);
+  if (existing && normalized.terminalLatch !== 1 && !addsScheduleAtTie && !winsRatchet(normalized.periodStart, event.occurredAt, normalized.rank,
     existing.currentPeriodStart, existing.lastEventOccurredAt, Number(existing.lastEventRank ?? 0))) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  if (product.quantity.kind === "usage" && normalized.quantity < (product.quantity.minimum ?? 1)
+    && normalized.terminalLatch !== 1) {
+    if (existing?.providerSubscriptionItemId === normalized.itemId && !deleted && !normalized.cancelAtPeriodEnd) {
+      const scoped = { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database };
+      if (existing.productKey === normalized.productKey && existing.providerPriceId === normalized.priceId) {
+        await stageTeamBillingUsageRepair(scoped, teamId);
+      } else {
+        await stageAcknowledgedTeamBillingUsageTransitionRepair(scoped, teamId, normalized.productKey);
+      }
+    }
+    throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   }
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity,
-      normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0);
+      normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt,
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule);
   } else {
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [billingMode] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
-      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?",
+      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ? WHERE [providerSubscriptionId] = ?",
     )).run(normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state,
-      normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0, subscriptionId);
+      normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt,
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, subscriptionId);
   }
   if (operation) {
     await tx.prepare(tx.dialect.sql(
@@ -212,7 +228,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 
-function normalizeSubscription(definition: LooseRecord, object: LooseRecord, operation: LooseRecord | null, mode: string, eventType: string, teamId: string, desiredTeamQuantity: number | null) {
+function normalizeSubscription(definition: LooseRecord, object: LooseRecord, operation: LooseRecord | null, mode: string, eventType: string, teamId: string, desiredTeamQuantity: number | null, existing = false) {
   const billingMode = object.billing_mode?.type ?? null;
   if (object.billing_mode !== undefined && !["classic", "flexible"].includes(billingMode)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   const items = object.items?.data;
@@ -237,7 +253,8 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity
     || (operation.providerPriceId && operation.providerPriceId !== priceId))) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
-  if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
+  if (product.quantity.kind !== "fixed" && item.quantity < (product.quantity.minimum ?? 1)
+    && !(existing && product.quantity.kind === "usage")) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   }
   if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null
@@ -257,19 +274,31 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   }
   const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
   const deleted = eventType === "customer.subscription.deleted";
-  let state: "active" | "past-due" | "cancelled";
+  const trialStart = unixTimestamp(object.trial_start);
+  const trialEndsAt = unixTimestamp(object.trial_end);
+  if (object.trial_end != null && (!trialStart || !trialEndsAt || trialEndsAt <= trialStart)) {
+    throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+  }
+  let state: "trialing" | "active" | "past-due" | "cancelled";
   if (deleted) {
     if (object.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     state = "cancelled";
+  } else if (object.status === "incomplete_expired") {
+    state = "cancelled";
+  } else if (object.status === "trialing") {
+    if (!trialEndsAt) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    state = "trialing";
   } else if (object.status === "active") {
     state = "active";
   } else if (object.status === "past_due" || object.status === "unpaid") {
     state = "past-due";
   } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  const semantics = teamBillingSubscriptionSemantics(eventType as any, state, cancel);
+  const semantics = object.status === "incomplete_expired"
+    ? teamBillingStoredSubscriptionSemantics("cancelled", cancel)
+    : teamBillingSubscriptionSemantics(eventType as any, state, cancel);
   if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  return { productKey, priceId, billingMode, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
-    cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
+  return { productKey, priceId, billingMode, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
+    cancelAtPeriodEnd: cancel ? 1 : 0, hasSchedule: object.schedule == null ? 0 : 1, kind: semantics.kind, rank: semantics.rank, terminalLatch: semantics.terminalLatch };
 }
 
 async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mode: string) {

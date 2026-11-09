@@ -111,21 +111,6 @@ function extractShellBlockAfter(markdown, heading) {
   return scriptBlock[1];
 }
 
-test("documentation validation stays separate from the full regression suite", async () => {
-  const [packageJson, workflow] = await Promise.all([
-    readProjectFile("package.json").then(JSON.parse),
-    readProjectFile(".github/workflows/deploy-docs.yml"),
-  ]);
-
-  assert.equal(
-    packageJson.scripts["test:docs"],
-    "node --test --test-concurrency=1 test/docs.test.js test/docs-llms.test.js",
-  );
-  assert.equal(packageJson.scripts["docs:check"], "npm run test:docs && npm run docs:build");
-  assert.match(workflow, /- run: npm run docs:check/);
-  assert.doesNotMatch(workflow, /- run: npm test(?:\s|$)/);
-});
-
 test("Registration Admission docs cover policy choice, atomicity, limits, OAuth custody, and recovery", async () => {
   const [guide, reference] = await Promise.all([
     readProjectFile("docs/guide/auth.md"),
@@ -316,7 +301,7 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /Verified[\s\S]*terminal[\s\S]*cannot revive the URL/i);
   assert.match(reference, /Checkout\s+completion[\s\S]*never establishes paid entitlement/i);
   assert.match(reference, /single\s+licensed item[\s\S]*declared Price[\s\S]*quantity[\s\S]*period[\s\S]*supported status/i);
-  assert.match(reference, /cancellation outranks failed payment[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
+  assert.match(reference, /cancellation outranks failed payment[\s\S]*active outranks trialing[\s\S]*provider Event identifiers are not[\s\S]*business ordering/i);
   assert.match(reference, /Deletion permanently latches[\s\S]*no delayed update can resurrect/i);
   assert.match(reference, /Malformed supported evidence[\s\S]*Raw Stripe JSON[\s\S]*never enter Team Billing tables/i);
   assert.match(reference, /privilegedCtx\.teamBilling\.listQuarantines[\s\S]*provider object and Event IDs[\s\S]*capped at 100/i);

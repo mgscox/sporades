@@ -90,9 +90,12 @@ The repository currently includes:
   exposes neither a generic payload API nor provider identifiers in its logs.
 - An optional headless Team Billing declaration for Capsules that bill an
   explicit Team. The declaration names 1-32 stable product keys, exact distinct
-  Stripe sandbox/live Price bindings, fixed or accepted-Team-member quantity
-  with an optional positive integer billable-seat floor,
-  and one transaction-bound read-only authorization policy. Its exact-Team
+  Stripe sandbox/live Price bindings, fixed, accepted-Team-member, or exact
+  usage quantity with an optional positive integer floor, and one
+  transaction-bound read-only authorization policy. Usage declares a meter and
+  optional maximum, reads a required expiring read-only Capsule hook under the
+  Team lifecycle lock, and stages prorated durable convergence in resource
+  transactions that acquire that lock. The authorization policy's exact-Team
   `countMembers` inspection returns `{ totalCount, adminCount }` from the same
   lifecycle-locked snapshot for Capsule-owned staff limits. Sporades first
   requires the current linked caller to remain an administrator of the exact
@@ -111,7 +114,12 @@ The repository currently includes:
   mode configuration on every attempt, permits only Price switches within one
   compatible quantity-policy configuration, requires period-end cancellation,
   and rejects quantity editing or mutable Dashboard defaults. Cross-policy
-  switches use durable `teamBilling.requestPlanTransition(...)`: Sporades
+  switches use durable `teamBilling.requestPlanTransition(...)`; opt-in
+  `transitions.allowSamePolicy` also admits same-policy and retained legacy
+  source switches. Transition authorization receives the verified source product
+  and interval. Cancelling, past-due, trialing and external-schedule states
+  refuse with distinct safe codes, and Checkout refuses non-terminal
+  Subscriptions. Sporades
   reauthorizes the original actor, derives the exact current Team count where
   required, and changes the Subscription item Price and quantity together with
   stable proration and idempotency inputs. Team-counted Plans automatically

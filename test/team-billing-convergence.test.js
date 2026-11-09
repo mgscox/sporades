@@ -119,6 +119,87 @@ test("verified Team Billing observations converge with semantic ratchets and saf
   }
 });
 
+test("verified trial entitlement exposes its end and converges to active, past-due or cancelled", async () => {
+  for (const target of ["active", "past_due", "canceled"]) {
+    const fixture = await openFixture();
+    try {
+      const trial = subscriptionEvent(`evt_trial_${target}`, "customer.subscription.created", { operationId, status: "trialing" });
+      trial.raw.data.object.trial_start = periodStart;
+      trial.raw.data.object.trial_end = periodStart + 14 * 86400;
+      trial.raw.data.object.items.data[0].current_period_end = periodStart + 14 * 86400;
+      assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, trial), { applied: true });
+      assert.deepEqual(await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId), {
+        state: "trialing", teamId, productKey: "agency", quantity: 2,
+        trialEndsAt: new Date((periodStart + 14 * 86400) * 1000).toISOString(),
+      });
+      const next = subscriptionEvent(`evt_trial_end_${target}`, target === "canceled" ? "customer.subscription.deleted" : "customer.subscription.updated", {
+        status: target, occurred: periodStart + 14 * 86400,
+        periodStart: periodStart + 14 * 86400, periodEnd: periodStart + 44 * 86400,
+      });
+      await applyVerifiedTeamBillingObservation(fixture.database, next);
+      assert.equal((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state,
+        target === "past_due" ? "past-due" : target === "canceled" ? "cancelled" : "active");
+      await applyVerifiedTeamBillingObservation(fixture.database, { ...trial, providerEventId: `evt_late_trial_${target}` });
+      assert.notEqual((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state, "trialing");
+    } finally { fixture.close(); }
+  }
+});
+
+test("tied active and trial observations follow the entitled-state ordering in either delivery order", async () => {
+  for (const statuses of [["active", "trialing"], ["trialing", "active"]]) {
+    const fixture = await openFixture();
+    try {
+      for (const status of statuses) {
+        const event = subscriptionEvent(`evt_tied_${status}`, "customer.subscription.updated", {
+          operationId, status, occurred: periodStart + 10,
+        });
+        if (status === "trialing") {
+          event.raw.data.object.trial_start = periodStart;
+          event.raw.data.object.trial_end = periodStart + 14 * 86400;
+        }
+        await applyVerifiedTeamBillingObservation(fixture.database, event);
+      }
+      assert.equal((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state, "active");
+    } finally { fixture.close(); }
+  }
+});
+
+test("tied schedule observations retain the transition guard in either delivery order", async () => {
+  for (const schedules of [[null, "sub_sched_external"], ["sub_sched_external", null]]) {
+    const fixture = await openFixture();
+    try {
+      for (const [index, schedule] of schedules.entries()) {
+        const event = subscriptionEvent(`evt_schedule_tie_${index}`, "customer.subscription.updated", { operationId });
+        event.raw.data.object.schedule = schedule;
+        await applyVerifiedTeamBillingObservation(fixture.database, event);
+      }
+      assert.equal(fixture.getSubscription().hasSchedule, 1);
+    } finally { fixture.close(); }
+  }
+});
+
+test("below-floor terminal usage evidence retains its latch without quantity repair", async () => {
+  const fixture = await openFixture({ memberCount: 6, operationQuantity: 6 });
+  try {
+    await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_usage_seed", "customer.subscription.created", { operationId, quantity: 6 }));
+    fixture.definition.catalogue.agency.quantity = { kind: "usage", meter: "venues", minimum: 6 };
+    let usageReads = 0;
+    fixture.database.runTeamBillingUsage = () => { usageReads++; return { venues: 7 }; };
+    let repairs = 0;
+    fixture.database.enqueueTeamBillingSeatConvergenceJob = async () => { repairs++; };
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_usage_expired", "customer.subscription.updated", {
+        status: "incomplete_expired", quantity: 5, occurred: periodStart + 20,
+      })), { applied: true });
+    assert.equal(fixture.getSubscription().state, "cancelled");
+    assert.equal(fixture.getSubscription().terminalLatch, 1);
+    assert.notEqual((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state, "active");
+    assert.equal(usageReads, 0);
+    assert.equal(repairs, 0);
+  } finally { fixture.close(); }
+});
+
 test("malformed, catalogue-conflicting, multi-item, and association-conflicting evidence quarantines once", async () => {
   const fixture = await openFixture();
   try {
@@ -485,17 +566,18 @@ function verifiedEvent(providerEventId, type, created, object) {
 
 function createFocusedTables(adapter) {
   adapter.exec("CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
-  adapter.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
+  adapter.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [trialEndsAt] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0, [hasSchedule] INTEGER NULL)");
   adapter.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT, [quantity] INTEGER, [continuationUrl] TEXT, [continuationExpiresAt] TEXT, [terminalObservedAt] TEXT, [providerCustomerId] TEXT, [providerSubscriptionId] TEXT)");
   adapter.exec("CREATE TABLE [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT, [eventRank] INTEGER, [outcome] TEXT, [safeReason] TEXT)");
 }
 
 async function focusedProjection(adapter, definition, selectedTeamId) {
-  const rows = adapter.prepare("SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due')").all(selectedTeamId);
+  const rows = adapter.prepare("SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'past-due')").all(selectedTeamId);
   if (rows.length > 1) return { state: "attention-required", teamId: selectedTeamId, reason: "provider-state-ambiguous" };
   const row = rows[0] ?? adapter.prepare("SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC LIMIT 1").get(selectedTeamId);
   if (!row) return { state: "inactive", teamId: selectedTeamId };
   const common = { teamId: selectedTeamId, productKey: row.productKey, quantity: row.quantity };
+  if (row.state === "trialing") return { state: "trialing", ...common, trialEndsAt: row.trialEndsAt };
   if (row.state === "cancelled") return { state: "cancelled", ...common };
   if (row.state === "past-due") return { state: "past-due", ...common };
   return row.cancelAtPeriodEnd

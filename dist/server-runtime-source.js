@@ -45,7 +45,7 @@ import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./use
 import { countAcceptedTeamMembers, countTeamAdmins, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
-import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
+import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, prepareTeamBillingUsageChange, } from "./team-billing-management.js";
 import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, performTeamBillingErasure, prepareTeamBillingErasure, repairTeamBillingErasureStateAtStartup, settleExhaustedTeamBillingErasureJob, } from "./team-billing-erasure.js";
 // Batch 8. Nine names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
@@ -82,7 +82,7 @@ const mutationResultsWithWrites = new WeakSet();
 // ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
 // move their live connections off the old actor before any subscription refreshes.
 const revokedHumanSessionsByMutationResult = new WeakMap();
-const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "team-billing.usage", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -962,6 +962,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
             ? function (transaction, auth, input, signal) {
                 return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
+            } : undefined,
+        runTeamBillingUsage: teamBillingDefinition?.usage
+            ? function (transaction, input) {
+                return runBoundedTeamPolicy(this, transaction, {}, input, undefined, teamBillingDefinition.usage, "team-billing.usage");
             } : undefined,
         runTeamBillingAuthority: teamBillingDefinition
             ? async function (transactionAdapter, auth, input) {
@@ -4005,6 +4009,14 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         __pendingLogWrites: pendingLogWrites,
     };
     bindPostgresAclDependencyLocking(transactionDatabase, adapter);
+    if (database.teamBillingDefinition?.usage)
+        transactionDatabase.prepareTeamBillingUsageChange = (teamId) => {
+            const context = handlerContextByDatabase.get(transactionDatabase)?.();
+            const usageDatabase = Object.assign(Object.create(transactionDatabase), {
+                scheduleTeamBillingJobDispatch: () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase, context),
+            });
+            return prepareTeamBillingUsageChange(usageDatabase, teamId);
+        };
     transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
     transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase);
     if (typeof database.log?.withDatabase === "function") {
@@ -4771,7 +4783,7 @@ async function runBoundedTeamPolicy(database, transactionAdapter, auth, input, s
             failOnReadError: true,
         }, async (db, assertActive) => {
             const evaluation = Promise.resolve().then(() => policy(Object.freeze({
-                app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+                app: root.app, ...(purpose === "team-billing.usage" ? {} : { auth: Object.freeze({ ...auth }) }), db, signal: controller.signal,
             }), input));
             const aborted = new Promise((_, reject) => {
                 const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));
@@ -6010,11 +6022,12 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     type: "error",
                     data: null,
                     error: {
-                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE"].includes(error?.code)
+                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS"].includes(error?.code)
                             ? error.code : "TEAM_BILLING_DENIED",
                         message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
                             ? "Team Checkout request conflicts with existing work."
-                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : "Team Checkout is unavailable.",
+                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active."
+                                : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
                         hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
                             ? "Use a new request identifier for a different product."
                             : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
@@ -6056,7 +6069,8 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
             }
             catch (error) {
-                const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"].includes(error?.code)
+                const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
+                    "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_SUBSCRIPTION_TRIALING", "TEAM_BILLING_UNKNOWN_SCHEDULE"].includes(error?.code)
                     ? error.code : "TEAM_BILLING_DENIED";
                 sendJson(client, {
                     id: message.id ?? null,

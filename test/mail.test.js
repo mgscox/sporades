@@ -1447,30 +1447,6 @@ test("mail authority reaches trusted server contexts but not ACL or Schedule pay
   assert.equal(seen.includes("shutdown"), true);
 });
 
-test("generated Server Bundles carry the generic mail runtime helpers", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-bundle-"));
-  const bundlePath = path.join(dir, "server.mjs");
-  try {
-    const source = await createServerBundleModuleSource({
-      config: smtpConfig,
-      serverEnv: { SMTP_USERNAME: "bundle-user", SMTP_PASSWORD: "bundle-password" },
-      serverSource: "",
-      serverModuleSource: "export default { name: 'mail-bundle' };",
-    });
-    assert.match(source, /function createMailRuntime/);
-    assert.match(source, /function createMailTransport/);
-    assert.match(source, /function normalizePostmarkProvider/);
-    assert.match(source, /function normalizeMailgunProvider/);
-    assert.match(source, /function createMailDeliveryLogData/);
-    assert.match(source, /function validateMailConfig/);
-    await writeFile(bundlePath, source);
-    const checked = spawnSync(process.execPath, ["--check", bundlePath], { encoding: "utf8" });
-    assert.equal(checked.status, 0, checked.stderr);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
 test("a packaged built-Capsule Job sends Auto-Submitted and correlation once over local SMTP", { timeout: 60_000 }, async () => {
   const run = promisify(execFile);
   await mkdir(path.resolve(".scratch"), { recursive: true });

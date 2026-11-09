@@ -59,7 +59,7 @@ export const CONFORMANCE_SURFACE = {
 
         await adapter.ensureTeamBillingStorage();
         await adapter.prepare(sql(
-          "UPDATE [sporades_team_billing_subscriptions] SET [providerSubscriptionItemId] = 'si_private', [currentPeriodStart] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'cancelled', [lastEventRank] = 50, [terminalLatch] = 1 WHERE [id] = 'local-sub'",
+          "UPDATE [sporades_team_billing_subscriptions] SET [providerSubscriptionItemId] = 'si_private', [currentPeriodStart] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'cancelled', [lastEventRank] = 50, [terminalLatch] = 1, [hasSchedule] = 1 WHERE [id] = 'local-sub'",
         )).run(NOW, NOW);
         await adapter.prepare(sql(
           "UPDATE [sporades_team_billing_operations] SET [providerSubscriptionId] = 'sub_private' WHERE [id] = 'operation-1'",
@@ -79,7 +79,7 @@ export const CONFORMANCE_SURFACE = {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 1, table);
         }
         assert.equal(await count(adapter,
-          "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionItemId] = 'si_private' AND [currentPeriodStart] = ? AND [lastEventRank] = 50 AND [terminalLatch] = 1", NOW), 1);
+          "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionItemId] = 'si_private' AND [currentPeriodStart] = ? AND [lastEventRank] = 50 AND [terminalLatch] = 1 AND [hasSchedule] = 1", NOW), 1);
         assert.equal(await count(adapter,
           "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_operations] WHERE [providerSubscriptionId] = 'sub_private'"), 1);
         assert.equal(await count(adapter,

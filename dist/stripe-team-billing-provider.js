@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 /** Internal purpose-specific provider seam for the headless Team Checkout Job. */
 export function createStripeTeamBillingProvider(options) {
     const config = options.config;
@@ -27,7 +28,8 @@ export function createStripeTeamBillingProvider(options) {
                     client_reference_id: input.businessReference,
                     expires_at: input.providerExpiresAt,
                     metadata: { sporades_team_billing_operation: input.operationId },
-                    subscription_data: { metadata: { sporades_team_billing_operation: input.operationId } },
+                    subscription_data: { metadata: { sporades_team_billing_operation: input.operationId },
+                        ...(input.trialDays === undefined ? {} : { trial_period_days: input.trialDays }) },
                     ...(input.customerId ? { customer: input.customerId } : {}),
                 }, { idempotencyKey: input.idempotencyKey });
             }
@@ -96,6 +98,11 @@ export function createStripeTeamBillingProvider(options) {
             }
             throwIfAborted(options.signal);
             attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
+            if (input.operationKind === "plan-transition") {
+                const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
+                if (refusal)
+                    throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
+            }
             let updated;
             try {
                 updated = await stripe.subscriptions.update(input.subscriptionId, {
@@ -152,7 +159,8 @@ export function createStripeTeamBillingProvider(options) {
                         client_reference_id: recovery.businessReference,
                         expires_at: recovery.providerExpiresAt,
                         metadata: { sporades_team_billing_operation: recovery.operationId },
-                        subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId } },
+                        subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId },
+                            ...(recovery.trialDays === undefined ? {} : { trial_period_days: recovery.trialDays }) },
                         ...(recovery.customerId ? { customer: recovery.customerId } : {}),
                     }, { idempotencyKey: recovery.idempotencyKey });
                 }
@@ -504,12 +512,13 @@ function throwProviderOperationFailure(error) {
 }
 function validateInput(input) {
     const required = ["businessReference", "cancelPath", "idempotencyKey", "mode", "operationId", "priceId", "productKey", "providerExpiresAt", "quantity", "successPath", "teamId"];
-    const keys = Object.keys(input ?? {}).filter((key) => key !== "customerId").sort();
+    const keys = Object.keys(input ?? {}).filter((key) => key !== "customerId" && key !== "trialDays").sort();
     if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== required.sort().join("\0")
         || input.mode !== "subscription" || !validUuid(input.operationId) || input.businessReference !== input.operationId
         || !validUuid(input.teamId) || typeof input.productKey !== "string"
         || typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(input.priceId)
         || !Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 999_999
+        || (input.trialDays !== undefined && (!Number.isSafeInteger(input.trialDays) || input.trialDays < 1 || input.trialDays > 90))
         || !Number.isInteger(input.providerExpiresAt)
         || !validReturnPath(input.successPath) || !validReturnPath(input.cancelPath)
         || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255

@@ -4,6 +4,12 @@ export declare const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing
 export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any): Promise<any>;
 /** Called after a membership transaction commits. It performs no provider I/O. */
 export declare function stageTeamBillingMembershipChange(database: LooseRecord, teamId: any, effectiveAt?: number): Promise<any>;
+/** Repair only an already-associated usage Subscription; quarantined evidence grants no entitlement. */
+export declare function stageTeamBillingUsageRepair(database: LooseRecord, teamId: string): Promise<any>;
+/** Only an acknowledged durable Plan target authorizes repair at a different usage Price. */
+export declare function stageAcknowledgedTeamBillingUsageTransitionRepair(database: LooseRecord, teamId: string, productKey: string): Promise<any>;
+/** Called only after lifecycle admission, before the Capsule's resource reads/writes. */
+export declare function prepareTeamBillingUsageChange(database: LooseRecord, teamId: string): Promise<(() => Promise<void>) | undefined>;
 export declare function performTeamBillingPlanTransition(database: LooseRecord, context: LooseRecord, payload: any): Promise<{
     superseded: boolean;
     failed?: undefined;

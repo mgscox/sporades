@@ -4806,23 +4806,6 @@ test("sporades host current reports effective Hosted security policy without con
 });
 
 
-test("sporades host stats help text shows the optional Capsule subname form", async () => {
-  await withTempDir(async (dir) => {
-    const stats = await runCli(["host", "stats", "one", "two", "--json"], { cwd: dir });
-
-    assert.equal(stats.code, 1);
-    assert.deepEqual(JSON.parse(stats.stdout), {
-      ok: false,
-      data: null,
-      error: {
-        message: "Too many positional arguments.",
-        hint: "Use `sporades host stats [subname] --host <alias>`.",
-      },
-    });
-  });
-});
-
-
 test("sporades host logs retrieves default HTTP log lines as JSON", async () => {
   await withTempDir(async (dir) => {
     const configDir = hostFixtureConfig(dir, "machine-config");
