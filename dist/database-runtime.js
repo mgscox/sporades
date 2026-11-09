@@ -1569,6 +1569,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     }
                     begun = true;
                     const result = await fn(transaction);
+                    await runTransactionBeforeCommitChecks(transaction);
                     beforeCommit?.(transaction);
                     revokeTransactionScopedAdapter(transaction);
                     commitIssued = true;
@@ -2021,6 +2022,7 @@ export async function createPostgresDatabaseAdapter(options) {
                 });
                 try {
                     const result = await fn(transaction);
+                    await runTransactionBeforeCommitChecks(transaction);
                     await beforeCommit?.(transaction);
                     revokeTransactionScopedAdapter(transaction);
                     commitIssued = true;

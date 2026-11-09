@@ -4055,6 +4055,9 @@ function bindOrdinaryJobResourceContext(database, context, claim, privileged = f
     const scopeLogEvents = new WeakMap();
     return bindJobResources(database, context, claim, {
         privileged,
+        createTeams(adapter, scoped) {
+            return createPrivilegedTeamsApi(createTransactionDatabase(database, adapter), () => scoped);
+        },
         createContext(adapter, signal) {
             const scopedDatabase = createTransactionDatabase(database, adapter);
             // Do not let ACL denials or app logs write outside the owning transaction.
