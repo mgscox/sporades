@@ -4,6 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
+import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
 import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
@@ -43,9 +44,8 @@ export async function requestTeamBillingPlanTransition(
       return planOperationResult(database, teamId, requestId, productKey, repeated);
     }
     const subscription = await currentSubscription(transaction, teamId);
-    const refusal = transitionRefusal(subscription);
-    // An explicit resume clears a scheduled cancellation in the same update.
-    if (refusal && !(resume === true && refusal === "TEAM_BILLING_SUBSCRIPTION_CANCELLING")) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
+    const refusal = transitionRefusal(subscription, resume === true);
+    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
     const currentProduct = definition.catalogue[subscription.productKey];
     const targetProduct = definition.catalogue[productKey];
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
@@ -97,7 +97,7 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
     if (!force && !existing && subscription.quantity === quantity) return Object.freeze({ staged: false as const });
     const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
       teamId, kind: existing.kind, operationId: existing.operationId, targetProductKey: existing.targetProductKey,
-      targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt,
+      targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt, resume: existing.resume,
     } : {
       teamId, kind: "seat-convergence", operationId: null, targetProductKey: subscription.productKey,
       targetQuantity: quantity, effectiveAt,
@@ -130,7 +130,7 @@ export async function stageAcknowledgedTeamBillingUsageTransitionRepair(database
     await assertTeamBillingErasureInactive(database, transaction, teamId);
     const replacement = await stageDesired(transaction, database, {
       teamId, kind: desired.kind, operationId: desired.operationId, targetProductKey: productKey,
-      targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database),
+      targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
     }, true);
     await enqueueIntent(database, transaction, replacement);
     enqueued = true;
@@ -189,8 +189,8 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     const price = desired.targetPriceId ? teamBillingPriceById(binding, desired.targetPriceId) : teamBillingPrice(binding, undefined);
     if (!price) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
     if (kind === "plan-transition") {
-      const refusal = transitionRefusal(subscription);
-      if (refusal && !(desired.resume === 1 && refusal === "TEAM_BILLING_SUBSCRIPTION_CANCELLING")) {
+      const refusal = transitionRefusal(subscription, desired.resume === 1);
+      if (refusal) {
         return attention(transaction, database, desired, refusal);
       }
       // Verified target usage can still drift after a cross-policy or interval switch.
@@ -207,7 +207,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
       if (billableQuantity !== Number(desired.targetQuantity)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
-          targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+          targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database), resume: desired.resume,
         });
         await enqueueIntent(database, transaction, replacement);
         return { superseded: true, dispatch: true };
@@ -359,7 +359,7 @@ export async function settleVerifiedTeamBillingTarget(database: LooseRecord, acc
         // A new drift must make a new provider write, rather than replay an acknowledged Stripe key.
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind: desired.kind, operationId: desired.operationId,
-          targetProductKey: desired.targetProductKey, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database),
+          targetProductKey: desired.targetProductKey, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
         }, true);
         await enqueueIntent(database, transaction, replacement);
         enqueued = true;
@@ -579,8 +579,8 @@ async function currentSubscription(transaction: LooseRecord, teamId: string) {
   return rows[0];
 }
 
-function transitionRefusal(subscription: LooseRecord) {
-  return teamBillingTransitionRefusal(subscription.state, subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
+function transitionRefusal(subscription: LooseRecord, resume: boolean) {
+  return teamBillingTransitionRefusal(subscription.state, !resume && subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
 }
 
 async function optionalCurrentSubscription(transaction: LooseRecord, teamId: string) {
@@ -722,9 +722,10 @@ function validProviderAcknowledgement(value: any) {
 function validPaymentAction(action: any) {
   if (!action || typeof action !== "object" || Array.isArray(action)
     || Object.keys(action).sort().join("\0") !== "expiresAt\0url") return false;
-  return typeof action.url === "string" && typeof action.expiresAt === "string"
-    && /^https:\/\/invoice\.stripe\.com\/i\/[A-Za-z0-9_~=-]{4,2048}$/.test(action.url)
-    && !Number.isNaN(Date.parse(action.expiresAt));
+  return validTeamBillingHostedInvoiceUrl(action.url) && typeof action.expiresAt === "string"
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(action.expiresAt)
+    && Number.isFinite(Date.parse(action.expiresAt))
+    && new Date(action.expiresAt).toISOString() === action.expiresAt;
 }
 
 function planOperationResult(database: LooseRecord, teamId: string, requestId: string, productKey: string, operation: LooseRecord) {
@@ -736,9 +737,9 @@ function planOperationResult(database: LooseRecord, teamId: string, requestId: s
       : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required"
         : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)
           ? "provider-state-ambiguous" : "unavailable";
-    const paymentAction = reason === "payment-action-required" && operation.paymentActionExpiresAt
-      && operation.paymentActionExpiresAt > nowIso(database)
-      ? Object.freeze({ url: operation.paymentActionUrl, expiresAt: operation.paymentActionExpiresAt }) : null;
+    const action = { url: operation.paymentActionUrl, expiresAt: operation.paymentActionExpiresAt };
+    const paymentAction = reason === "payment-action-required" && validPaymentAction(action)
+      && action.expiresAt > nowIso(database) ? Object.freeze(action) : null;
     return Object.freeze({ state: "failed" as const, teamId, requestId, productKey, reason,
       ...(paymentAction ? { paymentAction } : {}) });
   }

@@ -711,8 +711,11 @@ updates the one attested Subscription item Price and quantity together using Str
 Payment action required becomes a safe failed state whose `payment-action-required`
 reason carries an expiring `paymentAction` capability: a validated
 `https://invoice.stripe.com/i/…` hosted-invoice URL plus its expiry, taken from
-the pending update. A URL on any other host is rejected before it reaches the
-app, and the capability disappears once expired. Entitlement stays on the
+the pending update. Validation accepts Stripe's account/token path
+(`/i/acct_…/…`) and optional `?s=em` email-source query, while rejecting other
+hosts, credentials, ports, fragments and other query parameters at the provider
+boundary and before returning stored capabilities. The capability disappears
+once expired. Entitlement stays on the
 applied Subscription items until the customer pays, so it is unchanged while the
 update is pending; `customer.subscription.pending_update_applied` then settles
 the same operation as done and `customer.subscription.pending_update_expired`

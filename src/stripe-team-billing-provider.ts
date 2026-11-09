@@ -1,5 +1,6 @@
 import Stripe from "stripe";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
+import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -95,9 +96,9 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
       if (input.operationKind === "plan-transition") {
-        const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
-        // An explicit resume clears a scheduled cancellation in the same update.
-        if (refusal && !(input.resume === true && refusal === "TEAM_BILLING_SUBSCRIPTION_CANCELLING")) {
+        const refusal = teamBillingTransitionRefusal(current.status,
+          input.resume !== true && (current.cancel_at_period_end === true || current.cancel_at != null), current.schedule != null);
+        if (refusal) {
           throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
         }
       }
@@ -128,6 +129,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         attestManagedSubscription(updated, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
         const pending = updated.pending_update;
         if (!Number.isSafeInteger(pending.expires_at) || pending.expires_at < 1
+          || pending.expires_at > 253_402_300_799
           || !Array.isArray(pending.subscription_items) || pending.subscription_items.length !== 1) {
           throw providerFailure(false);
         }
@@ -135,7 +137,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         // The pending update is paid on Stripe's hosted invoice page; a URL
         // from any other host is an arbitrary URL and is never surfaced.
         const invoice = updated.latest_invoice;
-        if (invoice?.object !== "invoice" || !validHostedInvoiceUrl(invoice.hosted_invoice_url)) {
+        if (invoice?.object !== "invoice" || !validTeamBillingHostedInvoiceUrl(invoice.hosted_invoice_url)) {
           throw providerFailure(false);
         }
         paymentAction = Object.freeze({
@@ -349,16 +351,6 @@ function attestManagedItem(item: LooseRecord, input: LooseRecord, acceptedPriceI
     || (requireTarget && input.targetProductId !== undefined && price.product !== input.targetProductId)) {
     throw providerFailure(false);
   }
-}
-
-function validHostedInvoiceUrl(value: any) {
-  if (typeof value !== "string") return false;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "invoice.stripe.com"
-      && !url.username && !url.password && !url.port && !url.hash && !url.search
-      && /^\/i\/[A-Za-z0-9_~=-]{4,2048}$/.test(url.pathname);
-  } catch { return false; }
 }
 
 function validCustomerId(value: any) {

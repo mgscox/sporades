@@ -175,7 +175,8 @@ and erasure races.
 `paymentActionRequired` retains the existing Subscription item Price and quantity.
 The requested item is recorded in `pending_update.subscription_items`, with a
 one-hour expiry, and a hosted `latest_invoice` carrying an
-`invoice.stripe.com` hosted-invoice URL (`paymentActionRequiredOffHost` models a
+`invoice.stripe.com/i/acct_…/test_…?s=em` hosted-invoice URL
+(`paymentActionRequiredOffHost` models a
 URL on any other host, which the real provider rejects). Signed update events
 therefore retain the existing plan/seats
 until `subscriptions.completePayment(id)` succeeds and emits

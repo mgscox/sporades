@@ -3,6 +3,7 @@ import http, { createServer } from "node:http";
 import { test } from "node:test";
 
 import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
+import { hostedInvoiceUrls, unsafeHostedInvoiceUrls } from "./support/team-billing-invoice-urls.js";
 
 const config = {
   enabled: true,
@@ -409,37 +410,35 @@ test("managed subscription updates attest current state and send one stable atom
 });
 
 test("managed subscription updates surface a bounded payment-action result without provider identifiers", async () => {
-  const hostedInvoice = { object: "invoice", hosted_invoice_url: "https://invoice.stripe.com/i/acct_test_live_hosted" };
-  for (const [paymentState, expected] of [
-    [{ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
-      pendingUpdate: { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] }, latestInvoice: hostedInvoice },
-    { ok: true, outcome: "payment-action-required",
-      paymentAction: { url: "https://invoice.stripe.com/i/acct_test_live_hosted", expiresAt: new Date(2_000_086_523 * 1000).toISOString() } }],
-    [{ status: "past_due" }, { ok: true, outcome: "payment-action-required" }],
-  ]) {
-    await withProvider(async (request, response) => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(request.method === "GET"
-        ? validManagedSubscription({ priceId: managedSubscriptionInput.targetPriceId })
-        : validManagedSubscription(paymentState)));
-    }, async (apiBaseUrl) => {
-      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
-      const result = await provider.updateManagedSubscription(managedSubscriptionInput);
-      assert.deepEqual(result, expected);
-      assert.equal(Object.isFrozen(result), true);
-      if (expected.paymentAction) assert.equal(Object.isFrozen(result.paymentAction), true);
-      assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
-    });
+  for (const url of hostedInvoiceUrls) {
+    const hostedInvoice = { object: "invoice", hosted_invoice_url: url };
+    for (const [paymentState, expected] of [
+      [{ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
+        pendingUpdate: { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] }, latestInvoice: hostedInvoice },
+      { ok: true, outcome: "payment-action-required",
+        paymentAction: { url, expiresAt: new Date(2_000_086_523 * 1000).toISOString() } }],
+      [{ status: "past_due" }, { ok: true, outcome: "payment-action-required" }],
+    ]) {
+      await withProvider(async (request, response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(request.method === "GET"
+          ? validManagedSubscription({ priceId: managedSubscriptionInput.targetPriceId })
+          : validManagedSubscription(paymentState)));
+      }, async (apiBaseUrl) => {
+        const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+        const result = await provider.updateManagedSubscription(managedSubscriptionInput);
+        assert.deepEqual(result, expected);
+        assert.equal(Object.isFrozen(result), true);
+        if (expected.paymentAction) assert.equal(Object.isFrozen(result.paymentAction), true);
+        assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
+      });
+    }
   }
 });
 
 test("pending managed updates reject any hosted-invoice URL outside invoice.stripe.com", async () => {
   for (const latestInvoice of [
-    { object: "invoice", hosted_invoice_url: "https://pay.example.test/i/hosted" },
-    { object: "invoice", hosted_invoice_url: "https://invoice.stripe.com.evil.test/i/hosted" },
-    { object: "invoice", hosted_invoice_url: "http://invoice.stripe.com/i/hosted" },
-    { object: "invoice", hosted_invoice_url: "https://invoice.stripe.com/not-i/hosted" },
-    { object: "invoice", hosted_invoice_url: "https://invoice.stripe.com/i/hosted?redirect=evil" },
+    ...unsafeHostedInvoiceUrls.map((url) => ({ object: "invoice", hosted_invoice_url: url })),
     undefined,
   ]) {
     const pending = { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] };
@@ -469,12 +468,36 @@ test("an explicit resume clears scheduled cancellation inside the same managed u
   });
 });
 
+test("resume preserves all other guards even when cancellation is also scheduled", async () => {
+  for (const [override, code] of [
+    [{ status: "past_due" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    [{ status: "unpaid" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    [{ status: "trialing" }, "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
+    [{ schedule: "sub_sched_external" }, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
+  ]) {
+    for (const cancellation of [{ cancel_at_period_end: true }, { cancel_at: 2_000_086_523 }]) {
+      let writes = 0;
+      await withProvider(async (request, response) => {
+        if (request.method === "POST") writes += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ...validManagedSubscription(), ...cancellation, ...override }));
+      }, async (apiBaseUrl) => {
+        const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+        await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resume: true }), { code });
+      });
+      assert.equal(writes, 0);
+    }
+  }
+});
+
 test("pending managed updates attest the exact requested item and preserve Subscription association checks", async () => {
   const pending = { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] };
   const invalidPending = [
     { expires_at: 2_000_086_523 },
     { ...pending, expires_at: 0 },
     { ...pending, expires_at: "2000086523" },
+    { ...pending, expires_at: Number.MAX_SAFE_INTEGER },
+    { ...pending, expires_at: 253_402_300_800 },
     { ...pending, subscription_items: [] },
     { ...pending, subscription_items: [validManagedItem(), validManagedItem()] },
     ...[
@@ -485,7 +508,8 @@ test("pending managed updates attest the exact requested item and preserve Subsc
   ];
   const current = validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14 });
   const responses = [
-    ...invalidPending.map((pendingUpdate) => ({ ...current, pending_update: pendingUpdate })),
+    ...invalidPending.map((pendingUpdate) => ({ ...current, pending_update: pendingUpdate,
+      latest_invoice: { object: "invoice", hosted_invoice_url: hostedInvoiceUrls[0] } })),
     { ...current, customer: "cus_another_team", pending_update: pending },
     { ...current, livemode: true, pending_update: pending },
     { ...current, items: { ...current.items, has_more: true }, pending_update: pending },

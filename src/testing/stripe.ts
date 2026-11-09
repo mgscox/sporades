@@ -325,7 +325,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
           subscription.latest_invoice = { id: idForInvoice(), object: "invoice", livemode: false,
             hosted_invoice_url: fault.status === "paymentActionRequiredOffHost"
-              ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/${id("in")}` };
+              ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id("in")}?s=em` };
         } else {
           applyPrice(subscription, targetPrice); item.quantity = quantity;
           subscription.pending_update = null; subscription.latest_invoice = null;

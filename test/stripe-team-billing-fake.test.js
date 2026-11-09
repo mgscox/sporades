@@ -389,7 +389,7 @@ test("real callback verification and atomic convergence accept the fake's events
   const update = updateInput(subscription, item);
   const action = await provider.updateManagedSubscription(update);
   assert.equal(action.outcome, "payment-action-required");
-  assert.match(action.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\//);
+  assert.match(action.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\/acct_[A-Za-z0-9]+\/test_[A-Za-z0-9_]+\?s=em$/);
   assert.equal(action.paymentAction.expiresAt, new Date((fake.subscriptions.get(subscription.id).pending_update.expires_at) * 1000).toISOString());
   assert.equal(Object.isFrozen(action.paymentAction), true);
   const stripe = sdk(fake);

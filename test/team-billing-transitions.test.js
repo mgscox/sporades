@@ -122,7 +122,7 @@ test('an SCA-required switch returns an expiring hosted-invoice capability and s
   const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
   assert.equal(failed.state, 'failed');
   assert.equal(failed.reason, 'payment-action-required');
-  assert.match(failed.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\//);
+  assert.match(failed.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\/acct_[A-Za-z0-9]+\/test_[A-Za-z0-9_]+\?s=em$/);
   assert.equal((await f.read()).productKey, 'basic', 'entitlement is unchanged until the pending update is applied');
   await fake.subscriptions.completePayment(subscriptionId);
   assert.equal(fake.events.pending().at(-1).type, 'customer.subscription.pending_update_applied');
