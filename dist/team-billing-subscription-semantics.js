@@ -27,10 +27,8 @@ export function teamBillingTransitionRefusal(state, cancelling, hasSchedule) {
         return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";
     if (["past-due", "past_due", "unpaid"].includes(state))
         return "TEAM_BILLING_SUBSCRIPTION_PAST_DUE";
-    if (state === "trialing")
-        return "TEAM_BILLING_SUBSCRIPTION_TRIALING";
     if (hasSchedule)
         return "TEAM_BILLING_UNKNOWN_SCHEDULE";
-    return state === "active" ? null : "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS";
+    return state === "active" || state === "trialing" ? null : "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS";
 }
 //# sourceMappingURL=team-billing-subscription-semantics.js.map
