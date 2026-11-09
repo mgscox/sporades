@@ -793,7 +793,8 @@ export type TeamLifecycleSnapshot = Readonly<{
 
 export type TeamBillingQuantityPolicy =
   | { kind: "fixed"; value: number }
-  | { kind: "team-members"; minimum?: number };
+  | { kind: "team-members"; minimum?: number }
+  | { kind: "usage"; meter: string; minimum?: number; maximum?: number };
 /** Canonical recurring interval, for example month:1 or year:1. */
 export type TeamBillingInterval = `${"day" | "week" | "month" | "year"}:${number}`;
 export type TeamBillingStripeBinding = {
@@ -850,6 +851,8 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   catalogue: Record<string, TeamBillingProductDeclaration>;
   /** Rechecked inside every operation transaction after current Team-admin admission. */
   authorize(ctx: TeamBillingAuthorityContext<Schema>, input: TeamBillingAuthorityInput): MaybePromise<TeamBillingAuthorityDecision>;
+  /** Exact cross-owner resource counts keyed by meter, including every creator in the Team. Runs under its lifecycle lock with expiring read-only data access and a five-second budget; missing, partial or invalid counts fail closed. Required for usage quantities. */
+  usage?(ctx: Readonly<{ app: AppContext; db: ReadOnlyDatabaseFromSchema<Schema>; signal: AbortSignal }>, input: Readonly<{ teamId: string }>): MaybePromise<Record<string, number>>;
   /** Trusted same-origin Checkout returns. Omit to keep Checkout unavailable while retaining read-only billing state. */
   checkout?: {
     successPath: string;
@@ -865,7 +868,7 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   };
 };
 export type CurrentUserTeamsApi = {
-  /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
+  /** Server-only: lock an administered Team through the existing mutation/endpoint transaction's commit or rollback. Call before any responsibility read/write; validate explicit recipient acceptance and the optional member's current admin role. For an active usage Plan, stages the final exact resource quantity before commit and refuses growth above its maximum. Normal ctx.db ACLs remain in force. No network calls while locked. Refusal poisons the enclosing transaction. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   list(): Promise<{ teams: TeamSummary[] }>;
   /** Creates a named Team and makes the current linked user its first admin. Linked users may belong to at most 25 Teams. Subject to the Capsule's atomic teams.admitCreate policy when declared. */
@@ -909,7 +912,7 @@ export type CurrentUserTeamsApi = {
  * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
-  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Privileged SQLite/PostgreSQL Jobs can instead use scope.teams.lockLifecycle inside resources.run. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
+  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Privileged SQLite/PostgreSQL Jobs can instead use scope.teams.lockLifecycle inside resources.run. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. Active usage Plans stage the final exact count before commit and refuse growth above their maximum. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   /** Returns the exact accepted-membership total for an existing Team. */
   countMembers(teamId: string): Promise<TeamMemberCountResult>;

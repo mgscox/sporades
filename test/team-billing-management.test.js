@@ -26,10 +26,44 @@ const {
   settleExhaustedTeamBillingManagementJob,
   settleVerifiedTeamBillingTarget,
   stageTeamBillingMembershipChange,
+  stageTeamBillingUsageRepair,
+  stageAcknowledgedTeamBillingUsageTransitionRepair,
 } = management;
 
 const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actor = { userId: "admin", isAuthenticated: true, isGuest: false, provider: "test" };
+
+test("fixed subscriptions without desired work do not require a surviving Team during repair", async () => {
+  const fixture = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    fixture.adapter.prepare("DELETE FROM [sporades_teams] WHERE [id] = ?").run(teamId);
+    assert.deepEqual(await repairTeamBillingDesiredState(fixture.database), { queued: 0 });
+    assert.equal(fixture.providerCalls.length, 0);
+  } finally { fixture.close(); }
+});
+
+test("usage drift repair never revives an unacknowledged or denied Plan intent", async () => {
+  for (const source of ["studio", "agency"]) {
+    const fixture = openFixture({ productKey: source, quantity: source === "studio" ? 1 : 6 });
+    try {
+      fixture.database.teamBillingDefinition.catalogue.agency.quantity = { kind: "usage", meter: "maxVenues", minimum: 6 };
+      fixture.database.runTeamBillingUsage = () => ({ maxVenues: 7 });
+      await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), source === "studio" ? "agency" : "studio");
+      const original = fixture.desired();
+      const jobs = fixture.enqueued.length;
+      for (const status of ["queued", "running", "failed", "attention-required"]) {
+        fixture.adapter.prepare("UPDATE [sporades_team_billing_desired_state] SET [status] = ?").run(status);
+        const result = source === "studio"
+          ? await stageAcknowledgedTeamBillingUsageTransitionRepair(fixture.database, teamId, "agency")
+          : await stageTeamBillingUsageRepair(fixture.database, teamId);
+        assert.equal(result.staged, false, status);
+        assert.equal(fixture.desired().intentId, original.intentId);
+        assert.equal(fixture.desired().status, status);
+        assert.equal(fixture.enqueued.length, jobs);
+      }
+    } finally { fixture.close(); }
+  }
+});
 
 test("rapid Team membership changes supersede stale work while stable retries preserve provider identity", async () => {
   const fixture = openFixture();
