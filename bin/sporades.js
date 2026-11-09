@@ -95092,9 +95092,12 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
   const tx = database[Symbol.for("sporades.database.outerTransactionAdapter")] ?? database.adapter;
   if (!database.__transactionActive || database.__isTeamPolicyTransactionActive?.() !== true) throw teamPolicyDenied();
   let admitted = false;
+  let finishUsageChange;
   beforeTeamCommit(tx, async () => {
     if (!admitted || context2?.signal?.aborted) throw teamPolicyDenied();
     if (auth) await assertCurrentPolicyActor(database, tx, auth, context2);
+    await finishUsageChange?.();
+    if (context2?.signal?.aborted) throw teamPolicyDenied();
   });
   try {
     if (context2?.signal?.aborted || typeof teamId !== "string" || memberUserId !== void 0 && !isOpaqueTeamId(memberUserId)) throw teamPolicyDenied();
@@ -95109,6 +95112,9 @@ async function lockPolicyLifecycle(database, auth, teamId, memberUserId, context
     )).get(teamId, memberUserId);
     if (context2?.signal?.aborted) throw teamPolicyDenied();
     assertActive?.();
+    finishUsageChange = await database.prepareTeamBillingUsageChange?.(teamId);
+    assertActive?.();
+    if (context2?.signal?.aborted) throw teamPolicyDenied();
     admitted = true;
     return Object.freeze({ teamId, member: row ? Object.freeze({ userId: String(row.userId), role: row.role }) : null });
   } catch {
@@ -127632,7 +127638,24 @@ function billableTeamMemberQuantity(policy, memberCount) {
 }
 function teamBillingQuantityPolicyFingerprint(policy) {
   if (policy.kind === "fixed") return `fixed:${policy.value}`;
+  if (policy.kind === "usage") return `usage:${policy.meter}:minimum:${policy.minimum ?? 1}:maximum:${policy.maximum ?? "none"}`;
   return policy.minimum === void 0 ? "team-members" : `team-members:minimum:${policy.minimum}`;
+}
+async function readTeamBillingUsageCount(database, transaction, teamId, policy) {
+  await lockTeamLifecycle(transaction, teamId, usageUnavailable);
+  const usage = await database.runTeamBillingUsage?.(transaction, Object.freeze({ teamId }));
+  const descriptor = usage && typeof usage === "object" && !Array.isArray(usage) ? Object.getOwnPropertyDescriptor(usage, policy.meter) : void 0;
+  const count = descriptor && "value" in descriptor ? descriptor.value : void 0;
+  if (!Number.isSafeInteger(count) || count < 0 || count > 999999) throw usageUnavailable();
+  return count;
+}
+async function readTeamBillingQuantity(database, transaction, teamId, policy) {
+  if (policy.kind === "fixed") return Number(policy.value);
+  const count = policy.kind === "usage" ? await readTeamBillingUsageCount(database, transaction, teamId, policy) : await countAcceptedTeamMembers(transaction, teamId, usageUnavailable);
+  return billableTeamMemberQuantity(policy, count);
+}
+function usageUnavailable() {
+  return commandError("Team Billing usage is unavailable.", "Supply an exact nonnegative integer count for the declared meter.", "TEAM_BILLING_USAGE_UNAVAILABLE");
 }
 
 // src/team-billing-convergence.ts
@@ -127668,7 +127691,8 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
     const changesInterval = price.interval !== void 0 && price.interval !== currentInterval;
     if (!currentProduct || sameQuantityPolicy(currentProduct.quantity, targetProduct.quantity) && !changesInterval) throw transitionNotRequired();
-    const quantity = await targetQuantity(transaction, teamId, targetProduct);
+    const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
+    assertUsageMaximum(targetProduct, quantity);
     const operationId = randomUUID4();
     const now2 = nowIso(database);
     const effectiveAt = nowSeconds(database);
@@ -127695,9 +127719,13 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
   return result;
 }
 async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = nowSeconds(database)) {
+  return stageTeamBillingCountChange(database, teamId, effectiveAt, "team-members");
+}
+async function stageTeamBillingCountChange(database, teamId, effectiveAt, quantityKind, force = false) {
   if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !Number.isSafeInteger(effectiveAt) || effectiveAt < 0) return { staged: false };
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
+    if (quantityKind === "usage") await lockTeamLifecycle(transaction, teamId, denied);
     try {
       await assertTeamBillingErasureInactive(database, transaction, teamId);
     } catch {
@@ -127706,19 +127734,27 @@ async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = 
     const subscription = await optionalCurrentSubscription(transaction, teamId);
     if (!subscription) return Object.freeze({ staged: false });
     const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-    if (product?.quantity?.kind !== "team-members") return Object.freeze({ staged: false });
-    const quantity = billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied));
+    if (product?.quantity?.kind !== quantityKind) return Object.freeze({ staged: false });
+    const quantity = await targetQuantity(database, transaction, teamId, product);
     const existing = await desiredForTeam(transaction, teamId);
-    if (existing?.kind === "plan-transition") return Object.freeze({ staged: false, reason: "plan-transition-active" });
-    if (!existing && subscription.quantity === quantity) return Object.freeze({ staged: false });
-    const staged = await stageDesired(transaction, database, {
+    if (existing?.kind === "plan-transition" && (!force || existing.status !== "awaiting-observation")) return Object.freeze({ staged: false, reason: "plan-transition-active" });
+    if (!force && !existing && subscription.quantity === quantity) return Object.freeze({ staged: false });
+    const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
+      teamId,
+      kind: existing.kind,
+      operationId: existing.operationId,
+      targetProductKey: existing.targetProductKey,
+      targetPriceId: existing.targetPriceId,
+      targetQuantity: Number(existing.targetQuantity),
+      effectiveAt
+    } : {
       teamId,
       kind: "seat-convergence",
       operationId: null,
       targetProductKey: subscription.productKey,
       targetQuantity: quantity,
       effectiveAt
-    });
+    }, force);
     let generationId = staged.activeJobGenerationId ?? null;
     if (staged.enqueue) {
       generationId = await enqueueIntent(database, transaction, staged);
@@ -127728,6 +127764,50 @@ async function stageTeamBillingMembershipChange(database, teamId, effectiveAt = 
   });
   if (enqueued) scheduleAfterOwnedTransaction(database);
   return result;
+}
+async function stageTeamBillingUsageRepair(database, teamId) {
+  return stageTeamBillingCountChange(database, teamId, nowSeconds(database), "usage", true);
+}
+async function stageAcknowledgedTeamBillingUsageTransitionRepair(database, teamId, productKey) {
+  let enqueued = false;
+  const result = await inTransaction(database, async (transaction) => {
+    await lockTeamLifecycle(transaction, teamId, denied);
+    const desired = await desiredForTeam(transaction, teamId);
+    if (desired?.kind !== "plan-transition" || desired.status !== "awaiting-observation" || desired.targetProductKey !== productKey || database.teamBillingDefinition?.catalogue?.[productKey]?.quantity?.kind !== "usage") return { staged: false };
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
+    const replacement = await stageDesired(transaction, database, {
+      teamId,
+      kind: desired.kind,
+      operationId: desired.operationId,
+      targetProductKey: productKey,
+      targetPriceId: desired.targetPriceId,
+      targetQuantity: Number(desired.targetQuantity),
+      effectiveAt: nowSeconds(database)
+    }, true);
+    await enqueueIntent(database, transaction, replacement);
+    enqueued = true;
+    return { staged: true };
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+async function prepareTeamBillingUsageChange(database, teamId) {
+  const transaction = database.adapter;
+  const subscription = await optionalCurrentSubscription(transaction, teamId);
+  const product = database.teamBillingDefinition?.catalogue?.[subscription?.productKey];
+  if (product?.quantity?.kind !== "usage") return void 0;
+  const before = await readTeamBillingUsageCount(database, transaction, teamId, product.quantity);
+  return async () => {
+    const after = await readTeamBillingUsageCount(database, transaction, teamId, product.quantity);
+    if (after > before) assertUsageMaximum(product, after);
+    await stageTeamBillingCountChange(database, teamId, nowSeconds(database), "usage");
+  };
+}
+function assertUsageMaximum(product, quantity) {
+  if (product.quantity.kind === "usage" && quantity > (product.quantity.maximum ?? 999999)) throw denied();
+}
+function isCountedProduct(product) {
+  return product?.quantity?.kind === "team-members" || product?.quantity?.kind === "usage";
 }
 async function performTeamBillingPlanTransition(database, context2, payload) {
   return performDesired(database, context2, payload, "plan-transition");
@@ -127756,7 +127836,8 @@ async function performDesired(database, _context, payload, kind) {
       const auth = await database.readTeamBillingActorAuth?.(transaction, await actorForOperation(transaction, desired.operationId));
       const admission = await tryAdmitPlanTransition(database, transaction, auth, desired.teamId, desired.targetProductKey, price.interval);
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
-      const billableQuantity = await targetQuantity(transaction, desired.teamId, product);
+      const billableQuantity = await targetQuantity(database, transaction, desired.teamId, product);
+      assertUsageMaximum(product, billableQuantity);
       if (billableQuantity !== Number(desired.targetQuantity)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId,
@@ -127773,11 +127854,8 @@ async function performDesired(database, _context, payload, kind) {
     } else {
       const targetProductKey = subscription.productKey;
       const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
-      if (currentProduct?.quantity?.kind !== "team-members") return { superseded: true };
-      const billableQuantity = billableTeamMemberQuantity(
-        currentProduct.quantity,
-        await countAcceptedTeamMembers(transaction, desired.teamId, denied)
-      );
+      if (!isCountedProduct(currentProduct)) return { superseded: true };
+      const billableQuantity = await targetQuantity(database, transaction, desired.teamId, currentProduct);
       if (billableQuantity !== Number(desired.targetQuantity) || subscription.productKey !== desired.targetProductKey || binding.prices && subscription.providerPriceId !== desired.targetPriceId) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId,
@@ -127875,14 +127953,25 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
     )).get(accepted.teamId, accepted.subscriptionId);
     if (!subscription) return { settled: false };
     const desired = await desiredForTeam(transaction, accepted.teamId);
-    if (!desired) return { settled: false };
+    if (!desired) {
+      const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
+      const current2 = product?.quantity?.kind === "usage" ? await optionalCurrentSubscription(transaction, accepted.teamId) : null;
+      if (current2?.providerSubscriptionId === accepted.subscriptionId && await targetQuantity(database, transaction, accepted.teamId, product) !== accepted.quantity) {
+        const staged = await stageTeamBillingCountChange(
+          { ...database, adapter: transaction, __transactionActive: true, scheduleTeamBillingJobDispatch: void 0 },
+          accepted.teamId,
+          nowSeconds(database),
+          "usage"
+        );
+        enqueued = staged.staged === true;
+        return { settled: false, repairRequired: enqueued };
+      }
+      return { settled: false };
+    }
     if (desired.targetProductKey === accepted.productKey && Number(desired.targetQuantity) === accepted.quantity && (!desired.targetPriceId || desired.targetPriceId === subscription.providerPriceId)) {
       const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
-      if (product?.quantity?.kind === "team-members") {
-        const billableQuantity = billableTeamMemberQuantity(
-          product.quantity,
-          await countAcceptedTeamMembers(transaction, accepted.teamId, denied)
-        );
+      if (isCountedProduct(product)) {
+        const billableQuantity = await targetQuantity(database, transaction, accepted.teamId, product);
         if (billableQuantity !== accepted.quantity) {
           if (desired.operationId) await transaction.prepare(sql2(
             "UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?"
@@ -127910,6 +127999,21 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
       return { settled: true };
     }
     if (desired.status === "awaiting-observation") {
+      const targetProduct = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
+      if (targetProduct?.quantity?.kind === "usage") {
+        const replacement = await stageDesired(transaction, database, {
+          teamId: desired.teamId,
+          kind: desired.kind,
+          operationId: desired.operationId,
+          targetProductKey: desired.targetProductKey,
+          targetPriceId: desired.targetPriceId,
+          targetQuantity: Number(desired.targetQuantity),
+          effectiveAt: nowSeconds(database)
+        }, true);
+        await enqueueIntent(database, transaction, replacement);
+        enqueued = true;
+        return { settled: false, repairRequired: true };
+      }
       await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_desired_state] SET [status] = 'queued', [safeFailureCode] = 'PROVIDER_DRIFT', [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
       )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
@@ -127928,16 +128032,17 @@ async function repairTeamBillingDesiredState(database) {
     const subscriptions = await transaction.prepare(transaction.dialect.sql(
       "SELECT [teamId], [productKey], [quantity], [providerPriceId] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]"
     )).all();
-    for (const subscription of subscriptions) {
+    for (const candidate of subscriptions) {
+      const candidateProduct = database.teamBillingDefinition?.catalogue?.[candidate.productKey];
+      if (candidateProduct?.quantity?.kind === "usage") await lockTeamLifecycle(transaction, candidate.teamId, denied);
+      const subscription = candidateProduct?.quantity?.kind === "usage" ? await optionalCurrentSubscription(transaction, candidate.teamId) : candidate;
+      if (!subscription) continue;
       const desired = await desiredForTeam(transaction, subscription.teamId);
       if (desired) {
         if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity) && (!desired.targetPriceId || desired.targetPriceId === subscription.providerPriceId)) {
           const product2 = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-          if (product2?.quantity?.kind === "team-members") {
-            const billableQuantity2 = billableTeamMemberQuantity(
-              product2.quantity,
-              await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
-            );
+          if (isCountedProduct(product2)) {
+            const billableQuantity2 = await targetQuantity(database, transaction, subscription.teamId, product2);
             if (billableQuantity2 !== Number(subscription.quantity)) {
               const replacement = await stageDesired(transaction, database, {
                 teamId: subscription.teamId,
@@ -127966,11 +128071,8 @@ async function repairTeamBillingDesiredState(database) {
         continue;
       }
       const product = database.teamBillingDefinition?.catalogue?.[subscription.productKey];
-      if (product?.quantity?.kind !== "team-members") continue;
-      const billableQuantity = billableTeamMemberQuantity(
-        product.quantity,
-        await countAcceptedTeamMembers(transaction, subscription.teamId, denied)
-      );
+      if (!isCountedProduct(product)) continue;
+      const billableQuantity = await targetQuantity(database, transaction, subscription.teamId, product);
       if (billableQuantity === Number(subscription.quantity)) continue;
       const staged = await stageDesired(transaction, database, {
         teamId: subscription.teamId,
@@ -128021,12 +128123,12 @@ async function settleExhaustedTeamBillingManagementJob(database, payload, safeFa
   if (replacementScheduled && !database.__transactionActive) scheduleAfterOwnedTransaction(database);
   return result;
 }
-async function stageDesired(transaction, database, input) {
+async function stageDesired(transaction, database, input, replaceIntent = false) {
   const binding = modeBinding(database, database.teamBillingDefinition.catalogue[input.targetProductKey]);
   const targetPriceId = input.targetPriceId ?? (input.kind === "seat-convergence" && binding.prices ? (await currentSubscription(transaction, input.teamId)).providerPriceId : null);
   input = { ...input, targetPriceId };
   const existing = await desiredForTeam(transaction, input.teamId);
-  const unchanged = existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
+  const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
   if (unchanged) {
     const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
     const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
@@ -128096,8 +128198,8 @@ async function actorForOperation(transaction, operationId) {
     "SELECT [actorUserId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-transition'"
   )).get(operationId))?.actorUserId ?? null;
 }
-async function targetQuantity(transaction, teamId, product) {
-  return product.quantity.kind === "team-members" ? billableTeamMemberQuantity(product.quantity, await countAcceptedTeamMembers(transaction, teamId, denied)) : Number(product.quantity.value);
+async function targetQuantity(database, transaction, teamId, product) {
+  return readTeamBillingQuantity(database, transaction, teamId, product.quantity);
 }
 async function currentSubscription(transaction, teamId) {
   const rows = await transaction.prepare(transaction.dialect.sql(
@@ -128366,7 +128468,7 @@ async function applySubscription(database, event, mode) {
     throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
   }
   const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
     "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
@@ -128380,7 +128482,8 @@ async function applySubscription(database, event, mode) {
   const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
   )).get(teamId))?.count ?? 0);
-  const normalized = normalizeSubscription(database.teamBillingDefinition, object2, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
+  const normalized = normalizeSubscription(database.teamBillingDefinition, object2, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
+  const product = database.teamBillingDefinition.catalogue[normalized.productKey];
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }
@@ -128393,6 +128496,17 @@ async function applySubscription(database, event, mode) {
     Number(existing.lastEventRank ?? 0)
   )) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+  }
+  if (product.quantity.kind === "usage" && normalized.quantity < (product.quantity.minimum ?? 1)) {
+    if (existing?.providerSubscriptionItemId === normalized.itemId && !deleted && !normalized.cancelAtPeriodEnd) {
+      const scoped = { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database };
+      if (existing.productKey === normalized.productKey && existing.providerPriceId === normalized.priceId) {
+        await stageTeamBillingUsageRepair(scoped, teamId);
+      } else {
+        await stageAcknowledgedTeamBillingUsageTransitionRepair(scoped, teamId, normalized.productKey);
+      }
+    }
+    throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   }
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
@@ -128452,7 +128566,7 @@ async function applySubscription(database, event, mode) {
   );
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
-function normalizeSubscription(definition, object2, operation, mode, eventType, teamId, desiredTeamQuantity) {
+function normalizeSubscription(definition, object2, operation, mode, eventType, teamId, desiredTeamQuantity, existing = false) {
   const items = object2.items?.data;
   if (!isRecord2(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord2(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   const item = items[0];
@@ -128471,7 +128585,7 @@ function normalizeSubscription(definition, object2, operation, mode, eventType, 
   }
   if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity || operation.providerPriceId && operation.providerPriceId !== priceId)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
-  if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
+  if (product.quantity.kind !== "fixed" && item.quantity < (product.quantity.minimum ?? 1) && !(existing && product.quantity.kind === "usage")) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
   }
   if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null && (!Number.isSafeInteger(desiredTeamQuantity) || desiredTeamQuantity < 1 || billableTeamMemberQuantity(product.quantity, desiredTeamQuantity) !== item.quantity)) {
@@ -128682,7 +128796,7 @@ function createTeamBillingTables(adapter) {
   ]);
 }
 function normalizeTeamBillingDefinition(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout", "portal"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["catalogue", "authorize", "usage", "checkout", "portal"].includes(key)) || typeof value.authorize !== "function" || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
     throw invalidDeclaration();
   }
   const entries = Object.entries(value.catalogue);
@@ -128705,9 +128819,10 @@ function normalizeTeamBillingDefinition(value) {
       stripe: Object.freeze({ sandbox, live })
     });
   }
+  if (value.usage !== void 0 && typeof value.usage !== "function" || Object.values(catalogue).some((product) => product.quantity.kind === "usage") && typeof value.usage !== "function") throw invalidDeclaration();
   const checkout = value.checkout === void 0 ? null : normalizeCheckoutDefinition(value.checkout);
   const portal = value.portal === void 0 ? null : normalizePortalDefinition(value.portal, catalogue);
-  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout, portal });
+  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, ...value.usage === void 0 ? {} : { usage: value.usage }, checkout, portal });
 }
 function normalizePortalDefinition(value, catalogue) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
@@ -128743,6 +128858,14 @@ function normalizeQuantity(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalidDeclaration();
   if (value.kind === "team-members" && Object.keys(value).every((key) => key === "kind" || key === "minimum") && (value.minimum === void 0 || Number.isSafeInteger(value.minimum) && value.minimum >= 1 && value.minimum <= FIXED_QUANTITY_MAX)) {
     return Object.freeze({ kind: "team-members", ...value.minimum === void 0 ? {} : { minimum: value.minimum } });
+  }
+  if (value.kind === "usage" && Object.keys(value).every((key) => ["kind", "meter", "minimum", "maximum"].includes(key)) && typeof value.meter === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/.test(value.meter) && [value.minimum, value.maximum].every((bound) => bound === void 0 || Number.isSafeInteger(bound) && bound >= 1 && bound <= FIXED_QUANTITY_MAX) && (value.maximum === void 0 || value.maximum >= (value.minimum ?? 1))) {
+    return Object.freeze({
+      kind: "usage",
+      meter: value.meter,
+      ...value.minimum === void 0 ? {} : { minimum: value.minimum },
+      ...value.maximum === void 0 ? {} : { maximum: value.maximum }
+    });
   }
   if (value.kind === "fixed" && Object.keys(value).sort().join(",") === "kind,value" && Number.isSafeInteger(value.value) && value.value >= 1 && value.value <= FIXED_QUANTITY_MAX) {
     return Object.freeze({ kind: "fixed", value: value.value });
@@ -128786,7 +128909,7 @@ function normalizeModeBinding(value) {
 function invalidDeclaration() {
   return commandError(
     "Invalid Team Billing declaration.",
-    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed or optionally floored Team-member quantity policy, and an authorize policy.",
+    "Declare 1-32 lowercase products with exact sandbox/live Stripe Price bindings, a fixed, Team-member or usage quantity policy (with an exact usage hook), and an authorize policy.",
     "INVALID_TEAM_BILLING_DECLARATION"
   );
 }
@@ -129286,7 +129409,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
   const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
   const price = teamBillingPriceById(binding, row.providerPriceId);
-  if (!product || !price || price.interval && price.interval !== row.interval || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind === "team-members" && quantity < (product.quantity.minimum ?? 1)) {
+  if (!product || !price || price.interval && price.interval !== row.interval || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind !== "fixed" && quantity < (product.quantity.minimum ?? 1)) {
     return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
   }
   if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
@@ -129378,10 +129501,8 @@ function canonicalReturnPath(value) {
 async function checkoutDesiredState(database, transaction, teamId, productKey, interval) {
   const product = database.teamBillingDefinition.catalogue[productKey];
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
-  const quantity = product.quantity.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product.quantity, Number((await transaction.prepare(transaction.dialect.sql(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId))?.count ?? 0));
-  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX) throw checkoutUnavailable();
+  const quantity = await readTeamBillingQuantity(database, transaction, teamId, product.quantity);
+  if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > FIXED_QUANTITY_MAX || product.quantity.kind === "usage" && quantity > (product.quantity.maximum ?? FIXED_QUANTITY_MAX)) throw checkoutUnavailable();
   const price = teamBillingPrice(product.stripe[mode], interval);
   if (!price) throw checkoutUnavailable();
   return { mode, quantity, priceId: price.priceId };
@@ -129398,9 +129519,7 @@ async function portalDesiredState(database, transaction, teamId) {
   const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
   const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
   const binding = product?.stripe?.[mode];
-  const expectedQuantity = product?.quantity?.kind === "fixed" ? product.quantity.value : billableTeamMemberQuantity(product?.quantity, Number((await transaction.prepare(sql2(
-    "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
-  )).get(teamId))?.count ?? 0));
+  const expectedQuantity = product ? await readTeamBillingQuantity(database, transaction, teamId, product.quantity) : null;
   if (!customer || customer.mode !== mode || !/^cus_[A-Za-z0-9_]{1,120}$/.test(String(customer.providerCustomerId ?? "")) || !subscription || subscription.mode !== mode || !["active", "cancelling", "past-due"].includes(subscription.state) || !binding?.productId || !binding?.portalConfigurationId || !teamBillingPriceById(binding, subscription.providerPriceId) || binding.prices && teamBillingPriceById(binding, subscription.providerPriceId)?.interval !== subscription.interval || !Number.isSafeInteger(subscription.quantity) || subscription.quantity !== expectedQuantity) throw checkoutUnavailable();
   const grouped = /* @__PURE__ */ new Map();
   for (const candidate of Object.values(database.teamBillingDefinition.catalogue)) {
@@ -149029,7 +149148,7 @@ async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
 // src/server-runtime-source.ts
 var mutationResultsWithWrites = /* @__PURE__ */ new WeakSet();
 var revokedHumanSessionsByMutationResult = /* @__PURE__ */ new WeakMap();
-var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+var trustedReadPurposes = /* @__PURE__ */ new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "team-billing.usage", "files.ingress-admission", "endpoint.multipart-admission"]);
 var trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 var runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 var atomicStripeEventDefinitionBrand2 = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -149589,6 +149708,9 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     } : void 0,
     runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function" ? function(transaction, auth, input, signal) {
       return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
+    } : void 0,
+    runTeamBillingUsage: teamBillingDefinition?.usage ? function(transaction, input) {
+      return runBoundedTeamPolicy(this, transaction, {}, input, void 0, teamBillingDefinition.usage, "team-billing.usage");
     } : void 0,
     runTeamBillingAuthority: teamBillingDefinition ? async function(transactionAdapter, auth, input) {
       const rootDatabase = this.__rootDatabase ?? this;
@@ -152277,6 +152399,13 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
     __pendingLogWrites: pendingLogWrites
   };
   bindPostgresAclDependencyLocking(transactionDatabase, adapter);
+  if (database.teamBillingDefinition?.usage) transactionDatabase.prepareTeamBillingUsageChange = (teamId) => {
+    const context2 = handlerContextByDatabase.get(transactionDatabase)?.();
+    const usageDatabase = Object.assign(Object.create(transactionDatabase), {
+      scheduleTeamBillingJobDispatch: () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase, context2)
+    });
+    return prepareTeamBillingUsageChange(usageDatabase, teamId);
+  };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
   transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
     transactionDatabase,
@@ -153032,7 +153161,7 @@ async function runBoundedTeamPolicy(database, transactionAdapter, auth, input, s
     }, async (db, assertActive) => {
       const evaluation = Promise.resolve().then(() => policy(Object.freeze({
         app: root.app,
-        auth: Object.freeze({ ...auth }),
+        ...purpose === "team-billing.usage" ? {} : { auth: Object.freeze({ ...auth }) },
         db,
         signal: controller.signal
       }), input));

@@ -3,7 +3,7 @@ import { teamBillingPriceById } from "./team-billing-runtime.js";
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
-import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
+import { settleVerifiedTeamBillingTarget, stageTeamBillingUsageRepair, stageAcknowledgedTeamBillingUsageTransitionRepair } from "./team-billing-management.js";
 import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 const SUPPORTED = new Set([
@@ -148,7 +148,7 @@ async function applySubscription(database, event, mode) {
         || !CUSTOMER_ID.test(String(customerId ?? "")) || object.livemode !== event.livemode) {
         throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
     }
-    const existing = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId], [mode], [providerSubscriptionId], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] " +
+    const existing = await tx.prepare(tx.dialect.sql("SELECT [id], [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank] " +
         "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?")).get(subscriptionId);
     const operation = metadataOperationId && UUID.test(metadataOperationId)
         ? await tx.prepare(tx.dialect.sql("SELECT [id], [teamId], [mode], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
@@ -164,12 +164,25 @@ async function applySubscription(database, event, mode) {
     await assertCustomerAssociation(tx, teamId, mode, customerId);
     const deleted = event.type === "customer.subscription.deleted";
     const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?")).get(teamId))?.count ?? 0);
-    const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity);
+    const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
+    const product = database.teamBillingDefinition.catalogue[normalized.productKey];
     if (existing?.terminalLatch === 1) {
         return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
     }
     if (existing && !deleted && !winsRatchet(normalized.periodStart, event.occurredAt, normalized.rank, existing.currentPeriodStart, existing.lastEventOccurredAt, Number(existing.lastEventRank ?? 0))) {
         return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
+    }
+    if (product.quantity.kind === "usage" && normalized.quantity < (product.quantity.minimum ?? 1)) {
+        if (existing?.providerSubscriptionItemId === normalized.itemId && !deleted && !normalized.cancelAtPeriodEnd) {
+            const scoped = { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database };
+            if (existing.productKey === normalized.productKey && existing.providerPriceId === normalized.priceId) {
+                await stageTeamBillingUsageRepair(scoped, teamId);
+            }
+            else {
+                await stageAcknowledgedTeamBillingUsageTransitionRepair(scoped, teamId, normalized.productKey);
+            }
+        }
+        throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
     }
     await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
     if (!existing) {
@@ -186,7 +199,7 @@ async function applySubscription(database, event, mode) {
     await settleVerifiedTeamBillingTarget({ ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }, { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt });
     return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
-function normalizeSubscription(definition, object, operation, mode, eventType, teamId, desiredTeamQuantity) {
+function normalizeSubscription(definition, object, operation, mode, eventType, teamId, desiredTeamQuantity, existing = false) {
     const items = object.items?.data;
     if (!isRecord(object.items) || object.items.object !== "list" || object.items.has_more !== false
         || !Array.isArray(items) || items.length !== 1 || !isRecord(items[0]))
@@ -214,7 +227,8 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity)
         throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
-    if (product.quantity.kind === "team-members" && item.quantity < (product.quantity.minimum ?? 1)) {
+    if (product.quantity.kind !== "fixed" && item.quantity < (product.quantity.minimum ?? 1)
+        && !(existing && product.quantity.kind === "usage")) {
         throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
     }
     if (product.quantity.kind === "team-members" && desiredTeamQuantity !== null

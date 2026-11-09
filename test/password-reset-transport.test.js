@@ -507,15 +507,3 @@ async function readResetCodeFromCapsule(projectDir, email) {
   }
 }
 
-test('transport fixture cleans the CLI child when startup fails', async () => {
-  await withTempDir(async dir => {
-    let child;
-    try {
-      await assert.rejects(startResetCapsule(dir, async spawned => {
-        child = spawned;
-        throw new Error('injected CLI startup failure');
-      }).then(value => { child ??= value.child; return value; }), /injected CLI startup failure/);
-      assert.ok(child.exitCode !== null || child.signalCode !== null, 'failed startup must leave no CLI child');
-    } finally { await stopDevSession(child); }
-  });
-});

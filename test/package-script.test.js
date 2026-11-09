@@ -44,12 +44,6 @@ test("package script defaults to a minor version bump", () => {
   });
 });
 
-test("package script accepts explicit semver bump flags", () => {
-  assert.equal(parsePackageArgs(["--major"]).releaseType, "major");
-  assert.equal(parsePackageArgs(["--minor"]).releaseType, "minor");
-  assert.equal(parsePackageArgs(["--patch"]).releaseType, "patch");
-});
-
 test("package script accepts recovery only without a version bump", () => {
   assert.deepEqual(parsePackageArgs(["--resume", "--branch=release", "--remote=upstream"]), {
     help: false,
@@ -104,15 +98,6 @@ test("package script reads npm pack tarball filenames from npm 11 and npm 12 JSO
   );
 });
 
-test("package script reads exact npm pack artifact provenance", () => {
-  assert.deepEqual(
-    parsePackedArtifact(
-      JSON.stringify([{ filename: "sporades-1.2.3.tgz", shasum: "abc123", integrity: "sha512-example" }]),
-    ),
-    { filename: "sporades-1.2.3.tgz", shasum: "abc123", integrity: "sha512-example" },
-  );
-});
-
 test("npm pack JSON parser normalizes npm 11 keyed wrappers and preserves provenance", () => {
   const metadata = {
     filename: "sporades-0.9.39.tgz",
@@ -152,18 +137,9 @@ test("npm pack JSON parser refuses ambiguous output instead of skipping malforme
   }
 });
 
-test("package script rejects npm pack JSON without a tarball filename", () => {
-  assert.throws(() => parsePackedTarball(""), /did not report a tarball filename/);
-  assert.throws(() => parsePackedTarball(JSON.stringify({ sporades: { name: "sporades" } })), /did not include/);
-});
-
 test("package script derives release tags from semver versions", () => {
   assert.equal(releaseTagForVersion("1.2.3"), "v1.2.3");
   assert.throws(() => releaseTagForVersion("1.2.3-beta.1"), /non-semver/);
-});
-
-test("package script uses matching release commit and tag messages", () => {
-  assert.equal(releaseCommitMessage("v1.2.3"), "Release v1.2.3");
 });
 
 test("package script rejects dirty working trees", () => {

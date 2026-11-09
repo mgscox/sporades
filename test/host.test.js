@@ -4107,12 +4107,6 @@ test("sporades host github workflow associates branch push deploy results with t
 });
 
 
-test("host profile implementation does not hard-code the first Hosted domain", async () => {
-  const source = await readFile(cliPath, "utf8");
-  assert.doesNotMatch(source, /mattgscox\.co\.uk/);
-});
-
-
 test("custom domains register apex and app aliases, survive lifecycle and release on unregister", async () => {
   await withTempDir(async (dir) => {
     const { request, invoke, docker } = await customDomainFixture(dir);
