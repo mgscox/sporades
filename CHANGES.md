@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Team Billing Prices can declare exact regional amounts through `currencyOptions`.
+  Checkout selects a configured currency, verified billing truth records it, and
+  plan/interval changes preserve it or return a currency mismatch. The Stripe
+  fake models regional charges, and the server-only `validateTeamBillingPriceEvidence`
+  checks every configured amount in saved expanded Prices (#352).
+
 - Team Billing products can offer several recurring Prices per environment, such as monthly and annual billing. Checkout and managed interval switches authorize the selected interval, verified billing truth reports it, and the Stripe test provider models interval changes. Existing single-Price bindings remain supported (#350).
 - Export the typed container Bundle API as `sporades/build`, so build scripts can
   call `createBundle` without importing private `dist/` paths (#355).

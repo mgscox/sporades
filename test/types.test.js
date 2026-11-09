@@ -314,7 +314,7 @@ const undefinedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = {
 const malformedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: true, allowFiles: "false" };
 // @ts-expect-error denial cannot grant file permission.
 const deniedAdmission: publicServerApi.EndpointMultipartAdmissionDecision = { allow: false, allowFiles: true };
-import { createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
+import { validateTeamBillingPriceEvidence, createStripePaymentIntegration, type StripeCheckoutSessionResult, type StripeCustomerPortalSessionResult, type StripePaymentsDisabledResult, type VerifiedStripeEvent } from "sporades/server/stripe";
 import { importLegacyTeamBillingEvidence, type LegacyTeamBillingEvidence, type TeamBillingImportAdapter } from "sporades/server/team-billing-import";
 import { accessKeys, auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, payments, preferences, queries, sendMessage, teamBilling, teams, type AccessKeyErrorCode, type JourneyRecord, type PaymentsState } from "sporades/client";
 
@@ -371,6 +371,9 @@ const disabledCheckout: Promise<StripePaymentsDisabledResult> = dormantStripe.cr
 void disabledCheckout;
 // @ts-expect-error Enabled integration requires normalized configuration and named Server env.
 createStripePaymentIntegration({ enabled: true });
+validateTeamBillingPriceEvidence({ catalogue: {}, mode: "sandbox", evidence: [] }).ok satisfies true;
+// @ts-expect-error Evidence validation requires an exact environment.
+validateTeamBillingPriceEvidence({ catalogue: {}, mode: "production", evidence: [] });
 const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
 const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 const subscriptionCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:subscription", businessReference: "subscription-123" });
@@ -549,7 +552,7 @@ const app = capsule({
       kitchen: {
         quantity: { kind: "fixed", value: 1 },
         stripe: {
-          sandbox: { productId: "prod_kitchen", portalConfigurationId: "bpc_kitchen", prices: { "month:1": { priceId: "price_month" }, "year:1": { priceId: "price_year" } } },
+          sandbox: { productId: "prod_kitchen", portalConfigurationId: "bpc_kitchen", prices: { "month:1": { priceId: "price_month", currency: "gbp", unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } }, "year:1": { priceId: "price_year" } } },
           live: { productId: "prod_live_kitchen", portalConfigurationId: "bpc_live_kitchen", prices: { "month:1": { priceId: "price_live_month" }, "year:1": { priceId: "price_live_year" } } },
         },
       },
@@ -577,6 +580,7 @@ const app = capsule({
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
       input.productKey?.toUpperCase();
       input.interval?.toUpperCase();
+      input.currency?.toUpperCase();
       const counts = await ctx.teams.countMembers(input.teamId);
       const totalCount: number = counts.totalCount;
       const adminCount: number = counts.adminCount;
@@ -1165,11 +1169,12 @@ teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8
 teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
 teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
 teamBilling.get("00000000-0000-4000-8000-000000000000").then((result) => {
-  if (result.data?.state === "active") { result.data.productKey.toUpperCase(); result.data.interval?.toUpperCase(); }
+  if (result.data?.state === "active") { result.data.productKey.toUpperCase(); result.data.interval?.toUpperCase(); result.data.currency?.toUpperCase(); }
   if (result.data?.state === "attention-required") result.data.reason.toUpperCase();
 });
 teamBilling.startCheckout({
   interval: "year:1",
+  currency: "usd",
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "11111111-1111-4111-8111-111111111111",
   productKey: "agency",
@@ -1186,6 +1191,7 @@ teamBilling.openPortal({
 });
 teamBilling.requestPlanTransition({
   interval: "month:1",
+  currency: "usd",
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "33333333-3333-4333-8333-333333333333",
   productKey: "agency",

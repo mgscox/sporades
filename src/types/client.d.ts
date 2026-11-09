@@ -391,13 +391,13 @@ export type TeamBillingInterval = `${"day" | "week" | "month" | "year"}:${number
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }
   | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
-  | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; renewsAt: string }
-  | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; endsAt: string }
-  | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; currentPeriodEnd: string }
-  | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number }
+  | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; renewsAt: string }
+  | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; endsAt: string }
+  | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; currentPeriodEnd: string }
+  | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 
-export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
+export type TeamBillingCheckoutRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; currency?: string };
 export type TeamBillingCheckoutResult =
   | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
   | { state: "ready"; teamId: string; requestId: string; productKey: string; url: string; expiresAt: string }
@@ -411,11 +411,11 @@ export type TeamBillingPortalResult =
   | { state: "expired" | "superseded"; teamId: string; requestId: string }
   | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
 
-export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
+export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; currency?: string };
 export type TeamBillingPlanTransitionResult =
   | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
-  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "provider-state-ambiguous" | "unavailable" };
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "currency-mismatch" | "provider-state-ambiguous" | "unavailable" };
 
 export type TeamBillingErasureRequest = { teamId: string; requestId: string };
 export type TeamBillingErasureResult =

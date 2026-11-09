@@ -1,7 +1,7 @@
 /** The supported Stripe protocol subset, intended only for local app acceptance tests. */
 export type StripeFakeObject = Record<string, any>;
 export type StripeFakeCatalogue = {
-  products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number }> }>;
+  products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number; currency?: string; unitAmount?: number; currencyOptions?: Record<string, { unitAmount: number }> }> }>;
   portalConfigurations: Array<{ id: string; products: Array<{ product: string; prices: string[] }> }>;
 };
 export type StripeFakeOperation =

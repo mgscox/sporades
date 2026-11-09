@@ -402,6 +402,87 @@ restarts. Reassigning a Price to a different interval returns `attention-require
 until fresh valid provider evidence arrives. When migrating a legacy binding to
 `prices`, obtain a fresh verified Subscription observation before relying on its interval.
 
+A Price can also declare a default currency and exact regional amounts. This
+works on a legacy `priceId` binding or on each entry in an interval `prices` map:
+
+```ts
+"month:1": {
+  priceId: "price_test_kitchen_month",
+  currency: "gbp",
+  unitAmount: 1900,
+  currencyOptions: {
+    eur: { unitAmount: 2500 }, usd: { unitAmount: 2900 },
+    aud: { unitAmount: 3900 }, nzd: { unitAmount: 4500 },
+  },
+}
+```
+
+Currency codes are lowercase three-letter ISO codes; amounts are integer minor
+units from 0 through 99,999,999. Declaring currency facts requires both `currency`
+and `unitAmount`. `currencyOptions` contains at most 32 additional currencies,
+with one `unitAmount` per currency, excluding the default currency. Configure
+these same amounts on the bound Stripe Price's `currency_options`. Decimal,
+tiered, custom-amount and transformed-quantity pricing are outside this contract.
+
+```ts
+await teamBilling.startCheckout({
+  teamId, requestId: crypto.randomUUID(), productKey: "kitchen",
+  interval: "month:1", currency: "usd",
+});
+```
+
+Checkout passes the chosen currency to Stripe; this example charges USD 29 per
+unit. Omitting `currency` on a currency-declared Price selects its declared
+default explicitly. Unsupported currencies fail before any provider call.
+`authorize` receives the resolved `currency` at admission and before provider
+I/O. The selection is durable across retries and erasure recovery; reusing a
+Checkout request ID with a different currency conflicts.
+
+Verified subscription observations must match the configured currency amount
+and the initial Checkout selection. Billing truth includes the observed
+`currency` on active, cancelling, past-due and cancelled subscriptions. Stored
+amounts are checked against the current declaration when reading truth, so
+removing a currency or changing an amount requires fresh verified evidence.
+Existing identity-only Price bindings continue to work; currency is absent on
+older stored evidence until a new currency-bearing observation arrives.
+
+Plan and interval transitions preserve the observed subscription currency.
+`requestPlanTransition` accepts an optional `currency` assertion, which must
+equal the existing currency. Capsule policy receives that existing currency.
+A declared target Price must support it; a currency-declared source cannot
+transition to an identity-only target. Incompatible requests return
+`TEAM_BILLING_CURRENCY_MISMATCH` with a safe explanation. If target support is
+removed while queued, the operation fails with `currency-mismatch`. Seat
+convergence and Portal Price switches also retain the subscription currency;
+configure Portal choices to support the currencies you offer.
+
+Sporades conservatively retains one currency for a Team's bound Customer even
+after cancellation. A later Checkout in another currency is refused. A new
+billing agreement requires an explicit Customer migration outside this API.
+
+For offline activation validation, use the server-only Stripe export:
+
+```ts
+import { validateTeamBillingPriceEvidence } from "sporades/server/stripe";
+
+validateTeamBillingPriceEvidence({
+  catalogue: teamBillingDeclaration.catalogue,
+  mode: "sandbox",
+  evidence: savedStripePrices,
+});
+```
+
+Save Stripe Price objects with `currency_options` expanded. Evidence may be an
+array or a Stripe list object with `data`. Validation requires exactly one saved
+Price per active-mode binding and checks its identity, Product (when declared),
+mode, activation, recurring interval (when declared), per-unit licensed pricing,
+and every declared currency amount. Missing, extra or incorrect currency options
+fail with `TEAM_BILLING_PRICE_EVIDENCE_MISMATCH`; diagnostics contain no provider
+facts. Legacy bindings receive identity and recurring-shape checks. The function
+performs no provider I/O. Capsule-owned activation commands such as the
+daily-build-template's `payments:validate-activation --price-evidence` can call
+this validator; those commands are maintained in their own repositories.
+
 Every operation re-reads the exact Team membership inside its transaction. A
 current linked Team administrator reaches the Capsule policy for every
 customer-directed command, which makes the Capsule-specific decision from

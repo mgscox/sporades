@@ -796,12 +796,17 @@ export type TeamBillingQuantityPolicy =
   | { kind: "team-members"; minimum?: number };
 /** Canonical recurring interval, for example month:1 or year:1. */
 export type TeamBillingInterval = `${"day" | "week" | "month" | "year"}:${number}`;
+/** Integer minor-unit amounts. Currency codes are lowercase ISO codes. */
+export type TeamBillingPriceBinding = { priceId: string } & (
+  | { currency?: never; unitAmount?: never; currencyOptions?: never }
+  | { currency: string; unitAmount: number; currencyOptions?: Record<string, { unitAmount: number }> }
+);
 export type TeamBillingStripeBinding = {
   productId?: string;
   portalConfigurationId?: string;
 } & (
-  | { priceId: string; prices?: never }
-  | { prices: Partial<Record<TeamBillingInterval, { priceId: string }>>; priceId?: never }
+  | (TeamBillingPriceBinding & { prices?: never })
+  | { prices: Partial<Record<TeamBillingInterval, TeamBillingPriceBinding>>; priceId?: never }
 );
 export type TeamBillingProductDeclaration = {
   quantity: TeamBillingQuantityPolicy;
@@ -817,16 +822,17 @@ export type TeamBillingAuthorityInput = {
   operation: TeamBillingOperation;
   productKey?: string;
   interval?: TeamBillingInterval;
+  currency?: string;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }
   | { state: "pending"; teamId: string; operation: "checkout" | "portal" | "plan-transition" | "erasure" | "reconciliation"; productKey?: string; requestedAt: string }
-  | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; renewsAt: string }
-  | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; endsAt: string }
-  | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number; currentPeriodEnd: string }
-  | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; quantity: number }
+  | { state: "active"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; renewsAt: string }
+  | { state: "cancelling"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; endsAt: string }
+  | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; currentPeriodEnd: string }
+  | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
 export type CurrentUserTeamBillingApi = {
   /** Provider-free verified billing truth for app policy; requires current linked Team membership. */
