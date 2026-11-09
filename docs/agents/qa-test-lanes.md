@@ -6,6 +6,12 @@ reported as a skip, not as evidence that that integration passed. Keep the final
 `QA_SUMMARY` line in the QA report, including its skipped lanes. A failing or
 unfinished local regression gate is not a passing gate.
 
+The gate runner itself (`scripts/run-tests.mjs`) runs on Windows, macOS and
+Linux: it passes the custom `--test-reporter` module as a `file:` URL
+(`scripts/node-test-args.mjs`) because the ESM loader rejects raw
+drive-letter paths. Only the Docker acceptance files below skip on native
+Windows.
+
 ## Optional telemetry Docker acceptance
 
 QA leaves these destructive fault drills opted out and reports the opt-in reason.
