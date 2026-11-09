@@ -4,11 +4,14 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { createConnection } from 'node:net';
 import { availableParallelism } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { processes, systemMemory, descendants } from './test-resources.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const reporter = fileURLToPath(new URL('./test-reporter.mjs', import.meta.url));
+// --test-reporter is loaded through the ESM loader, which on Windows only accepts
+// file: URLs, not bare drive-letter paths; a URL form works on every platform.
+const reporterUrl = pathToFileURL(reporter).href;
 const args = process.argv.slice(2);
 const qa = args.includes('--qa');
 const option = (name, fallback) => args.find(a => a.startsWith(`--${name}=`))?.split('=').slice(1).join('=') ?? fallback;
@@ -424,7 +427,7 @@ try {
       await Promise.all(Array.from({ length: Math.min(limit, files.length) }, async () => {
         while (next < files.length && !timedOut && !interrupted && !resourceExhaustion) {
           const file = files[next++];
-          const code = await command(process.execPath, ['--test', '--test-concurrency=1', `--test-reporter=${reporter}`, file], { structured: true, file });
+          const code = await command(process.execPath, ['--test', '--test-concurrency=1', `--test-reporter=${reporterUrl}`, file], { structured: true, file });
           if (code && !resourceExhaustion && !completed.get(file)?.failed && !partial.get(file)?.failed) infrastructureFailures++;
         }
       }));

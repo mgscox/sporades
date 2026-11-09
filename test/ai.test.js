@@ -74,6 +74,17 @@ async function startEmulator() {
   };
 }
 
+/**
+ * Waits until the emulator has recorded `count` requests. The deadline only fails on a
+ * real hang (a call that never reaches the provider), never because a loaded machine
+ * needs longer to record it.
+ */
+async function waitForEmulatorRequests(emulator, count) {
+  const deadline = Date.now() + 10_000;
+  while (emulator.requests.length < count && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(emulator.requests.length >= count, `expected the provider to have received ${count} request(s) by now`);
+}
+
 function defaultPayload(entry) {
   const text = typeof entry.body?.response_format === "object" || typeof entry.body?.text === "object"
     ? JSON.stringify({ plausible: false, reason: RESPONSE_SECRET })
@@ -319,7 +330,10 @@ test("upstream errors, redirects, timeouts and invalid responses resolve to clos
       emulator.respond(() => ({ hang: true }));
       const startedAt = Date.now();
       assert.deepEqual(await call({ timeoutMs: 150 }), { ok: false, code: "AI_TIMEOUT", message: "The AI provider did not respond in time." });
-      assert.ok(Date.now() - startedAt < 2_000);
+      // The bound only fails on a real hang: the call must resolve via its configured
+      // timeout, not stay pending. It is deliberately far above timeoutMs so a loaded
+      // machine cannot mistake scheduling delay for a hung provider call.
+      assert.ok(Date.now() - startedAt < 30_000, "the hung provider call resolves via its configured timeout instead of staying pending");
 
       emulator.respond(() => ({ raw: "not json" }));
       assert.equal((await call()).code, "AI_INVALID_RESPONSE");
@@ -427,7 +441,9 @@ test("rejected responses release their transport promptly instead of holding it 
   const events = [];
   const emit = (event) => { events.push(event); };
   const waitForClosed = async () => {
-    const deadline = Date.now() + 500;
+    // Generous deadline: the poll observes release, it must only fail on a real hang,
+    // never because a loaded machine needs longer than a few hundred ms to close sockets.
+    const deadline = Date.now() + 10_000;
     while (open.size > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
     return open.size;
   };
@@ -435,7 +451,11 @@ test("rejected responses release their transport promptly instead of holding it 
     for (const current of ["declared", "streamed"]) {
       mode = current;
       events.length = 0;
-      const results = await Promise.all(Array.from({ length: 8 }, () => runtime.chat(ask({ timeoutMs: 100 }), { emit })));
+      // timeoutMs is deliberately far above what reading the local oversized body needs:
+      // the oversize rejection is deterministic once the body arrives, so only a real
+      // hang may hit the timeout, and a tight bound would let load flip AI_INVALID_RESPONSE
+      // into AI_TIMEOUT the way it did in the QA round-4 gate.
+      const results = await Promise.all(Array.from({ length: 8 }, () => runtime.chat(ask({ timeoutMs: 5_000 }), { emit })));
       for (const result of results) {
         assert.deepEqual(result, { ok: false, code: "AI_INVALID_RESPONSE", message: "The AI provider returned an invalid response." });
       }
@@ -461,13 +481,13 @@ test("caller and Job cancellation resolve AI_ABORTED", async () => {
 
     const controller = new AbortController();
     const pending = runtime.chat(ask({ signal: controller.signal, timeoutMs: 5_000 }));
-    while (emulator.requests.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForEmulatorRequests(emulator, 1);
     controller.abort();
     assert.deepEqual(await pending, { ok: false, code: "AI_ABORTED", message: "The AI request was aborted." });
 
     const contextController = new AbortController();
     const fromContext = runtime.chat(ask({ timeoutMs: 5_000 }), { signal: contextController.signal });
-    while (emulator.requests.length < 2) await new Promise((resolve) => setTimeout(resolve, 5));
+    await waitForEmulatorRequests(emulator, 2);
     contextController.abort();
     assert.equal((await fromContext).code, "AI_ABORTED", "the handler context signal (Jobs, Privileged runs) cancels the call");
   } finally {
@@ -510,7 +530,7 @@ test("ctx.ai is available to endpoints, Jobs and Privileged callbacks", async ()
       assert.equal(privileged.data, true);
 
       assert.equal((await runMutation(database, user, "enqueue", [])).error, null);
-      const deadline = Date.now() + 5_000;
+      const deadline = Date.now() + 10_000;
       while (observed.length === 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
       assert.equal(observed[0]?.ok, true);
     }, definition);
