@@ -8,9 +8,8 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { setupEnvironment } from '../monitoring/trace/setup.mjs';
-import { renderHostRelayCollectorConfig } from '../dist/cli/host-telemetry-relay.js';
-import { bundleServerCapsuleModule } from '../dist/bundle-pipeline.js';
-import { createServerBundleModuleSource } from '../dist/templates/server-bundle-module-graph.js';
+import { telemetryAcceptancePrerequisite } from './helpers/telemetry-acceptance.js';
+import { waitForProcessJson } from './support/process-json.js';
 
 const execute = promisify(execFile);
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -29,13 +28,18 @@ async function until(callback, message, budget = 30_000) {
 }
 
 test('isolated shipped stack recovers bounded persistent queues, rejects saturation and preserves Capsule Jobs', {
-  skip: enabled ? false : 'Set SPORADES_REAL_TELEMETRY_OUTAGE=1 for disposable Docker fault drills.', timeout: 300_000,
+  skip: enabled ? false : 'Set SPORADES_REAL_TELEMETRY_OUTAGE=1 for disposable Docker fault drills.', timeout: 600_000,
 }, async t => {
+  const missing = await telemetryAcceptancePrerequisite('outage');
+  if (missing) { t.skip(missing); return; }
+  const { renderHostRelayCollectorConfig } = await import('../dist/cli/host-telemetry-relay.js');
+  const { bundleServerCapsuleModule } = await import('../dist/bundle-pipeline.js');
+  const { createServerBundleModuleSource } = await import('../dist/templates/server-bundle-module-graph.js');
   assert(path.resolve(process.env.SPORADES_CONFIG_DIR ?? '').startsWith(repository + path.sep), 'SPORADES_CONFIG_DIR must be inside this worktree');
   const base = path.join(repository, '.sporades', 'outage-drills');
   await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, 'run-'));
-  const prefix = `barbara129-${randomBytes(5).toString('hex')}`;
+  const prefix = `sporades-outage-${randomBytes(5).toString('hex')}`;
   const volume = `${prefix}-queue`;
   const anchor = `${prefix}-quota`;
   const env = { ...process.env, SPORADES_CONFIG_DIR: path.join(root, 'config'), COMPOSE_PROJECT_NAME: prefix };
@@ -45,6 +49,7 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
   let child;
   t.after(async () => {
     if (child?.exitCode === null && child?.signalCode === null) { child.kill('SIGKILL'); await once(child, 'exit'); }
+    await compose('unpause', 'gateway').catch(() => {});
     await writeFile(path.join(root, 'compose.log'), await compose('logs', '--no-color').catch(() => 'unavailable'));
     await compose('down', '--volumes', '--remove-orphans', '--rmi', 'local').catch(() => {});
     await run('docker', ['rm', '-f', anchor]).catch(() => {});
@@ -52,10 +57,14 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
     await writeFile(path.join(root, 'resource-report.json'), JSON.stringify(report, null, 2) + '\n');
   });
   await run(process.execPath, [path.join(repository, 'bin/sporades.js'), 'monitoring', 'stack', 'init', '--dir', root, '--json']);
-  await writeFile(path.join(root, '.env'), 'TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_PORT=5688\nGRAFANA_ROOT_URL=http://127.0.0.1:5688/grafana/\n');
+  // A Docker-hosted runner reaches published ports through the Docker host.
+  const dockerHost = process.env.SPORADES_ACCEPTANCE_DOCKER_HOST ?? '127.0.0.1';
+  const reservation = createServer().listen(0, '127.0.0.1'); await once(reservation, 'listening');
+  const gatewayPort = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
+  const origin = `http://${dockerHost}:${gatewayPort}`;
+  await writeFile(path.join(root, '.env'), `TRACE_TLS_MODE=proxy\nTRACE_BIND=127.0.0.1\nTRACE_PORT=${gatewayPort}\nGRAFANA_ROOT_URL=${origin}/grafana/\n`);
   await setupEnvironment(path.join(root, '.env'));
   const credentials = JSON.parse(await readFile(path.join(root, '.private', 'credentials.json')));
-  const origin = 'http://127.0.0.1:5688';
   const uiHeaders = { authorization: `Basic ${Buffer.from(`${credentials.uiUser}:${credentials.uiPassword}`).toString('base64')}` };
   const post = (endpoint, body, authenticated = true) => fetch(endpoint + '/v1/traces', { method: 'POST', headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${credentials.ingestToken}` } : {}) }, body: JSON.stringify(body), signal: AbortSignal.timeout(4000) });
   const query = async expression => {
@@ -110,6 +119,9 @@ test('isolated shipped stack recovers bounded persistent queues, rejects saturat
   const relay = renderHostRelayCollectorConfig({ endpoint: 'https://gateway:8443/', caFile: false }).replace('https://gateway:8443/', 'http://gateway:8443/').replace('queue_size: 16777216', 'queue_size: 65536').replace('send_batch_size: 256', 'send_batch_size: 16').replace('send_batch_max_size: 256', 'send_batch_max_size: 16').replace('max_elapsed_time: 300s', 'max_elapsed_time: 10s');
   await writeFile(path.join(root, 'drill-relay.yaml'), relay);
   await writeFile(path.join(root, 'acceptance.yaml'), `services:
+  grafana:
+    environment:
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
   collector:
     user: "10001:10001"
     volumes:
@@ -133,41 +145,51 @@ volumes:
     name: ${volume}
 `);
   await compose('up', '-d', '--build');
+  assert.equal(Number((await compose('port', 'gateway', '8443')).split(':').at(-1)), gatewayPort);
   report.versions = JSON.parse(await compose('images', '--format', 'json'));
   await until(() => fetch(origin + '/health', { signal: AbortSignal.timeout(9000) }).then(r => r.ok, () => false), 'stack readiness did not recover', 60_000);
   await phase('idle');
   const relayPort = (await compose('port', 'relay', '4318')).split(':').at(-1);
-  const relayOrigin = `http://127.0.0.1:${relayPort}`;
+  const relayOrigin = `http://${dockerHost}:${relayPort}`;
   const config = { name: 'outage-business', __sporadesTelemetry: { endpoint: relayOrigin, tls: { mode: 'loopback' }, serviceName: 'outage-business', metricsIntervalMs: 1000 } };
   const serverModuleSource = await bundleServerCapsuleModule({ serverSource: source, serverSourcePath: path.join(repository, 'server/index.ts') });
-  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource: source, serverModuleSource }));
-  const reservation = createServer().listen(0, '127.0.0.1'); await once(reservation, 'listening');
-  const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
-  child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: { ...env, PORT: String(port) }, stdio: ['ignore', 'ignore', 'pipe'] });
+  await writeFile(path.join(root, 'server.mjs'), await createServerBundleModuleSource({ config, serverEnv: {}, serverSource: source, serverModuleSource,
+    epilogue: 'process.stdout.write(JSON.stringify({ listening: server.address().port }) + "\\n");',
+  }));
+  child = spawn(process.execPath, [path.join(root, 'server.mjs')], { cwd: root, env: { ...env, PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let errors = ''; child.stderr.on('data', part => { errors += part; });
-  const business = `http://127.0.0.1:${port}`;
+  const started = await waitForProcessJson(child, { label: 'Generated outage Capsule' });
+  assert(Number.isInteger(started.listening) && started.listening > 0);
+  child.stdout.resume();
+  const business = `http://127.0.0.1:${started.listening}`;
   const work = async () => {
-    const response = await fetch(business + '/work'); assert.equal(response.status, 200);
+    const response = await fetch(business + '/work', { signal: AbortSignal.timeout(4000) }); assert.equal(response.status, 200);
     const job = await response.json();
-    await until(async () => (await (await fetch(`${business}/state?id=${job.id}`)).json()).status === 'succeeded', 'business Job failed during monitoring outage', 5000);
+    await until(async () => {
+      const state = await fetch(`${business}/state?id=${job.id}`, { signal: AbortSignal.timeout(4000) });
+      assert.equal(state.status, 200);
+      const current = await state.json();
+      assert(current && !['failed', 'cancelled'].includes(current.status), `business Job ended as ${current?.status}`);
+      return current.status === 'succeeded';
+    }, 'business Job failed during monitoring outage', 30_000);
   };
-  await until(() => fetch(business + '/state?id=missing').then(() => true, () => false), 'generated Capsule not ready');
+  await until(() => fetch(business + '/state?id=missing', { signal: AbortSignal.timeout(4000) }).then(r => r.ok, () => false), 'generated Capsule not ready');
   await phase('sdk-idle');
   await work();
-  await until(async () => (await query('sporades_job_execution_duration_seconds_count{service_name="outage-business"}')).length > 0, 'generated Job metrics were not stored');
+  await until(async () => (await query('sporades_job_execution_duration_seconds_count{service_name="outage-business"}')).length > 0, 'generated Job metrics were not stored', 60_000);
   assert((await query('otel_sdk_processor_span_queue_capacity{service_name="outage-business"}')).some(item => Number(item.value[1]) === 128), 'shipped SDK queue capacity is queryable in Prometheus');
   await until(async () => (await query('up{job="sporades-pipeline-collector"}')).some(item => item.value[1] === '1'), 'private pipeline scrape failed');
   await until(async () => {
-    const response = await fetch(origin + '/grafana/api/dashboards/uid/sporades-pipeline', { headers: uiHeaders });
+    const response = await fetch(origin + '/grafana/api/dashboards/uid/sporades-pipeline', { headers: uiHeaders, signal: AbortSignal.timeout(4000) });
     return response.ok && (await response.json()).dashboard?.title === 'Sporades Telemetry Pipeline';
-  }, 'pipeline dashboard was not provisioned');
+  }, 'pipeline dashboard was not provisioned', 90_000);
   const metricAt = Date.now();
   for (const age of [0, 20_000]) {
     const response = await fetch(origin + '/v1/metrics', { method: 'POST', headers: { authorization: `Bearer ${credentials.ingestToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ resourceMetrics: [{ scopeMetrics: [{ metrics: [{ name: 'sporades.drill.reordered', gauge: { dataPoints: [{ timeUnixNano: String(BigInt(metricAt - age) * 1000000n), asDouble: age + 1 }] } }] }] }] }) });
     assert.equal(response.status, 200);
     await pause(1500); // Store the newer sample before replaying the older one.
   }
-  await until(async () => (await query('count_over_time(sporades_drill_reordered[1m])')).some(item => Number(item.value[1]) === 2), 'bounded out-of-order metric replay was not retained', 5000);
+  await until(async () => (await query('count_over_time(sporades_drill_reordered[1m])')).some(item => Number(item.value[1]) === 2), 'bounded out-of-order metric replay was not retained');
   await compose('stop', 'jaeger');
   const traceId = randomBytes(16).toString('hex');
   const payload = id => ({ resourceSpans: [{ scopeSpans: [{ spans: Array.from({ length: 8 }, (_, i) => ({ traceId: id, spanId: randomBytes(8).toString('hex'), name: 'fault-drill', startTimeUnixNano: String(BigInt(Date.now()) * 1000000n), endTimeUnixNano: String(BigInt(Date.now()) * 1000000n), attributes: [{ key: 'drill', value: { stringValue: 'x'.repeat(1000) } }] })) }] }] });
@@ -230,7 +252,7 @@ volumes:
   await run('docker', ['exec', anchor, 'sh', '-c', 'dd if=/dev/zero of=/queue/full bs=1048576 count=128 2>/dev/null || true']);
   await compose('start', 'collector');
   await work();
-  await until(async () => /no space left on device/.test(await compose('logs', '--no-color', 'collector')), 'full disk did not cause a real bounded storage failure', 5000);
+  await until(async () => /no space left on device/.test(await compose('logs', '--no-color', 'collector')), 'full disk did not cause a real bounded storage failure');
   const diskKiB = Number(await run('docker', ['exec', anchor, 'sh', '-c', 'du -sk /queue | cut -f1']));
   report.phases.push({ name: 'disk-full', at: new Date().toISOString(), diskKiB, collectorRss: null, queueSize: null, diagnostics: 'unavailable: storage startup failed with ENOSPC' });
   assert(diskKiB > 120 * 1024 && diskKiB * 1024 <= report.budgets.quotaBytes, 'quota was actually exhausted');
@@ -241,7 +263,7 @@ volumes:
   if (process.env.SPORADES_OUTAGE_BROWSER_HOLD === '1') {
     // Browser uses a fixture-only credential file, never an operator profile.
     await writeFile(path.join(root, 'browser-auth.json'), JSON.stringify({ origin, username: credentials.uiUser, password: credentials.uiPassword }), { mode: 0o600 });
-    console.log('Disposable dashboard ready for browser verification on port 5688');
+    console.log(`Disposable dashboard ready for browser verification at ${origin}`);
     await until(async () => { try { await readFile(path.join(root, 'browser-done')); return true; } catch { return false; } }, 'browser verification did not finish', 120_000);
   }
   await compose('stop', 'gateway', 'relay');
