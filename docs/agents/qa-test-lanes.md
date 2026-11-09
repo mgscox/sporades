@@ -25,7 +25,8 @@ POSIX npm execution, uid/gid and process inspection; use Linux/WSL or macOS.
 Private-CA acceptance additionally needs npm, OpenSSL `req -addext`, a locally
 available Sporades Base image, and Docker access to the disposable HTTPS
 collector. An independent Node HTTPS probe checks that route and CA trust before
-testing Sporades exports. Outage acceptance additionally needs Compose,
+testing Sporades exports. The Capsule installs the candidate tarball so the
+acceptance also works before that version is published. Outage acceptance additionally needs Compose,
 cgroup v2, POSIX `ps`, and a filesystem that preserves protected `0600` files
 (WSL projects on a Windows mount may lack those permissions).
 Once a scenario starts, failed exports, Jobs, storage assertions or recovery
