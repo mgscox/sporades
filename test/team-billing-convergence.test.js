@@ -119,6 +119,18 @@ test("verified Team Billing observations converge with semantic ratchets and saf
   }
 });
 
+test("verified trial evidence is retained for admission without granting paid entitlement", async () => {
+  const fixture = await openFixture();
+  try {
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+      subscriptionEvent("evt_converge_trial", "customer.subscription.created", { operationId, status: "trialing" })), { applied: true });
+    assert.equal(fixture.adapter.prepare("SELECT [state] FROM [sporades_team_billing_subscriptions]").get().state, "trialing");
+    assert.deepEqual(await safeTeamBillingProjection(fixture.adapter, fixture.database.teamBillingDefinition, teamId), {
+      state: "attention-required", teamId, reason: "provider-state-ambiguous",
+    });
+  } finally { fixture.close(); }
+});
+
 test("malformed, catalogue-conflicting, multi-item, and association-conflicting evidence quarantines once", async () => {
   const fixture = await openFixture();
   try {
@@ -127,7 +139,7 @@ test("malformed, catalogue-conflicting, multi-item, and association-conflicting 
       subscriptionEvent("evt_converge_multi_item", "customer.subscription.created", { operationId, multiItem: true }),
       subscriptionEvent("evt_converge_partial_items", "customer.subscription.created", { operationId, hasMore: true }),
       subscriptionEvent("evt_converge_metered", "customer.subscription.created", { operationId, usageType: "metered" }),
-      subscriptionEvent("evt_converge_trial", "customer.subscription.created", { operationId, status: "trialing" }),
+      subscriptionEvent("evt_converge_incomplete", "customer.subscription.created", { operationId, status: "incomplete" }),
     ]) {
       assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, event), { applied: false, quarantined: true });
     }
@@ -485,7 +497,7 @@ function verifiedEvent(providerEventId, type, created, object) {
 
 function createFocusedTables(adapter) {
   adapter.exec("CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
-  adapter.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
+  adapter.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0, [hasSchedule] INTEGER NULL)");
   adapter.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT, [quantity] INTEGER, [continuationUrl] TEXT, [continuationExpiresAt] TEXT, [terminalObservedAt] TEXT, [providerCustomerId] TEXT, [providerSubscriptionId] TEXT)");
   adapter.exec("CREATE TABLE [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT, [eventRank] INTEGER, [outcome] TEXT, [safeReason] TEXT)");
 }

@@ -102,7 +102,7 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
     ...(["interval", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
-    ...(["lastEventRank", "terminalLatch"]
+    ...(["lastEventRank", "terminalLatch", "hasSchedule"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
     ...(["eventType", "outcome", "safeReason"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
@@ -114,7 +114,7 @@ export function createTeamBillingTables(adapter: LooseRecord) {
 
 export function normalizeTeamBillingDefinition(value: any) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout", "portal"].includes(key))
+    || Object.keys(value).some((key) => !["catalogue", "authorize", "checkout", "portal", "transitions"].includes(key))
     || typeof value.authorize !== "function"
     || !value.catalogue || typeof value.catalogue !== "object" || Array.isArray(value.catalogue)) {
     throw invalidDeclaration();
@@ -141,9 +141,13 @@ export function normalizeTeamBillingDefinition(value: any) {
       stripe: Object.freeze({ sandbox, live }),
     });
   }
+  if (value.transitions !== undefined && (!isRecord(value.transitions)
+    || Object.keys(value.transitions).some((key) => key !== "allowSamePolicy")
+    || (value.transitions.allowSamePolicy !== undefined && typeof value.transitions.allowSamePolicy !== "boolean"))) throw invalidDeclaration();
+  const transitions = value.transitions === undefined ? null : Object.freeze({ allowSamePolicy: value.transitions.allowSamePolicy ?? false });
   const checkout = value.checkout === undefined ? null : normalizeCheckoutDefinition(value.checkout);
   const portal = value.portal === undefined ? null : normalizePortalDefinition(value.portal, catalogue);
-  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout, portal });
+  return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, checkout, portal, transitions });
 }
 
 function normalizePortalDefinition(value: any, catalogue: LooseRecord) {
@@ -310,6 +314,7 @@ export async function startTeamBillingCheckout(database: LooseRecord, auth: Loos
     )).get(teamId, requestId);
     if (existing) {
       if (existing.productKey !== productKey || existing.providerPriceId !== price.priceId) throw checkoutConflict();
+      if (existing.status !== "completed") await assertNoTeamBillingSubscription(transaction, teamId);
       return checkoutOperationResult(database, transaction, teamId, requestId, existing);
     }
     const desired = await checkoutDesiredState(database, transaction, teamId, productKey, interval);
@@ -498,6 +503,11 @@ export async function performTeamBillingCheckout(database: LooseRecord, context:
       throw error;
     }
     if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") throw error;
+    if (error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS") {
+      await settleCheckoutFailure(database, operationId, error.code);
+      error.retryable = false;
+      throw error;
+    }
     await settleCheckoutFailure(database, operationId, error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : "CONFIGURATION_INVALID");
     const failure = checkoutUnavailable();
     (failure as any).retryable = false;
@@ -774,7 +784,7 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
   }
   const currentRows = await transaction.prepare(sql(
     "SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] IN ('active', 'past-due') ORDER BY [lastEventOccurredAt] DESC, [id] DESC",
+    "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' ORDER BY [lastEventOccurredAt] DESC, [id] DESC",
   )).all(teamId);
   if (currentRows.length > 1) {
     return Object.freeze({ state: "attention-required" as const, teamId, reason: "provider-state-ambiguous" as const });
@@ -904,7 +914,19 @@ function canonicalReturnPath(value: any) {
   }
 }
 
+async function assertNoTeamBillingSubscription(transaction: LooseRecord, teamId: string) {
+  const subscription = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND ([state] <> 'cancelled' OR [terminalLatch] IS NULL OR [terminalLatch] <> 1) LIMIT 1",
+  )).get(teamId);
+  const unresolved = subscription ? null : await transaction.prepare(transaction.dialect.sql(
+    "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [providerSubscriptionId] IS NOT NULL " +
+    "AND [providerSubscriptionId] NOT IN (SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] = 'cancelled' AND [terminalLatch] = 1) LIMIT 1",
+  )).get(teamId, teamId);
+  if (subscription || unresolved) throw commandError("The Team already has a subscription.", "Manage the existing subscription from Team billing settings.", "TEAM_BILLING_SUBSCRIPTION_EXISTS");
+}
+
 async function checkoutDesiredState(database: LooseRecord, transaction: LooseRecord, teamId: string, productKey: string, interval?: any) {
+  await assertNoTeamBillingSubscription(transaction, teamId);
   const product = database.teamBillingDefinition.catalogue[productKey];
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
   const quantity = product.quantity.kind === "fixed"

@@ -31,6 +31,84 @@ const {
 const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actor = { userId: "admin", isAuthenticated: true, isGuest: false, provider: "test" };
 
+test("same-policy Plan transitions require explicit opt-in and retain source authorization", async () => {
+  for (const allowSamePolicy of [undefined, false, true]) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      fixture.database.teamBillingDefinition.transitions = { allowSamePolicy };
+      fixture.database.teamBillingDefinition.catalogue.offered = {
+        quantity: { kind: "fixed", value: 1 },
+        stripe: { sandbox: { priceId: "price_offered" }, live: { priceId: "price_live_offered" } },
+      };
+      const request = () => requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), "offered");
+      if (!allowSamePolicy) {
+        await assert.rejects(request(), { code: "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" });
+        assert.equal(fixture.desired(), undefined);
+      } else {
+        assert.equal((await request()).state, "pending");
+        await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+        assert.equal(fixture.providerCalls[0].providerSubscriptionId, "sub_test");
+        assert.equal(fixture.providerCalls[0].targetPriceId, "price_offered");
+        assert.equal(fixture.lastAuthorityInput.fromProductKey, "studio");
+      }
+    } finally { fixture.close(); }
+  }
+});
+
+test("Plan transition guards refuse each unsafe state at admission and worker execution", async () => {
+  for (const [column, value, code] of [
+    ["cancelAtPeriodEnd", 1, "TEAM_BILLING_SUBSCRIPTION_CANCELLING"],
+    ["state", "past-due", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    ["state", "trialing", "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
+    ["hasSchedule", 1, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
+  ]) {
+    for (const phase of ["request", "worker"]) {
+      const fixture = openFixture({ productKey: "studio", quantity: 1 });
+      try {
+        if (phase === "worker") await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), "agency");
+        fixture.adapter.prepare(`UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ?`).run(value);
+        if (phase === "request") {
+          await assert.rejects(requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), "agency"), { code });
+          assert.equal(fixture.desired(), undefined);
+        } else {
+          await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+          assert.equal(fixture.operation().safeFailureCode, code);
+          assert.equal(fixture.operation().status, "failed");
+        }
+        assert.equal(fixture.providerCalls.length, 0);
+      } finally { fixture.close(); }
+    }
+  }
+});
+
+test("revoking same-policy opt-in fences an already queued transition", async () => {
+  const fixture = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    fixture.database.teamBillingDefinition.catalogue.offered = {
+      quantity: { kind: "fixed", value: 1 }, stripe: { sandbox: { priceId: "price_offered" }, live: { priceId: "price_live_offered" } },
+    };
+    fixture.database.teamBillingDefinition.transitions = { allowSamePolicy: true };
+    await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), "offered");
+    fixture.database.teamBillingDefinition.transitions.allowSamePolicy = false;
+    await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+    assert.equal(fixture.providerCalls.length, 0);
+    assert.equal(fixture.operation().safeFailureCode, "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED");
+  } finally { fixture.close(); }
+});
+
+test("retained trial evidence cannot stage or execute automatic seat convergence", async () => {
+  const fixture = openFixture();
+  try {
+    fixture.setMembers(3);
+    const staged = await stageTeamBillingMembershipChange(fixture.database, teamId);
+    fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+    fixture.setMembers(4);
+    assert.deepEqual(await stageTeamBillingMembershipChange(fixture.database, teamId), { staged: false });
+    await performTeamBillingSeatConvergence(fixture.database, {}, generationPayload(staged));
+    assert.equal(fixture.providerCalls.length, 0);
+  } finally { fixture.close(); }
+});
+
 test("rapid Team membership changes supersede stale work while stable retries preserve provider identity", async () => {
   const fixture = openFixture();
   try {
@@ -778,7 +856,7 @@ function openFixture(options = {}) {
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
-  sqlite.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
   sqlite.exec("CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL)");
   adapter.prepare("INSERT INTO [sporades_teams] VALUES (?, 'Test Team')").run(teamId);
@@ -802,7 +880,8 @@ function openFixture(options = {}) {
     clock: { now: () => new Date(now) },
     countTeamBillingMembers: async (transaction, selectedTeamId) => Number((await transaction.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?").get(selectedTeamId)).count),
     readTeamBillingActorAuth: async (_transaction, userId) => fixture.workerAuthByUserId?.[userId] ?? fixture.workerAuth,
-    runTeamBillingAuthority: async (_transaction, admittedActor) => {
+    runTeamBillingAuthority: async (_transaction, admittedActor, input) => {
+      fixture.lastAuthorityInput = input;
       fixture.lastAuthorityActor = admittedActor.userId;
       return { allow: fixture.authority };
     },

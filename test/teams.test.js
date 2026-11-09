@@ -2172,6 +2172,9 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     assert.equal(completed.data.state, "completed");
     assert.equal("url" in completed.data, false);
 
+    const blockedSecond = await send(owner, { id: "checkout-completion-blocks-purchase", type: "teamBilling.startCheckout", input: { ...input, requestId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee" }, sessionToken: signupResult.data.sessionToken });
+    assert.equal(blockedSecond.error.code, "TEAM_BILLING_SUBSCRIPTION_EXISTS", "Checkout completion blocks another purchase before Subscription convergence");
+    await observeCheckoutCancellation(runtime.database, providerInputs[0], "cs_test_team_checkout_1");
     blockNextProvider = true;
     const eventFirstInput = { teamId: team.id, requestId: "66666666-6666-4666-8666-666666666666", productKey: "studio" };
     const eventFirstStarted = await send(owner, { id: "checkout-event-first", type: "teamBilling.startCheckout", input: eventFirstInput, sessionToken: signupResult.data.sessionToken });
@@ -2207,6 +2210,7 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
     assert.deepEqual(stillNoEntitlement.data, { state: "attention-required", teamId: team.id, reason: "provider-state-ambiguous" },
       "malformed supported evidence remains fail-closed and Checkout completion still grants no entitlement");
 
+    await observeCheckoutCancellation(runtime.database, providerInputs[1], "cs_test_team_checkout_2");
     blockNextProvider = false;
     failNextOperationOnce = true;
     const retryInput = { teamId: team.id, requestId: "77777777-7777-4777-8777-777777777777", productKey: "agency" };
@@ -2794,6 +2798,20 @@ async function waitForCheckoutSignal(signal, description, timeoutMs = 2_000) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function observeCheckoutCancellation(database, input, sessionId) {
+  const occurred = Math.floor(Date.now() / 1_000);
+  const event = verifiedManagedSubscriptionEvent({
+    providerEventId: `evt_cancel_${sessionId}`, occurred,
+    subscriptionId: `sub_${sessionId}`, customerId: "cus_team_checkout", itemId: `si_${sessionId}`,
+    priceId: input.priceId, productId: input.productKey === "agency" ? "prod_test_agency" : "prod_test_studio",
+    quantity: input.quantity, periodStart: occurred - 1, periodEnd: occurred + 2_592_000,
+  });
+  event.type = event.raw.type = "customer.subscription.deleted";
+  event.raw.data.object.status = "canceled";
+  event.raw.data.object.metadata = { sporades_team_billing_operation: input.operationId };
+  await runAtomicStripeConsequence(database, { signal: new AbortController().signal }, event, undefined, applyVerifiedTeamBillingObservation);
 }
 
 function verifiedCheckoutObservation(providerInput, sessionId, providerEventId, type) {

@@ -112,7 +112,8 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
 | `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period if its recurring interval/count changes, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
-| `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `canceled`; canceled Subscriptions stay terminal. |
+| `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `trialing`, `incomplete`, `incomplete_expired`, `canceled`; canceled and expired Subscriptions stay terminal. |
+| `subscriptions.setSchedule(id, scheduleId)` | Attaches an external `sub_sched_…` identity or clears it with `null`, emitting an update for transition-guard tests. |
 | `subscriptions.setQuantity(id, quantity)` | Changes seats and emits an update. |
 | `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits an active update. |
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |

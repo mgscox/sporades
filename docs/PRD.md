@@ -111,7 +111,12 @@ The repository currently includes:
   mode configuration on every attempt, permits only Price switches within one
   compatible quantity-policy configuration, requires period-end cancellation,
   and rejects quantity editing or mutable Dashboard defaults. Cross-policy
-  switches use durable `teamBilling.requestPlanTransition(...)`: Sporades
+  switches use durable `teamBilling.requestPlanTransition(...)`; opt-in
+  `transitions.allowSamePolicy` also admits same-policy and retained legacy
+  source switches. Transition authorization receives the verified source product
+  and interval. Cancelling, past-due, trialing and external-schedule states
+  refuse with distinct safe codes, and Checkout refuses non-terminal
+  Subscriptions. Sporades
   reauthorizes the original actor, derives the exact current Team count where
   required, and changes the Subscription item Price and quantity together with
   stable proration and idempotency inputs. Team-counted Plans automatically

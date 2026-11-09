@@ -4,7 +4,7 @@ import { teamBillingPriceById } from "./team-billing-runtime.js";
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
 import { settleVerifiedTeamBillingTarget } from "./team-billing-management.js";
-import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
+import { teamBillingStoredSubscriptionSemantics, teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 
 type LooseRecord = Record<string, any>;
@@ -180,32 +180,32 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }
-  if (existing && !deleted && !winsRatchet(normalized.periodStart, event.occurredAt, normalized.rank,
+  if (existing && normalized.terminalLatch !== 1 && !winsRatchet(normalized.periodStart, event.occurredAt, normalized.rank,
     existing.currentPeriodStart, existing.lastEventOccurredAt, Number(existing.lastEventRank ?? 0))) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity,
       normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0);
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule);
   } else {
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
-      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?",
+      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ? WHERE [providerSubscriptionId] = ?",
     )).run(normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state,
       normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0, subscriptionId);
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, subscriptionId);
   }
   if (operation) {
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?",
     )).run(customerId, subscriptionId, event.occurredAt, operation.id);
   }
-  await settleVerifiedTeamBillingTarget(
+  if (normalized.state !== "trialing") await settleVerifiedTeamBillingTarget(
     { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
     { teamId, productKey: normalized.productKey, quantity: normalized.quantity, subscriptionId, occurredAt: event.occurredAt },
   );
@@ -255,19 +255,25 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   }
   const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
   const deleted = eventType === "customer.subscription.deleted";
-  let state: "active" | "past-due" | "cancelled";
+  let state: "active" | "past-due" | "cancelled" | "trialing";
   if (deleted) {
     if (object.status !== "canceled") throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     state = "cancelled";
+  } else if (object.status === "incomplete_expired") {
+    state = "cancelled";
+  } else if (object.status === "trialing") {
+    state = "trialing";
   } else if (object.status === "active") {
     state = "active";
   } else if (object.status === "past_due" || object.status === "unpaid") {
     state = "past-due";
   } else throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  const semantics = teamBillingSubscriptionSemantics(eventType as any, state, cancel);
+  const semantics = object.status === "incomplete_expired"
+    ? teamBillingStoredSubscriptionSemantics("cancelled", cancel)
+    : teamBillingSubscriptionSemantics(eventType as any, state, cancel);
   if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   return { productKey, priceId, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
-    cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
+    cancelAtPeriodEnd: cancel ? 1 : 0, hasSchedule: object.schedule == null ? 0 : 1, kind: semantics.kind, rank: semantics.rank, terminalLatch: semantics.terminalLatch };
 }
 
 async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mode: string) {

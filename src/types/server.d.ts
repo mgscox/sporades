@@ -817,6 +817,9 @@ export type TeamBillingAuthorityInput = {
   operation: TeamBillingOperation;
   productKey?: string;
   interval?: TeamBillingInterval;
+  /** Verified source of a plan-transition, resolved under the Team lifecycle lock. */
+  fromProductKey?: string;
+  fromInterval?: TeamBillingInterval;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
@@ -847,6 +850,8 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   catalogue: Record<string, TeamBillingProductDeclaration>;
   /** Rechecked inside every operation transaction after current Team-admin admission. */
   authorize(ctx: TeamBillingAuthorityContext<Schema>, input: TeamBillingAuthorityInput): MaybePromise<TeamBillingAuthorityDecision>;
+  /** Opt in to managed switches between products with the same quantity policy. Omitted/false preserves Portal-only same-policy product switches. */
+  transitions?: { allowSamePolicy?: boolean };
   /** Trusted same-origin Checkout returns. Omit to keep Checkout unavailable while retaining read-only billing state. */
   checkout?: {
     successPath: string;

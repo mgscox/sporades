@@ -442,6 +442,13 @@ import { createStripeTeamBillingFake, type StripeFakeFault, type StripeTeamBilli
 import { createStripeTeamBillingFake as generatedFactory } from ${JSON.stringify(path.resolve("dist/testing/stripe.js"))};
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
+async function guardControls(fake: Awaited<ReturnType<typeof createStripeTeamBillingFake>>) {
+  await fake.subscriptions.setStatus("sub_fixture", "trialing");
+  await fake.subscriptions.setSchedule("sub_fixture", "sub_sched_foreign");
+  await fake.subscriptions.setSchedule("sub_fixture", null);
+  // @ts-expect-error trial control uses a Stripe status, not a public projection state.
+  await fake.subscriptions.setStatus("sub_fixture", "cancelling");
+}
 const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
 await fake.checkout.complete("cs_test_types");

@@ -568,6 +568,7 @@ const app = capsule({
       continuationTtlSeconds: 600,
     },
     portal: { returnPath: "/settings/billing", continuationTtlSeconds: 600 },
+    transitions: { allowSamePolicy: true },
     authorize: async (ctx, input) => {
       const publicOrigin: string = ctx.app.publicOrigin;
       // @ts-expect-error Team Billing app identity is readonly.
@@ -577,6 +578,8 @@ const app = capsule({
       input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
       input.productKey?.toUpperCase();
       input.interval?.toUpperCase();
+      input.fromProductKey?.toUpperCase();
+      input.fromInterval?.toUpperCase();
       const counts = await ctx.teams.countMembers(input.teamId);
       const totalCount: number = counts.totalCount;
       const adminCount: number = counts.adminCount;
