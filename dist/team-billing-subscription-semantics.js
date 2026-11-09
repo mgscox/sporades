@@ -13,6 +13,8 @@ export function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd)
         return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
     if (state === "past-due")
         return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
+    if (state === "trialing")
+        return Object.freeze({ kind: "trialing", rank: 15, terminalLatch: 0 });
     if (state !== "active")
         return null;
     return cancelAtPeriodEnd

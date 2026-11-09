@@ -186,12 +186,12 @@ async function applySubscription(database, event, mode) {
     }
     await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
     if (!existing) {
-        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0);
+        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0);
     }
     else {
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
-            "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?")).run(normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0, subscriptionId);
+            "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ? WHERE [providerSubscriptionId] = ?")).run(normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, deleted ? 1 : 0, subscriptionId);
     }
     if (operation) {
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?")).run(customerId, subscriptionId, event.occurredAt, operation.id);
@@ -249,11 +249,21 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
     }
     const cancel = cancelAtPeriodEnd || cancelAt === item.current_period_end;
     const deleted = eventType === "customer.subscription.deleted";
+    const trialStart = unixTimestamp(object.trial_start);
+    const trialEndsAt = unixTimestamp(object.trial_end);
+    if (object.trial_end != null && (!trialStart || !trialEndsAt || trialEndsAt <= trialStart)) {
+        throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+    }
     let state;
     if (deleted) {
         if (object.status !== "canceled")
             throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
         state = "cancelled";
+    }
+    else if (object.status === "trialing") {
+        if (!trialEndsAt)
+            throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
+        state = "trialing";
     }
     else if (object.status === "active") {
         state = "active";
@@ -266,7 +276,7 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
     const semantics = teamBillingSubscriptionSemantics(eventType, state, cancel);
     if (!semantics)
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-    return { productKey, priceId, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, state,
+    return { productKey, priceId, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
         cancelAtPeriodEnd: cancel ? 1 : 0, kind: semantics.kind, rank: semantics.rank };
 }
 async function applyInvoiceFailure(database, event, mode) {

@@ -27,7 +27,8 @@ export function createStripeTeamBillingProvider(options) {
                     client_reference_id: input.businessReference,
                     expires_at: input.providerExpiresAt,
                     metadata: { sporades_team_billing_operation: input.operationId },
-                    subscription_data: { metadata: { sporades_team_billing_operation: input.operationId } },
+                    subscription_data: { metadata: { sporades_team_billing_operation: input.operationId },
+                        ...(input.trialDays === undefined ? {} : { trial_period_days: input.trialDays }) },
                     ...(input.customerId ? { customer: input.customerId } : {}),
                 }, { idempotencyKey: input.idempotencyKey });
             }
@@ -152,7 +153,8 @@ export function createStripeTeamBillingProvider(options) {
                         client_reference_id: recovery.businessReference,
                         expires_at: recovery.providerExpiresAt,
                         metadata: { sporades_team_billing_operation: recovery.operationId },
-                        subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId } },
+                        subscription_data: { metadata: { sporades_team_billing_operation: recovery.operationId },
+                            ...(recovery.trialDays === undefined ? {} : { trial_period_days: recovery.trialDays }) },
                         ...(recovery.customerId ? { customer: recovery.customerId } : {}),
                     }, { idempotencyKey: recovery.idempotencyKey });
                 }
@@ -504,12 +506,13 @@ function throwProviderOperationFailure(error) {
 }
 function validateInput(input) {
     const required = ["businessReference", "cancelPath", "idempotencyKey", "mode", "operationId", "priceId", "productKey", "providerExpiresAt", "quantity", "successPath", "teamId"];
-    const keys = Object.keys(input ?? {}).filter((key) => key !== "customerId").sort();
+    const keys = Object.keys(input ?? {}).filter((key) => key !== "customerId" && key !== "trialDays").sort();
     if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== required.sort().join("\0")
         || input.mode !== "subscription" || !validUuid(input.operationId) || input.businessReference !== input.operationId
         || !validUuid(input.teamId) || typeof input.productKey !== "string"
         || typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(input.priceId)
         || !Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 999_999
+        || (input.trialDays !== undefined && (!Number.isSafeInteger(input.trialDays) || input.trialDays < 1 || input.trialDays > 90))
         || !Number.isInteger(input.providerExpiresAt)
         || !validReturnPath(input.successPath) || !validReturnPath(input.cancelPath)
         || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255
