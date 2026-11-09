@@ -5,11 +5,11 @@ import path from 'node:path';
 import { createConnection } from 'node:net';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { nodeTestArgs } from './node-test-args.mjs';
+import { testHarnessArgs } from './test-harness-args.mjs';
 import { processes, systemMemory, descendants } from './test-resources.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-// nodeTestArgs passes the reporter as a file: URL: --test-reporter is loaded
+// testHarnessArgs passes the reporter as a file: URL: --test-reporter is loaded
 // through the ESM loader, which on Windows rejects bare drive-letter paths.
 const reporter = fileURLToPath(new URL('./test-reporter.mjs', import.meta.url));
 const args = process.argv.slice(2);
@@ -427,7 +427,7 @@ try {
       await Promise.all(Array.from({ length: Math.min(limit, files.length) }, async () => {
         while (next < files.length && !timedOut && !interrupted && !resourceExhaustion) {
           const file = files[next++];
-          const code = await command(process.execPath, nodeTestArgs({ reporterPath: reporter, file }), { structured: true, file });
+          const code = await command(process.execPath, testHarnessArgs({ reporter, file }), { structured: true, file });
           if (code && !resourceExhaustion && !completed.get(file)?.failed && !partial.get(file)?.failed) infrastructureFailures++;
         }
       }));
