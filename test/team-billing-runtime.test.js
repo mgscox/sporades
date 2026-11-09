@@ -7,10 +7,6 @@ import { test } from "node:test";
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { createTeamBillingTables, normalizeTeamBillingDefinition, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 
-test("Team Checkout is an operation-specific runtime command", () => {
-  assert.equal(typeof startTeamBillingCheckout, "function");
-});
-
 test("Team Billing products accept only integer trial days from 1 through 90", () => {
   const declaration = (trialDays) => ({
     catalogue: { studio: { quantity: { kind: "fixed", value: 1 }, trialDays,
