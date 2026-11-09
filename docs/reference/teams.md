@@ -316,6 +316,7 @@ capsule({
     portal: { returnPath: "/settings/billing" },
     catalogue: {
       studio: {
+        trialDays: 14,
         quantity: { kind: "fixed", value: 1 },
         stripe: {
           sandbox: { productId: "prod_test_studio", priceId: "price_test_studio", portalConfigurationId: "bpc_test_studio" },
@@ -339,6 +340,26 @@ capsule({
   },
 });
 ```
+
+A product may declare `trialDays`, an integer from 1 through 90. Checkout passes
+it as Stripe's `subscription_data.trial_period_days`; omitting it preserves
+ordinary paid Checkout. The allowance belongs to the Team across products,
+Sessions, and recurring intervals.
+A second trial Checkout is refused with opaque `TEAM_BILLING_DENIED`.
+The runtime durably reserves the allowance before the first provider request:
+a lost reply, local expiry, abandoned Checkout, or provider failure does not reset it.
+A verified `checkout.session.expired` observation releases an unused reservation;
+local timeouts alone cannot prove that no trial started. Retry the same request
+ID to recover the original operation. The trial length
+is frozen when Checkout is admitted, including retries and erasure recovery.
+Verified historical trial evidence also prevents another trial after cancellation.
+
+Only verified Subscription evidence grants the paid product's entitlement.
+`trialing` includes `productKey`, `quantity`, and an ISO UTC `trialEndsAt`;
+apps should treat it as entitled to that product, including a trial scheduled
+for cancellation. Subscription updates converge to `active` or `past-due`,
+and deletion converges to `cancelled`, through the normal webhook fence.
+Checkout completion or the browser return alone grants nothing.
 
 Product keys are lowercase stable application identities. Each product binds
 exact sandbox and live Prices and declares a positive fixed quantity,
@@ -395,7 +416,7 @@ await teamBilling.requestPlanTransition({
 
 `authorize` receives `productKey` and `interval` at admission and again before
 provider I/O. Unsupported or omitted intervals fail closed. Reusing a request ID
-for a different interval conflicts. Verified `active`, `cancelling`, `past-due`,
+for a different interval conflicts. Verified `trialing`, `active`, `cancelling`, `past-due`,
 and `cancelled` billing truth includes the declared `interval`; legacy bindings
 omit it. The stored verified interval is checked against the active Price declaration across
 restarts. Reassigning a Price to a different interval returns `attention-required`
@@ -551,7 +572,7 @@ superseded, or failed state themselves. Sporades permits only one active
 Checkout per Team; the app should continue polling its original request until
 that Checkout finishes or expires before it offers another.
 
-The result is a closed `inactive`, `pending`, `active`, `cancelling`,
+The result is a closed `inactive`, `pending`, `trialing`, `active`, `cancelling`,
 `past-due`, `cancelled`, or `attention-required` projection containing Team ID,
 declared product key, safe quantity, and bounded lifecycle timestamps where
 appropriate. It never contains Stripe Customer, Subscription, Price, Event, or
@@ -664,7 +685,7 @@ licensed item, declared Price, quantity, period, and supported status.
 
 Newer periods and observations advance the projection. At the same provider
 time, cancellation outranks failed payment, failed payment outranks
-cancelling, and cancelling outranks active; provider Event identifiers are not
+cancelling, and cancelling outranks active, and active outranks trialing; provider Event identifiers are not
 invented as business ordering. Deletion permanently latches that Subscription
 ID, so no delayed update can resurrect it. A later verified recovery may clear
 past-due state for a non-terminal Subscription. Duplicate and out-of-order

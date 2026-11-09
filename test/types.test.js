@@ -536,6 +536,7 @@ const app = capsule({
       await rowPromise;
       const billing = await ctx.teamBilling.get(input.teamId);
       void billing.state;
+      if (billing.state === "trialing") { billing.interval?.toUpperCase(); billing.trialEndsAt.toUpperCase(); }
       // @ts-expect-error admission policy data access is transaction-bound and read-only.
       ctx.db.todos.insert({ title: "not allowed", ownerId: input.teamId });
       ctx.log.info("team admission", input.currentMemberCount, input.userId);
@@ -547,6 +548,7 @@ const app = capsule({
   teamBilling: {
     catalogue: {
       kitchen: {
+        trialDays: 14,
         quantity: { kind: "fixed", value: 1 },
         stripe: {
           sandbox: { productId: "prod_kitchen", portalConfigurationId: "bpc_kitchen", prices: { "month:1": { priceId: "price_month" }, "year:1": { priceId: "price_year" } } },
@@ -1181,6 +1183,7 @@ teams.removeMember("00000000-0000-4000-8000-000000000000", "00000000-0000-4000-8
 teams.leave("00000000-0000-4000-8000-000000000000").then((result) => result.data?.left.valueOf());
 teams.delete("00000000-0000-4000-8000-000000000000").then((result) => result.data?.deleted.valueOf());
 teamBilling.get("00000000-0000-4000-8000-000000000000").then((result) => {
+  if (result.data?.state === "trialing") { result.data.interval?.toUpperCase(); result.data.trialEndsAt.toUpperCase(); }
   if (result.data?.state === "active") { result.data.productKey.toUpperCase(); result.data.interval?.toUpperCase(); }
   if (result.data?.state === "attention-required") result.data.reason.toUpperCase();
 });

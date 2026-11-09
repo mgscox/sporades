@@ -147,7 +147,7 @@ Stripe SDK sends them.
 
 | Endpoint | Runtime caller | Fidelity the runtime attests |
 | --- | --- | --- |
-| `POST /v1/checkout/sessions` | Checkout Job `create`. Erasure also replays an original Checkout through `checkoutRecoveries` | `mode: "subscription"`, one `line_items` entry, `client_reference_id`, `expires_at`, `metadata.sporades_team_billing_operation`, `subscription_data.metadata`, optional `customer`. Returns `cs_test_…` with `url` `https://checkout.stripe.com/c/pay/<id>`, `livemode: false`, and `expires_at` echoed exactly. |
+| `POST /v1/checkout/sessions` | Checkout Job `create`. Erasure also replays an original Checkout through `checkoutRecoveries` | `mode: "subscription"`, one `line_items` entry, `client_reference_id`, `expires_at`, `metadata.sporades_team_billing_operation`, `subscription_data.metadata`, optional `subscription_data.trial_period_days` (integer 1–90) and `customer`. Returns `cs_test_…` with `url` `https://checkout.stripe.com/c/pay/<id>`, `livemode: false`, and `expires_at` echoed exactly. |
 | `GET /v1/checkout/sessions/:id` | Erasure | `object`, `mode`, `livemode`, and `status` of `open`, `complete` or `expired`. When complete, also `customer` and `subscription`. Unknown ids return an exact 404. |
 | `POST /v1/checkout/sessions/:id/expire` | Erasure | Open goes to `expired`. A non-open session returns Stripe's exact 400 `invalid_request_error` "Only Checkout Sessions with a status in [\"open\"] can be expired. This Checkout Session has a status of `complete`." text, which `isCheckoutNonExpireableRace` matches. |
 | `GET /v1/billing_portal/configurations/:id?expand[]=features.subscription_update.products` | Portal Job attestation | `bpc_…`, `active`, `livemode`, payment-method update, invoice history, cancel `at_period_end`, `subscription_update.enabled`, `default_allowed_updates: ["price"]`, and products with `adjustable_quantity.enabled: false` and exact price lists, all taken from the fake's catalogue. |
@@ -205,8 +205,9 @@ prefix on a second loopback port. The Stripe-facing origin never serves control
 routes, so the runtime can never reach them.
 
 - **Checkout outcomes.** `checkout.complete(sessionId, { customerId? })` creates
-  or reuses the Customer and an `active` Subscription for the session's Price
-  and quantity, then emits `checkout.session.completed` and
+  or reuses the Customer and creates a Subscription for the session's Price
+  and quantity: `trialing` with `trial_start`/`trial_end` and no payment required
+  when `subscription_data.trial_period_days` is set, otherwise `active`. It emits `checkout.session.completed` and
   `customer.subscription.created`. `checkout.expire(sessionId)` does the expiry.
   The Checkout and Portal URLs use the real Stripe hostnames, because the
   runtime's validators require them. They are placeholders: the fake serves no
@@ -222,7 +223,9 @@ routes, so the runtime can never reach them.
   Price and status, for example after seat convergence.
 - **Time.** The clock defaults to the real time at creation and then only moves
   forward. `clock.advance(seconds)` advances it, and also expires due Checkouts
-  and period-end cancellations, emitting their events.
+  and period-end cancellations, emitting their events. Due trials convert to
+  `active` with a new billing period, unless scheduled cancellation ends them
+  first. Trial payment failure uses the ordinary `failPayment` control.
 - **Delivery.** Delivery is `"auto"` by default: each event is sent as soon as
   its transition commits. In `"manual"` mode, events queue up, and the test
   calls `events.pending()`, `events.deliver(eventId?)`,
