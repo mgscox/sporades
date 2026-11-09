@@ -568,9 +568,12 @@ export function bindJobResources(database: RecordValue, context: RecordValue, cl
           return [name, wrapTable(table)];
         }));
         const intentIds: string[] = [];
+        // Only the already-audited userless Job gets exact-Team serialization.
+        const teams = privileged ? hooks.createTeams(adapter, scopeContext) : undefined;
         const scope = Object.freeze({
           app: database.app,
           db: Object.freeze(db), signal: controller.signal,
+          ...(teams ? { teams: Object.freeze({ lockLifecycle: (...args: any[]) => track(() => teams.lockLifecycle(...args)) }) } : {}),
           jobs: Object.freeze({ enqueue: (...args: any[]) => track(() => scopeContext!.jobs.enqueue(...args)) }),
           log: Object.freeze(Object.fromEntries(["info", "warn", "error"].map((level) => [level, () => {
             assertLive(true); if (logs.length >= 100) throw resourceError("RESOURCE_INVALID_INPUT"); logs.push(level);

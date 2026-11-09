@@ -899,7 +899,7 @@ export type CurrentUserTeamsApi = {
  * before the runtime can return a result.
  */
 export type PrivilegedTeamsApi = {
-  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
+  /** Retain an exact Team lifecycle lock in an already-active write transaction (including atomic Stripe consequences). This is inspection/serialization only: no user, membership mutation or admin authority. Nontransactional Jobs/Privileged callbacks and expired contexts fail closed. Privileged SQLite/PostgreSQL Jobs can instead use scope.teams.lockLifecycle inside resources.run. Pending acquisition/member reads that outlive the callback reject and roll back even when caught; successfully admitted locks remain held through outer commit. Call before responsibility reads/writes, without provider network calls. */
   lockLifecycle(teamId: string, memberUserId?: string): Promise<TeamLifecycleSnapshot>;
   /** Returns the exact accepted-membership total for an existing Team. */
   countMembers(teamId: string): Promise<TeamMemberCountResult>;
@@ -1114,6 +1114,8 @@ export type ResourceScope<Schema extends SchemaDefinition = SchemaDefinition> = 
   signal: AbortSignal;
   /** Stages a durable notification in the owning resource transaction. No SMTP I/O occurs before commit. */
   notifications: { accept(input: ResourceNotification): Promise<{ id: string; state: "staged" }> };
+  /** Present only in already-Privileged SQLite/PostgreSQL Job scopes. Retains exact-Team lifecycle locks through commit/rollback; no administration or provider I/O. Take before protected reads/writes. */
+  readonly teams?: Readonly<Pick<PrivilegedTeamsApi, "lockLifecycle">>;
 }>;
 export type ResourceStatus = { state: "absent" } | { state: "committed"; result: JsonValue; intentIds: string[]; intents?: ResourceNotificationIntentStatus[] };
 /** Explicit v1 resource-scope support matrix. libSQL rejects before callback or status work. */

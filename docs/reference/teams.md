@@ -196,7 +196,9 @@ The same server-only seam is available to already-Privileged code in an existing
 write transaction, including `stripeEvent({ consequence: "atomic" }, handler)`.
 It grants that userless context only exact member inspection and serialization,
 never membership mutation/admin authority. Nontransactional Jobs, read-only
-queries, and expired contexts refuse the lock. Use atomic Stripe consequences
+queries, and expired contexts refuse the lock. Scheduled and other Privileged
+Jobs can use the [resource-transaction alternative](jobs-and-schedules.md#team-lifecycle-locks-in-scheduled-jobs)
+on SQLite or PostgreSQL. Use atomic Stripe consequences
 for provider observations. Pending lock acquisition and member reads must finish
 while the Privileged callback is active; otherwise they reject without returning
 a snapshot and roll back the outer transaction even if caught. A successfully
