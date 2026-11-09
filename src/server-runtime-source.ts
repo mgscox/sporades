@@ -102,6 +102,7 @@ import {
   requestTeamBillingPlanTransition,
   settleExhaustedTeamBillingManagementJob,
   stageTeamBillingMembershipChange,
+  prepareTeamBillingUsageChange,
 } from "./team-billing-management.js";
 import {
   TEAM_BILLING_ERASURE_JOB,
@@ -196,7 +197,7 @@ const mutationResultsWithWrites = new WeakSet<object>();
 // ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
 // move their live connections off the old actor before any subscription refreshes.
 const revokedHumanSessionsByMutationResult = new WeakMap<object, string[]>();
-const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "team-billing.usage", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -1084,6 +1085,10 @@ export async function openDevDatabase(
     runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
       ? function (this: LooseRecord, transaction: LooseRecord, auth: LooseRecord, input: LooseRecord, signal?: AbortSignal) {
         return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
+      } : undefined,
+    runTeamBillingUsage: teamBillingDefinition?.usage
+      ? function (this: LooseRecord, transaction: LooseRecord, input: LooseRecord) {
+        return runBoundedTeamPolicy(this, transaction, {}, input, undefined, teamBillingDefinition.usage, "team-billing.usage");
       } : undefined,
     runTeamBillingAuthority: teamBillingDefinition
       ? async function (this: LooseRecord, transactionAdapter: LooseRecord, auth: LooseRecord, input: LooseRecord) {
@@ -4136,6 +4141,13 @@ function createTransactionDatabase(database: LooseRecord, transactionAdapter: an
     __pendingLogWrites: pendingLogWrites,
   };
   bindPostgresAclDependencyLocking(transactionDatabase, adapter);
+  if (database.teamBillingDefinition?.usage) transactionDatabase.prepareTeamBillingUsageChange = (teamId: string) => {
+    const context = handlerContextByDatabase.get(transactionDatabase)?.();
+    const usageDatabase = Object.assign(Object.create(transactionDatabase), {
+      scheduleTeamBillingJobDispatch: () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase, context),
+    });
+    return prepareTeamBillingUsageChange(usageDatabase, teamId);
+  };
   transactionDatabase.stageTeamBillingMembershipChange = (teamId: string) =>
     stageTeamBillingMembershipChange(transactionDatabase, teamId);
   transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(
@@ -4949,7 +4961,7 @@ async function runBoundedTeamPolicy(database: LooseRecord, transactionAdapter: L
       failOnReadError: true,
     }, async (db, assertActive) => {
       const evaluation = Promise.resolve().then(() => policy(Object.freeze({
-        app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+        app: root.app, ...(purpose === "team-billing.usage" ? {} : { auth: Object.freeze({ ...auth }) }), db, signal: controller.signal,
       }), input));
       const aborted = new Promise<never>((_, reject) => {
         const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));

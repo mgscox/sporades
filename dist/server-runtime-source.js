@@ -45,7 +45,7 @@ import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./use
 import { countAcceptedTeamMembers, countTeamAdmins, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
-import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, } from "./team-billing-management.js";
+import { TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, prepareTeamBillingUsageChange, } from "./team-billing-management.js";
 import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, performTeamBillingErasure, prepareTeamBillingErasure, repairTeamBillingErasureStateAtStartup, settleExhaustedTeamBillingErasureJob, } from "./team-billing-erasure.js";
 // Batch 8. Nine names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
@@ -82,7 +82,7 @@ const mutationResultsWithWrites = new WeakSet();
 // ADR-0057: user IDs whose human identity a committed Mutation terminated, so the WebSocket hub can
 // move their live connections off the old actor before any subscription refreshes.
 const revokedHumanSessionsByMutationResult = new WeakMap();
-const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "files.ingress-admission", "endpoint.multipart-admission"]);
+const trustedReadPurposes = new Set(["teams.create-admission", "teams.destructive-policy", "teams.join-admission", "team-billing.authority", "team-billing.usage", "files.ingress-admission", "endpoint.multipart-admission"]);
 const trustedReadTransactionAdapter = Symbol("sporades.trustedReadTransactionAdapter");
 const runtimeOwnedJobEnqueueHandler = Symbol("sporades.runtimeOwnedJobEnqueueHandler");
 const atomicStripeEventDefinitionBrand = Symbol.for("sporades.stripeEvent.atomicDefinition");
@@ -962,6 +962,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         runTeamDestructivePolicy: typeof capsuleDefinition?.teams?.authorizeDestructive === "function"
             ? function (transaction, auth, input, signal) {
                 return runBoundedTeamPolicy(this, transaction, auth, input, signal, capsuleDefinition.teams.authorizeDestructive.bind(capsuleDefinition.teams), "teams.destructive-policy");
+            } : undefined,
+        runTeamBillingUsage: teamBillingDefinition?.usage
+            ? function (transaction, input) {
+                return runBoundedTeamPolicy(this, transaction, {}, input, undefined, teamBillingDefinition.usage, "team-billing.usage");
             } : undefined,
         runTeamBillingAuthority: teamBillingDefinition
             ? async function (transactionAdapter, auth, input) {
@@ -4005,6 +4009,14 @@ function createTransactionDatabase(database, transactionAdapter, writeState) {
         __pendingLogWrites: pendingLogWrites,
     };
     bindPostgresAclDependencyLocking(transactionDatabase, adapter);
+    if (database.teamBillingDefinition?.usage)
+        transactionDatabase.prepareTeamBillingUsageChange = (teamId) => {
+            const context = handlerContextByDatabase.get(transactionDatabase)?.();
+            const usageDatabase = Object.assign(Object.create(transactionDatabase), {
+                scheduleTeamBillingJobDispatch: () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase, context),
+            });
+            return prepareTeamBillingUsageChange(usageDatabase, teamId);
+        };
     transactionDatabase.stageTeamBillingMembershipChange = (teamId) => stageTeamBillingMembershipChange(transactionDatabase, teamId);
     transactionDatabase.scheduleTeamBillingJobDispatch = () => deferOrScheduleJobDispatch(transactionDatabase, transactionDatabase.__rootDatabase);
     if (typeof database.log?.withDatabase === "function") {
@@ -4771,7 +4783,7 @@ async function runBoundedTeamPolicy(database, transactionAdapter, auth, input, s
             failOnReadError: true,
         }, async (db, assertActive) => {
             const evaluation = Promise.resolve().then(() => policy(Object.freeze({
-                app: root.app, auth: Object.freeze({ ...auth }), db, signal: controller.signal,
+                app: root.app, ...(purpose === "team-billing.usage" ? {} : { auth: Object.freeze({ ...auth }) }), db, signal: controller.signal,
             }), input));
             const aborted = new Promise((_, reject) => {
                 const fail = () => reject(commandError("Team operation denied.", "The Capsule policy could not authorize this Team operation.", "TEAM_POLICY_DENIED"));

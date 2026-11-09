@@ -131,6 +131,68 @@ test("verified trial evidence is retained for admission without granting paid en
   } finally { fixture.close(); }
 });
 
+test("tied active and trial observations retain trial guards in either delivery order", async () => {
+  for (const statuses of [["active", "trialing"], ["trialing", "active"]]) {
+    const fixture = await openFixture();
+    try {
+      for (const status of statuses) {
+        await applyVerifiedTeamBillingObservation(fixture.database,
+          subscriptionEvent(`evt_tied_${status}`, "customer.subscription.updated", {
+            operationId, status, occurred: periodStart + 10,
+          }));
+      }
+      assert.deepEqual(await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId), {
+        state: "attention-required", teamId, reason: "provider-state-ambiguous",
+      });
+      const { stageTeamBillingMembershipChange } = await import("../dist/team-billing-management.js");
+      assert.deepEqual(await stageTeamBillingMembershipChange(fixture.database, teamId), { staged: false });
+      await applyVerifiedTeamBillingObservation(fixture.database,
+        subscriptionEvent("evt_trial_recovery", "customer.subscription.updated", { occurred: periodStart + 11 }));
+      assert.equal((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state, "active");
+    } finally { fixture.close(); }
+  }
+});
+
+test("tied schedule observations retain the transition guard in either delivery order", async () => {
+  for (const schedules of [[null, "sub_sched_external"], ["sub_sched_external", null]]) {
+    const fixture = await openFixture();
+    try {
+      for (const [index, schedule] of schedules.entries()) {
+        const event = subscriptionEvent(`evt_schedule_tie_${index}`, "customer.subscription.updated", { operationId });
+        event.raw.data.object.schedule = schedule;
+        await applyVerifiedTeamBillingObservation(fixture.database, event);
+      }
+      assert.equal(fixture.getSubscription().hasSchedule, 1);
+    } finally { fixture.close(); }
+  }
+});
+
+test("below-floor usage evidence retains trial guards and terminal latches without quantity repair", async () => {
+  for (const [status, state] of [["trialing", "trialing"], ["incomplete_expired", "cancelled"]]) {
+    const fixture = await openFixture({ memberCount: 6, operationQuantity: 6 });
+    try {
+      await applyVerifiedTeamBillingObservation(fixture.database,
+        subscriptionEvent("evt_usage_seed", "customer.subscription.created", { operationId, quantity: 6 }));
+      fixture.definition.catalogue.agency.quantity = { kind: "usage", meter: "venues", minimum: 6 };
+      fixture.adapter.exec("CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT)");
+      fixture.adapter.prepare("INSERT INTO [sporades_teams] VALUES (?, 'Usage Team')").run(teamId);
+      let usageReads = 0;
+      fixture.database.runTeamBillingUsage = () => { usageReads++; return { venues: 7 }; };
+      let repairs = 0;
+      fixture.database.enqueueTeamBillingSeatConvergenceJob = async () => { repairs++; };
+      assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database,
+        subscriptionEvent("evt_usage_guard", "customer.subscription.updated", {
+          status, quantity: 5, occurred: periodStart + 20,
+        })), { applied: true });
+      assert.equal(fixture.getSubscription().state, state);
+      assert.equal(fixture.getSubscription().terminalLatch, state === "cancelled" ? 1 : 0);
+      assert.notEqual((await safeTeamBillingProjection(fixture.adapter, fixture.definition, teamId)).state, "active");
+      assert.equal(usageReads, 0);
+      assert.equal(repairs, 0);
+    } finally { fixture.close(); }
+  }
+});
+
 test("malformed, catalogue-conflicting, multi-item, and association-conflicting evidence quarantines once", async () => {
   const fixture = await openFixture();
   try {
