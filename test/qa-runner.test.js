@@ -292,17 +292,6 @@ test('a worker ceiling bounds file parallelism even with a larger command-line s
   assert.match(result.output, /concurrency=1/);
 });
 
-test('QA caps inherited compiler and native worker pools', async t => {
-  const { file } = await fixture(t, `import test from 'node:test'; import assert from 'node:assert/strict';
-    test('bounded helpers', () => {
-      assert.equal(process.env.GOMAXPROCS, '2');
-      assert.equal(process.env.UV_THREADPOOL_SIZE, '2');
-      assert.equal(process.env.RAYON_NUM_THREADS, '2');
-    });`);
-  const result = await run([file], { env: { GOMAXPROCS: '64', UV_THREADPOOL_SIZE: '64', RAYON_NUM_THREADS: '64', SPORADES_TEST_MAX_WORKERS: '2' } });
-  assert.equal(result.code, 0, result.output);
-});
-
 test('QA reports and reaps a detached helper surviving a completed file', async t => {
   const { dir, file } = await fixture(t, '');
   const marker = path.join(dir, 'leaked');

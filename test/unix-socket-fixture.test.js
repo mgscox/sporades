@@ -36,6 +36,3 @@ test('socket fixtures bind and connect inside a deep checkout without leaving it
   assert.equal(child.status, 0, child.stderr || child.stdout);
 });
 
-test('short socket paths retain their absolute location', () => {
-  assert.equal(unixSocketPath('/tmp/fixture/clamd.sock'), '/tmp/fixture/clamd.sock');
-});

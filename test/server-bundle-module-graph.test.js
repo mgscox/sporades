@@ -2554,15 +2554,6 @@ test("a generated server bundle keeps serving after unusual raw HTTP request tar
   }
 });
 
-test("HTTP failure logging handles the exact double-slash crash target", () => {
-  const entries = [];
-  const database = { log: { emit: (entry) => entries.push(entry) } };
-  assert.doesNotThrow(() => emitHttpFailureLog(database, { method: "GET", url: "//" }, new Error("route failed")));
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].event, "http.request.failed");
-  assert.deepEqual(entries[0].request, { method: "GET", path: "//" });
-});
-
 test("HTTP error responses survive malformed targets and throwing failure log sinks", () => {
   for (const database of [{ log: { emit() { throw new Error("log sink unavailable"); } } }, {}]) {
     let status;

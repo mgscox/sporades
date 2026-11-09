@@ -7,10 +7,6 @@ import { test } from "node:test";
 import { openDevDatabase } from "../dist/server-runtime-source.js";
 import { createTeamBillingTables, normalizeTeamBillingDefinition, readCurrentUserTeamBilling, startTeamBillingCheckout } from "../dist/team-billing-runtime.js";
 
-test("Team Checkout is an operation-specific runtime command", () => {
-  assert.equal(typeof startTeamBillingCheckout, "function");
-});
-
 test("Team Billing declaration is dormant when omitted and validates an exact two-mode catalogue", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-team-billing-declaration-"));
   const databasePath = path.join(dir, "data.db");

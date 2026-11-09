@@ -54,8 +54,9 @@ Separate harnesses prevent Node 22’s ordered reporting from hiding completed
 sibling-file results behind an earlier hang. The Dev suite keeps all 215 original registration blocks and 68 helper
 declarations across `dev.test.js`, `dev-part-2.test.js` through
 `dev-part-6.test.js`, and `support/dev-fixture.js`. The split gives separate processes independent temporary Capsules.
-Host retains 279 original registration blocks across four files and Deploy
-retains 91 across two; their shared helpers and Host before/after hooks run in
+Host retains 277 registration blocks across four files and Deploy retains 85
+across two (duplicate and tautological blocks were removed in the 2026-11 test
+review); their shared helpers and Host before/after hooks run in
 each isolated process. The explicit real-Host entry points remain in
 `host.test.js`. The shared Dev fixture recognizes already-closed sockets and arms schema-rebuild
 observers before writes. It buffers WebSocket frames so sequential reads retain mutation
