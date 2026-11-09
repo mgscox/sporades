@@ -28,7 +28,11 @@ npm run test:qa -- --report="$CUBEFARM_JOB_SCRATCH/qa-times.json"
 
 The QA command builds and verifies generated CLI parity inside its overall
 **two-hour safety deadline**. QA starts **up to four file harnesses**, bounded by available CPUs, each using
-`node --test --test-concurrency=1`. The pool sets the file concurrency;
+`node --test --test-concurrency=1`. The custom progress reporter is passed to
+`node --test` as a `file://` URL, not a bare path, so the same gate runs on
+Windows desks too: Node's ESM loader rejects a `C:\...` reporter path with
+`ERR_UNSUPPORTED_ESM_URL_SCHEME`. Positional test file arguments remain plain
+paths on every platform. The pool sets the file concurrency;
 compiler-heavy
 files run in a separate memory lane, **two at a time** by default
 (`SPORADES_TEST_HEAVY_CONCURRENCY=1` restores one-at-a-time). `GOMAXPROCS`,

@@ -6,6 +6,7 @@ import { createConnection } from 'node:net';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { processes, systemMemory, descendants } from './test-resources.mjs';
+import { testHarnessArgs } from './test-harness-args.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const reporter = fileURLToPath(new URL('./test-reporter.mjs', import.meta.url));
@@ -424,7 +425,7 @@ try {
       await Promise.all(Array.from({ length: Math.min(limit, files.length) }, async () => {
         while (next < files.length && !timedOut && !interrupted && !resourceExhaustion) {
           const file = files[next++];
-          const code = await command(process.execPath, ['--test', '--test-concurrency=1', `--test-reporter=${reporter}`, file], { structured: true, file });
+          const code = await command(process.execPath, testHarnessArgs({ reporter, file }), { structured: true, file });
           if (code && !resourceExhaustion && !completed.get(file)?.failed && !partial.get(file)?.failed) infrastructureFailures++;
         }
       }));
