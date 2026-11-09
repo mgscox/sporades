@@ -405,7 +405,11 @@ transaction. Writes that omit the lifecycle lock do not trigger immediate
 quantity staging; startup repair reconstructs missing intent from the exact
 hook count. Provider updates use the existing latest-wins durable controller,
 stable proration date and `create_prorations`, with no Stripe I/O inside the
-resource transaction. Only verified Subscription evidence settles the target.
+resource transaction. If usage changes while Checkout is open, the first
+Subscription observation must still match the issued Checkout. Sporades retains
+that validated association and stages the latest exact quantity; billing stays
+pending until corrected Subscription evidence arrives. Only verified
+Subscription evidence settles the target.
 The stateful Stripe fake accepts these licensed quantities and can inject drift
 with `subscriptions.setQuantity(...)`.
 

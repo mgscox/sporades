@@ -4,7 +4,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { settleVerifiedTeamBillingTarget, stageTeamBillingUsageRepair, stageAcknowledgedTeamBillingUsageTransitionRepair } from "./team-billing-management.js";
 import { teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
-import { billableTeamMemberQuantity, readTeamBillingQuantity } from "./team-billing-quantity.js";
+import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 
 type LooseRecord = Record<string, any>;
 
@@ -177,10 +177,6 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   )).get(teamId))?.count ?? 0);
   const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
   const product = database.teamBillingDefinition.catalogue[normalized.productKey];
-  if (!existing && product.quantity.kind === "usage"
-    && normalized.quantity !== await readTeamBillingQuantity(database, tx, teamId, product.quantity)) {
-    throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
-  }
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
   }

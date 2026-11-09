@@ -135,6 +135,32 @@ test("usage Checkout reads exact cross-owner counts with the declared minimum", 
   });
 });
 
+for (const [initialCount, finalCount, quantity] of [[6, 7, 7], [7, 5, 6]]) {
+  test(`usage changing from ${initialCount} to ${finalCount} during Checkout repairs before granting entitlement`, async t => {
+    await fixture(t, async ({ database, fake, change, settle, truth, teamId, auth }) => {
+      for (let index = 0; index < initialCount; index++) assert.equal((await change("add")).error, null);
+      await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi");
+      await settle();
+      const checkout = fake.state().checkouts[0];
+      assert.equal(checkout.line_items.data[0].quantity, initialCount);
+      if (finalCount > initialCount) assert.equal((await change("add")).error, null);
+      else {
+        const venues = database.adapter.prepare("SELECT [id] FROM [venues] LIMIT 2").all();
+        for (const venue of venues) assert.equal((await change("remove", venue.id)).error, null);
+      }
+      const session = await fake.checkout.complete(checkout.id);
+      await fake.events.deliver(); await settle();
+      assert.equal((await truth()).state, "pending", "provider acknowledgement grants no entitlement");
+      assert.equal(fake.subscriptions.get(session.subscription).items.data[0].quantity, quantity);
+      const update = fake.requests().filter(request => request.operation === "subscriptions.update").at(-1);
+      assert.equal(update.parameters.proration_behavior, "create_prorations");
+      await fake.events.deliver(); await settle();
+      assert.equal((await truth()).state, "active");
+      assert.equal((await truth()).quantity, quantity);
+    });
+  });
+}
+
 test("venue writes atomically sync 6 to 7 and back, enforce maximum, and repair verified drift", async t => {
   await fixture(t, async ({ database, fake, change, settle, truth, teamId, auth }) => {
     await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi");
