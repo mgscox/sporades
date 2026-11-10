@@ -2462,7 +2462,7 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
       createStripeCallbackEndpoint,
       createStripeTeamBillingProvider: () => ({
         async retrievePortalConfiguration(input) {
-          assert.deepEqual(Object.keys(input).sort(), ["configurationId", "endTrial", "expectedProducts", "mode"]);
+          assert.deepEqual(Object.keys(input).sort(), ["configurationId", "endTrial", "expectedPolicy", "expectedProducts", "mode"]);
           retrieved.push(input);
           if (blockNextRetrieval) { markRetrievalStarted(); await retrievalRelease; }
           if (malformedNextAttestation) { malformedNextAttestation = false; return { ok: false }; }
@@ -2516,6 +2516,7 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
       mode: "sandbox",
       endTrial: false,
       expectedProducts: [{ productId: "prod_test_agency", priceIds: ["price_test_agency", "price_test_agency_pro"] }],
+      expectedPolicy: { prorationBehavior: "create_prorations", billingCycleAnchor: "unchanged", scheduleAtPeriodEnd: [] },
     });
     assert.deepEqual(created[0], {
       customerId: "cus_team_portal", configurationId: "bpc_test_agency", returnPath: "/settings/billing",

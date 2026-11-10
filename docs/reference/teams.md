@@ -423,6 +423,30 @@ restarts. Reassigning a Price to a different interval returns `attention-require
 until fresh valid provider evidence arrives. When migrating a legacy binding to
 `prices`, obtain a fresh verified Subscription observation before relying on its interval.
 
+The Portal declaration also attests the reviewed configuration's subscription
+update policy before issuing each Portal URL:
+
+```ts
+portal: {
+  returnPath: "/billing",
+  prorationBehavior: "always_invoice",
+  billingCycleAnchor: "now",
+  scheduleAtPeriodEnd: ["shortening_interval"],
+}
+```
+
+`prorationBehavior` accepts `create_prorations` (default), `always_invoice`, or
+`none`; `billingCycleAnchor` accepts `unchanged` (default) or `now`.
+`scheduleAtPeriodEnd` defaults to `[]` (immediate updates), or contains distinct
+`decreasing_item_amount` and/or `shortening_interval` conditions. These correspond
+to Stripe's `features.subscription_update.proration_behavior`,
+`billing_cycle_anchor`, and `schedule_at_period_end.conditions[].type`.
+Every referenced Portal configuration must match this Capsule-wide declaration;
+Sporades does not edit Stripe configuration. A mismatch fails with a safe operation
+error and issues no Portal URL. Existing declarations now enforce the documented
+defaults, so review existing Portal configurations when upgrading. These Portal
+settings govern Portal switches; managed transitions use the rules below.
+
 A Price can also declare a default currency and exact regional amounts. This
 works on a legacy `priceId` binding or on each entry in an interval `prices` map:
 
@@ -879,9 +903,32 @@ Admission and the desired-state Job commit together. Before each provider
 attempt Sporades reauthorizes the original linked Team administrator, re-reads
 the current Subscription and catalogue, and derives the accepted-member count,
 floored by the target's declared `minimum` when it uses `team-members`. It
-updates the one attested Subscription item Price and quantity together using Stripe
-`create_prorations`, the desired intent's stable `proration_date`, and
-`pending_if_incomplete`; it does not create an immediate standalone invoice.
+updates the one attested Subscription item Price and quantity together using
+the desired intent's stable `proration_date` and `pending_if_incomplete`.
+For a paid Subscription, a longer declared recurring interval (for example monthly → annual) explicitly
+resets `billing_cycle_anchor` to `now` and sends `proration_behavior: always_invoice`,
+so flexible subscriptions invoice the new full period at the switch, with unused
+previous-period credit. The reset decision is stored with the intent for restart
+and idempotent retries. Once a reset has been attempted, quantity changes wait
+for verified Subscription evidence before a seat-only follow-up preserves the
+applied period. Recovery retrieves the provider Subscription and avoids another
+reset POST when the exact target, reset anchor and full recurring period are
+already applied. Resumed-reset recovery refuses a newly scheduled cancellation
+rather than issuing another invoicing reset. Renewal boundaries are measured
+from the original anchor, retaining its day across short-month and leap-year
+clamping. Before the first attempt,
+the target still refreshes to the latest
+accepted-member count. Other changes retain `create_prorations`. A continuing trial preserves its trial
+period without an anchor reset; `transitions.endTrial` starts and invoices the
+target period once through `trial_end: "now"`. Trial preservation is also stored
+with the intent. If the trial expires before dispatch or during pending payment,
+the provider read refuses a changed target before writing; request again after
+verified expiry evidence arrives. The anchor is
+encoded as a string before `2026-09-30.endive` (including the pinned dahlia API),
+and as `{ type: "now" }` from endive. Legacy single-Price bindings have no declared
+interval and retain their existing update behavior. Verified observations store
+`billing_mode.type` privately as `classic` or `flexible`; older evidence without
+it remains unknown, rather than being inferred from the API version.
 Payment action required becomes a safe failed state whose `payment-action-required`
 reason carries an expiring `paymentAction` capability: a validated
 `https://invoice.stripe.com/i/…` hosted-invoice URL plus its expiry, taken from

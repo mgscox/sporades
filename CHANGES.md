@@ -109,6 +109,8 @@ Changes since v0.9.46.
 
 ### Bug Fixes
 
+- Team Billing longer-interval upgrades explicitly reset the anchor and invoice immediately in flexible billing mode. Store observed billing mode, preserve attempted reset payloads through delayed callbacks and seat refreshes, encode dahlia/endive anchors correctly, and reject Portal proration, anchor or scheduling drift against declared policy. Existing Portal declarations now attest `create_prorations`, `unchanged`, and no scheduled conditions by default; review existing configurations when upgrading (#366).
+
 - Team Billing Checkout refuses new purchases while a non-terminal Subscription exists, including a recheck before deferred provider creation (#365).
 
 - Provide transaction-bound Team lifecycle locks in privileged Job resource scopes, including scheduled Jobs; keep ordinary nontransactional lock calls fail-closed (#356).

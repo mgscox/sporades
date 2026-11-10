@@ -881,6 +881,12 @@ export type TeamBillingDefinition<Schema extends SchemaDefinition = SchemaDefini
   /** Trusted Customer Portal return. Every catalogue binding must also declare Product and explicit Portal configuration IDs. */
   portal?: {
     returnPath: string;
+    /** Attested Portal update proration policy. Default create_prorations. */
+    prorationBehavior?: "create_prorations" | "always_invoice" | "none";
+    /** Attested Portal update anchor policy. Default unchanged. */
+    billingCycleAnchor?: "now" | "unchanged";
+    /** Attested conditions for deferring Portal changes. Default [] (immediate). */
+    scheduleAtPeriodEnd?: ("decreasing_item_amount" | "shortening_interval")[];
     /** How long a validated Portal URL may be returned to an authorized client; 60-1800 seconds, default 600. */
     continuationTtlSeconds?: number;
   };

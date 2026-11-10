@@ -307,7 +307,13 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(reference, /privilegedCtx\.teamBilling\.listQuarantines[\s\S]*provider object and Event IDs[\s\S]*capped at 100/i);
   assert.match(reference, /opt-in atomic[\s\S]*same transaction[\s\S]*legacy `stripeEvent\(handler\)`[\s\S]*after the platform commit/i);
   assert.match(reference, /fixed quantity[\s\S]*accepted-Team-member[\s\S]*requestPlanTransition/i);
-  assert.match(reference, /Price and quantity together[\s\S]*create_prorations[\s\S]*stable `proration_date`[\s\S]*pending_if_incomplete/i);
+  assert.match(reference, /Price and quantity together[\s\S]*stable `proration_date`[\s\S]*pending_if_incomplete/i);
+  assert.match(reference, /longer declared recurring interval[\s\S]*billing_cycle_anchor[\s\S]*always_invoice[\s\S]*Other changes retain `create_prorations`/i);
+  for (const field of ["prorationBehavior", "billingCycleAnchor", "scheduleAtPeriodEnd"]) {
+    assert.ok(reference.includes(field));
+    assert.ok(serverTypes.includes(field));
+  }
+  assert.match(reference, /mismatch fails with a safe operation[\s\S]*no Portal URL/i);
   assert.match(reference, /membership transaction[\s\S]*cannot roll that membership change back[\s\S]*per-Team lane/i);
   assert.match(reference, /acknowledgement[\s\S]*public state remains\s+pending[\s\S]*verified `customer\.subscription\.\*` evidence/i);
   assert.match(convergenceAdr, /Verified delivery is evidence, not billing truth/i);

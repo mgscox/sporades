@@ -1,3 +1,4 @@
+import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
 import { assertCurrencyHandoverInactive, readCurrencyHandoverLatch } from "./team-billing-currency-handover.js";
 import { normalizeModeBinding, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
 export { validTeamBillingInterval, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
@@ -107,7 +108,7 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     )),
     ...(["currency", "mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath", "paymentActionUrl", "paymentActionExpiresAt"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name, name === "quantity" || name === "providerExpiresAt" ? "INTEGER" : "TEXT"))),
-    ...(["currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
+    ...(["billingMode", "currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "TEXT"))),
     ...(["unitAmount", "lastEventRank", "terminalLatch", "hasSchedule"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
@@ -117,8 +118,11 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "resetBillingCycle", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "providerAttemptedAt", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "resume", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "endTrial", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "preserveTrial", "INTEGER"),
   ]);
 }
 
@@ -167,7 +171,7 @@ export function normalizeTeamBillingDefinition(value: any) {
 
 function normalizePortalDefinition(value: any, catalogue: LooseRecord) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
+    || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds", "prorationBehavior", "billingCycleAnchor", "scheduleAtPeriodEnd"].includes(key))) throw invalidDeclaration();
   const returnPath = canonicalReturnPath(value.returnPath);
   const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
   if (!returnPath || !Number.isInteger(continuationTtlSeconds)
@@ -187,7 +191,9 @@ function normalizePortalDefinition(value: any, catalogue: LooseRecord) {
       configurationModes.set(binding.portalConfigurationId, mode);
     }
   }
-  return Object.freeze({ returnPath, continuationTtlSeconds });
+  let policy;
+  try { policy = normalizeTeamBillingPortalPolicy(value); } catch { throw invalidDeclaration(); }
+  return Object.freeze({ returnPath, continuationTtlSeconds, ...policy });
 }
 
 function normalizeCheckoutDefinition(value: any) {
@@ -577,7 +583,7 @@ export async function performTeamBillingPortal(database: LooseRecord, context: L
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?",
       )).run(now, now, operationId);
-      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts,
+      return { configurationId: desired.configurationId, mode: desired.mode, expectedProducts: desired.expectedProducts, expectedPolicy: desired.expectedPolicy,
         endTrial: database.teamBillingDefinition.transitions?.endTrial === true };
     });
   } catch (error: any) {
@@ -1003,6 +1009,7 @@ async function portalDesiredState(database: LooseRecord, transaction: LooseRecor
     configurationId: binding.portalConfigurationId,
     returnPath: database.teamBillingDefinition.portal.returnPath,
     expectedProducts,
+    expectedPolicy: normalizeTeamBillingPortalPolicy(database.teamBillingDefinition.portal),
   };
 }
 

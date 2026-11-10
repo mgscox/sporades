@@ -93,11 +93,25 @@ Price's `recurring` unit (`day`, `week`, `month`, or `year`) and optional
 `intervalCount` (default `1`), then include all offered Price IDs in the reviewed
 Portal configuration. For example, one Product's `prices` can be
 `[{ id: "price_month", recurring: "month" }, { id: "price_year", recurring: "year" }]`.
-Calendar periods clamp month/year renewals to the last valid day. An applied
-interval change resets the period at the fake clock; a pending payment leaves
-the active Price and period intact until `completePayment`. The fake validates
-proration parameters but does not calculate prorated amounts or credits. Anchored
-currency replacements record their full configured amount when the anchor is due.
+Calendar periods clamp month/year renewals to the last valid day while retaining
+the original anchor day for later renewals (January 31 → April 30 → July 31 for a
+quarterly Price). Natural trial conversion anchors the paid period at the trial end. An applied
+interval change resets the period only in classic mode. Checkout completion
+accepts `{ billingMode: "classic" | "flexible" }` per subscription, defaulting to
+`flexible`. Flexible interval changes preserve the anchor unless the update
+explicitly resets it; `always_invoice` accompanies managed longer-interval resets.
+A pending payment leaves the active Price and period intact until `completePayment`.
+Without currency declarations, optional Price `unitAmount` is integer USD cents
+(default 1000). Currency-declared Prices use integer minor units and the
+subscription's selected regional amount. `state().invoices` records successful
+reset invoices in that currency with a full-period target line and a simple
+second-based unused-period credit. This narrow model excludes taxes, discounts,
+currency conversion, and general proration accounting; verify Stripe's actual
+amounts separately. Portal fixtures accept `prorationBehavior`, `billingCycleAnchor`,
+and `scheduleAtPeriodEnd`, with the same defaults as the Capsule declaration,
+to test policy attestation and drift.
+Anchored currency replacements record their full configured amount when the anchor
+is due. Their initial free period generates no unused paid-period credit on reset.
 
 ## Control transitions and delivery
 
@@ -111,7 +125,7 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | --- | --- |
 | `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. Setup-mode Sessions instead save a payment method through a successful SetupIntent without creating a Subscription or charging. An existing Session Customer cannot be replaced. |
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
-| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period if its recurring interval/count changes, and emits an update. |
+| `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period on interval/count changes only in classic mode, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `trialing`, `incomplete`, `incomplete_expired`, `canceled`; canceled and expired Subscriptions stay terminal. |
 | `subscriptions.setSchedule(id, scheduleId)` | Attaches an external `sub_sched_…` identity or clears it with `null`, emitting an update for transition-guard tests. |
@@ -121,7 +135,7 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
 | `subscriptions.get(id)`, `customers.subscriptions(customerId)` | Inspects provider state. |
 | `customers.setBalance(customerId, currency, amount)` | Sets an exact integer Customer balance for currency-handover refusal tests. |
-| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, converting due trials to active, and billing an anchored replacement when due. |
+| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, converting due trials to active, and billing due paid periods, including anchored replacements. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
 
 Team Billing catalogue products declared with `trialDays` use trial Checkout through the real

@@ -398,6 +398,42 @@ test("Portal session creation rejects mismatched provider correlation and unsafe
   }
 });
 
+for (const apiVersion of ["2026-08-26.dahlia", "2026-09-30.endive"]) {
+  test(`longer-interval upgrades reset the anchor and invoice using ${apiVersion}`, async () => {
+    let payload;
+    await withProvider(async (request, response) => {
+      if (request.method === "POST") payload = new URLSearchParams(await readBody(request));
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(request.method === "GET"
+        ? validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency" })
+        : validManagedSubscription()));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config: { ...config, apiVersion }, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true });
+    });
+    assert.equal(payload.get("proration_behavior"), "always_invoice");
+    assert.equal(payload.get(apiVersion.endsWith(".endive") ? "billing_cycle_anchor[type]" : "billing_cycle_anchor"), "now");
+    assert.equal(payload.has(apiVersion.endsWith(".endive") ? "billing_cycle_anchor" : "billing_cycle_anchor[type]"), false);
+    assert.equal(payload.get("payment_behavior"), "pending_if_incomplete");
+  });
+}
+
+test("Portal attestation rejects proration, anchor and scheduling drift with a safe error", async () => {
+  for (const override of [
+    { proration_behavior: "none" },
+    { billing_cycle_anchor: "now" },
+    { schedule_at_period_end: { conditions: [{ type: "shortening_interval" }] } },
+  ]) {
+    await withProvider((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(mergePortalConfiguration(validPortalConfiguration(), { features: { subscription_update: override } })));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      await assert.rejects(provider.retrievePortalConfiguration(portalConfigurationInput), rejectedProviderFailure);
+    });
+  }
+});
+
 test("managed subscription updates attest current state and send one stable atomic Price and quantity change", async () => {
   const observed = [];
   await withProvider(async (request, response) => {
@@ -559,6 +595,10 @@ test("managed subscription updates enforce the exact mode and operation envelope
   for (const override of [
     { mode: "live" },
     { operationKind: "portal-change" },
+    { preserveTrial: "true" },
+    { preserveTrial: true, endTrial: true },
+    { preserveTrial: true, resetBillingCycle: true },
+    { preserveTrial: true, operationKind: "seat-convergence" },
     { prorationDate: 2_000_000_123.5 },
     { unexpected: true },
   ]) {
@@ -676,6 +716,9 @@ function validPortalConfiguration() {
         enabled: true,
         default_allowed_updates: ["price"],
         trial_update_behavior: "continue_trial",
+        proration_behavior: "create_prorations",
+        billing_cycle_anchor: "unchanged",
+        schedule_at_period_end: { conditions: [] },
         products: [
           { product: "prod_agency", prices: ["price_test_agency_monthly"], adjustable_quantity: { enabled: false } },
           { product: "prod_studio", prices: ["price_test_studio_monthly", "price_test_studio_yearly"], adjustable_quantity: { enabled: false } },
@@ -791,3 +834,64 @@ function readBody(request) {
     request.on("error", reject);
   });
 }
+
+for (const [interval, count, anchor, start, end] of [
+  ["month", 1, "2027-01-31", "2027-02-28", "2027-03-31"],
+  ["month", 3, "2027-01-31", "2027-04-30", "2027-07-31"],
+  ["month", 3, "2027-01-31", "2027-07-31", "2027-10-31"],
+  ["year", 1, "2024-02-29", "2027-02-28", "2028-02-29"],
+  ["week", 2, "2027-01-31", "2027-02-14", "2027-02-28"],
+  ["day", 3, "2027-01-31", "2027-02-03", "2027-02-06"],
+]) test(`reset recovery accepts the anchored ${interval}:${count} period ${start}–${end} without a POST`, async () => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  const current = validManagedSubscription();
+  current.billing_cycle_anchor = seconds(anchor);
+  Object.assign(current.items.data[0], { current_period_start: seconds(start), current_period_end: seconds(end) });
+  Object.assign(current.items.data[0].price.recurring, { interval, interval_count: count });
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    assert.deepEqual(await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, prorationDate: seconds(anchor) }), { ok: true, outcome: "acknowledged" });
+  });
+  assert.equal(writes, 0);
+});
+
+for (const cancellation of [{ cancel_at_period_end: true }, { cancel_at: 1_800_000_000 }])
+test(`resumed reset recovery rejects new ${Object.keys(cancellation)[0]} without a write`, async () => {
+  const anchor = Date.parse("2027-01-01T00:00:00Z") / 1000;
+  const current = { ...validManagedSubscription(), ...cancellation, billing_cycle_anchor: anchor };
+  Object.assign(current.items.data[0], { current_period_start: anchor, current_period_end: Date.parse("2027-02-01T00:00:00Z") / 1000 });
+  current.items.data[0].price.recurring.interval_count = 1;
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, resume: true, prorationDate: anchor }), {
+      code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", retryable: false,
+    });
+  });
+  assert.equal(writes, 0);
+});
+
+for (const [start, end] of [["2027-04-29", "2027-07-31"], ["2027-04-30", "2027-07-30"], ["2027-05-31", "2027-08-31"]])
+test(`reset recovery does not acknowledge an unaligned or partial quarterly period ${start}–${end}`, async () => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  const current = validManagedSubscription();
+  current.billing_cycle_anchor = seconds("2027-01-31");
+  Object.assign(current.items.data[0], { current_period_start: seconds(start), current_period_end: seconds(end) });
+  Object.assign(current.items.data[0].price.recurring, { interval: "month", interval_count: 3 });
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, prorationDate: seconds("2027-01-31") });
+  });
+  assert.equal(writes, 1);
+});

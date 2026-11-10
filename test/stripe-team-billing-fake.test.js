@@ -47,9 +47,9 @@ async function fixture(t, options = {}) {
   const stripe = sdk(fake);
   return { fake, provider, stripe };
 }
-async function paid(f) {
-  const checkout = await f.provider.create(input);
-  const session = await f.fake.checkout.complete(checkout.sessionId);
+async function paid(f, options, checkoutInput = {}) {
+  const checkout = await f.provider.create({ ...input, ...checkoutInput });
+  const session = await f.fake.checkout.complete(checkout.sessionId, options);
   const subscription = f.fake.subscriptions.get(session.subscription);
   return { session, subscription, item: subscription.items.data[0] };
 }
@@ -155,11 +155,11 @@ test("endTrial never resets a paid period when a queued trial switch dispatches 
 });
 
 test("interval switches during a trial preserve its end for conversion and cancellation", async (t) => {
-  for (const via of ["portal", "provider-update", "pending-payment"]) for (const cancel of [false, true]) {
-    await t.test(`${via}: ${cancel ? "cancel" : "convert"}`, async (t) => {
+  for (const billingMode of ["classic", "flexible"]) for (const via of ["portal", "provider-update", "pending-payment"]) for (const cancel of [false, true]) {
+    await t.test(`${billingMode} ${via}: ${cancel ? "cancel" : "convert"}`, async (t) => {
       const { fake, provider } = await fixture(t);
       const checkout = await provider.create({ ...input, trialDays: 14 });
-      const session = await fake.checkout.complete(checkout.sessionId);
+      const session = await fake.checkout.complete(checkout.sessionId, { billingMode });
       const subscription = fake.subscriptions.get(session.subscription);
       const item = subscription.items.data[0];
       if (via === "portal") await fake.portal.switchPrice(subscription.id, "price_studio");
@@ -622,6 +622,14 @@ test("canonical and generated testing declarations compile the same consumer con
   await writeFile(probe, `
 import { createStripeTeamBillingFake, type StripeFakeFault, type StripeTeamBillingFakeOptions } from "sporades/testing/stripe";
 import { createStripeTeamBillingFake as generatedFactory } from ${JSON.stringify(path.resolve("dist/testing/stripe.js"))};
+import type { TeamBillingDefinition } from "sporades/server";
+const portal: NonNullable<TeamBillingDefinition["portal"]> = {
+  returnPath: "/billing", prorationBehavior: "always_invoice", billingCycleAnchor: "now",
+  scheduleAtPeriodEnd: ["shortening_interval", "decreasing_item_amount"],
+};
+// @ts-expect-error Only reviewed closed proration policies are accepted.
+const invalidPortal: NonNullable<TeamBillingDefinition["portal"]> = { returnPath: "/billing", prorationBehavior: "arbitrary" };
+void [portal, invalidPortal];
 import type { TeamBillingProductDeclaration, TeamBillingProjection as ServerTruth } from "sporades/server";
 import type { TeamBillingProjection as ClientTruth } from "sporades/client";
 const trial: ServerTruth = { state: "trialing", teamId: "team", productKey: "team", quantity: 2, trialEndsAt: "2026-11-22T00:00:00.000Z" };
@@ -640,9 +648,9 @@ async function guardControls(fake: Awaited<ReturnType<typeof createStripeTeamBil
   // @ts-expect-error trial control uses a Stripe status, not a public projection state.
   await fake.subscriptions.setStatus("sub_fixture", "cancelling");
 }
-const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
+const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3, unitAmount: 1500 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
-await fake.checkout.complete("cs_test_types");
+await fake.checkout.complete("cs_test_types", { billingMode: "flexible" });
 await fake.events.deliver(undefined, { badSignature: true });
 fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired", count: 1, when: "after" });
 await fake.subscriptions.setQuantity("sub_types", 3);
@@ -700,7 +708,7 @@ test('multi-interval Prices reset calendar periods only when an applied interval
   ] }], portalConfigurations: [{ id: 'bpc_team', products: [{ product: 'prod_team', prices: ['price_team', 'price_annual', 'price_quarter'] }] }] };
   const f = await fixture(t, { catalogue: multi });
   const { fake, provider } = f;
-  const { subscription, item } = await paid(f);
+  const { subscription, item } = await paid(f, { billingMode: "classic" });
   await fake.clock.advance(86400);
   const annual = await fake.portal.switchPrice(subscription.id, 'price_annual');
   const annualItem = annual.items.data[0];
@@ -715,4 +723,121 @@ test('multi-interval Prices reset calendar periods only when an applied interval
   assert.equal(applied.items.data[0].current_period_start, fake.state().now);
   const start = new Date(fake.state().now * 1000);
   assert.equal(new Date(applied.items.data[0].current_period_end * 1000).getUTCMonth(), (start.getUTCMonth() + 3) % 12);
+});
+
+for (const currency of [undefined, "gbp", "usd"]) for (const billingMode of ["classic", "flexible"]) test(`managed annual upgrade invoices the full annual line in ${billingMode} mode (${currency ?? "legacy"})`, async t => {
+  const monthly = currency ? { currency: "gbp", currencyOptions: { usd: { unitAmount: 1200 } } } : {};
+  const annual = currency ? { currency: "gbp", currencyOptions: { usd: { unitAmount: 12000 } } } : {};
+  const f = await fixture(t, { catalogue: { ...catalogue, products: [
+    { id: "prod_team", prices: [{ id: "price_team", recurring: "month", unitAmount: 1000, ...monthly }] },
+    { id: "prod_studio", prices: [{ id: "price_studio", recurring: "year", unitAmount: 10000, ...annual }] },
+  ] } });
+  const { subscription, item } = await paid(f, { billingMode }, currency ? { currency } : {});
+  await f.fake.clock.advance(86400);
+  const update = updateInput(subscription, item, { resetBillingCycle: true, ...(currency ? { currency } : {}) });
+  f.fake.faults.inject({ operation: "subscriptions.update", status: 503, when: "after" });
+  await assert.rejects(f.provider.updateManagedSubscription(update), unavailable);
+  const updated = f.fake.subscriptions.get(subscription.id);
+  assert.equal(updated.billing_mode.type, billingMode);
+  assert.equal(updated.billing_cycle_anchor, f.fake.state().now);
+  assert.equal(updated.items.data[0].current_period_start, f.fake.state().now);
+  const invoice = f.fake.state().invoices[0];
+  assert.equal(invoice.created, f.fake.state().now);
+  assert.equal(invoice.status, "paid");
+  assert.equal(invoice.currency, currency ?? "usd");
+  assert.equal(invoice.lines.data[0].amount, currency === "usd" ? 60000 : 50000, "five annual units billed in full before unused monthly credit");
+  const monthlyAmount = currency === "usd" ? 1200 : 1000;
+  const credit = -Math.round(monthlyAmount * item.quantity * (item.current_period_end - f.fake.state().now)
+    / (item.current_period_end - item.current_period_start));
+  assert.equal(invoice.lines.data[1].amount, credit);
+  assert.equal(invoice.amount_paid, invoice.lines.data[0].amount + credit);
+  assert.equal(updated.items.data[0].price.unit_amount, 10000, "Price retains its default amount");
+  assert.equal(invoice.lines.data[0].period.end, updated.items.data[0].current_period_end);
+  const attempts = f.fake.requests().filter(r => r.operation === 'subscriptions.update').length;
+  await f.fake.clock.advance(86400);
+  await f.provider.updateManagedSubscription(update);
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, attempts,
+    'recovery of an exact applied reset must not depend on retained provider idempotency keys');
+  assert.equal(f.fake.state().invoices.length, 1, "lost acknowledgements resolve the applied reset without charging twice");
+  await f.fake.clock.advance(updated.items.data[0].current_period_end - f.fake.state().now);
+  const renewalInvoice = f.fake.state().invoices.at(-1);
+  assert.equal(f.fake.state().invoices.length, 2);
+  assert.equal(renewalInvoice.currency, currency ?? "usd");
+  assert.equal(renewalInvoice.amount_paid, currency === "usd" ? 60000 : 50000, "renewals use the same default or regional amount as the reset");
+});
+
+for (const billingMode of ["classic", "flexible"]) test(`resumed reset recovery refuses a newly scheduled cancellation (${billingMode})`, async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f, { billingMode });
+  await f.fake.portal.cancelAtPeriodEnd(subscription.id);
+  await f.fake.clock.advance(86400);
+  const update = updateInput(subscription, item, { resetBillingCycle: true, resume: true });
+  await f.provider.updateManagedSubscription(update);
+  assert.equal(f.fake.subscriptions.get(subscription.id).cancel_at_period_end, false);
+  await f.fake.portal.cancelAtPeriodEnd(subscription.id);
+  await assert.rejects(f.provider.updateManagedSubscription(update), { code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" });
+  assert.equal(f.fake.subscriptions.get(subscription.id).cancel_at_period_end, true);
+  assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, 1);
+  assert.equal(f.fake.state().invoices.length, 1, "recovery must not issue another reset invoice");
+});
+
+test("flexible subscriptions preserve their anchor on an implicit interval change", async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f);
+  assert.equal(subscription.billing_mode.type, "flexible", "new dahlia subscriptions default to flexible");
+  await f.fake.clock.advance(86400);
+  await f.provider.updateManagedSubscription(updateInput(subscription, item));
+  const updated = f.fake.subscriptions.get(subscription.id);
+  assert.equal(updated.billing_cycle_anchor, subscription.billing_cycle_anchor);
+  assert.equal(updated.items.data[0].current_period_end, item.current_period_end);
+  assert.equal(f.fake.state().invoices.length, 0);
+});
+
+for (const elapsed of [0, 86400]) test(`an implicit flexible change does not satisfy an explicit reset after ${elapsed} seconds`, async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f);
+  await f.fake.clock.advance(elapsed);
+  const update = updateInput(subscription, item, { prorationDate: f.fake.state().now });
+  await f.provider.updateManagedSubscription(update);
+  assert.equal(f.fake.state().invoices.length, 0);
+  await f.provider.updateManagedSubscription({ ...update, resetBillingCycle: true, idempotencyKey: 'reset-after-implicit-change' });
+  assert.equal(f.fake.state().invoices.length, 1, 'matching items with the old monthly period still require the annual reset');
+  assert.equal(f.fake.subscriptions.get(subscription.id).items.data[0].current_period_start, f.fake.state().now);
+});
+
+test("pending flexible annual upgrades charge and reset only after successful payment", async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f);
+  f.fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
+  await f.provider.updateManagedSubscription(updateInput(subscription, item, { resetBillingCycle: true }));
+  assert.equal(f.fake.subscriptions.get(subscription.id).items.data[0].price.id, item.price.id);
+  assert.equal(f.fake.state().invoices.length, 0);
+  await f.fake.clock.advance(60);
+  const applied = await f.fake.subscriptions.completePayment(subscription.id);
+  assert.equal(applied.items.data[0].price.id, "price_studio");
+  assert.equal(applied.billing_cycle_anchor, f.fake.state().now);
+  assert.equal(f.fake.state().invoices[0].lines.data[0].amount, 5000);
+});
+
+for (const billingMode of ["classic", "flexible"]) test(`quarterly renewals retain the January 31 anchor after April clamping (${billingMode})`, async t => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  t.mock.method(Date, "now", () => seconds("2027-01-31") * 1000);
+  const f = await fixture(t, { catalogue: { ...catalogue, products: [
+    ...catalogue.products, { id: "prod_quarter", prices: [{ id: "price_quarter", recurring: "month", intervalCount: 3 }] },
+  ] } });
+  const { subscription, item } = await paid(f, { billingMode });
+  const update = updateInput(subscription, item, { targetPriceId: "price_quarter", targetProductId: "prod_quarter", resetBillingCycle: true, prorationDate: f.fake.state().now });
+  await f.provider.updateManagedSubscription(update);
+  for (const [start, end] of [["2027-04-30", "2027-07-31"], ["2027-07-31", "2027-10-31"]]) {
+    await f.fake.clock.advance(seconds(start) - f.fake.state().now);
+    const renewed = f.fake.subscriptions.get(subscription.id);
+    assert.equal(renewed.items.data[0].current_period_start, seconds(start));
+    assert.equal(renewed.items.data[0].current_period_end, seconds(end));
+    assert.equal(renewed.billing_cycle_anchor, seconds("2027-01-31"));
+    const writes = f.fake.requests().filter(r => r.operation === "subscriptions.update").length;
+    const invoices = f.fake.state().invoices.length;
+    await f.provider.updateManagedSubscription(update);
+    assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, writes);
+    assert.equal(f.fake.state().invoices.length, invoices, "reset recovery must not charge again after an automatic renewal");
+  }
 });

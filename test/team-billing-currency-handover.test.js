@@ -9,10 +9,12 @@ const catalogue = { products: [{ id: 'prod_team', prices: [{ id: 'price_team', r
 const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
 const env = { STRIPE_SECRET_KEY: 'sk_test_handover', STRIPE_WEBHOOK_SECRET: 'whsec_handover' };
 
-test('fake refuses two active currencies and supports a free anchored replacement after setup', async t => {
+for (const resetAtAnchor of [false, true]) test(`fake handover replacement preserves flexible billing and resets ${resetAtAnchor ? 'at' : 'before'} its first paid anchor`, async t => {
   const server = createServer((_req, res) => res.writeHead(200).end());
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const fake = await createStripeTeamBillingFake({ catalogue, webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: 'manual' });
+  const handoverCatalogue = structuredClone(catalogue);
+  handoverCatalogue.products[0].prices.push({ id: 'price_year', recurring: 'year', currency: 'eur', unitAmount: 25000 });
+  const fake = await createStripeTeamBillingFake({ catalogue: handoverCatalogue, webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: 'manual' });
   t.after(async () => { await fake.close(); server.closeAllConnections(); await new Promise(r => server.close(r)); });
   const url = new URL(fake.origin);
   const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: config.apiVersion, host: url.hostname, port: url.port, protocol: 'http', maxNetworkRetries: 0 });
@@ -37,9 +39,28 @@ test('fake refuses two active currencies and supports a free anchored replacemen
   assert.equal(created.items.data[0].current_period_end, anchor);
   assert.equal(fake.state().invoices.length, 0, 'setup, non-prorated cancel and the initial free period charge nothing');
   assert.equal((await stripe.subscriptions.create(replacement, { idempotencyKey: 'anchored-replacement' })).id, created.id);
-  await fake.clock.advance(anchor - fake.state().now);
-  assert.equal(fake.state().invoices.length, 1);
-  assert.equal(fake.state().invoices[0].amount_paid, 2500);
+  await fake.portal.switchPrice(created.id, 'price_year');
+  assert.equal(fake.subscriptions.get(created.id).billing_cycle_anchor, anchor, 'implicit flexible interval changes preserve the anchor');
+  await fake.portal.switchPrice(created.id, 'price_team');
+  assert.equal(fake.state().invoices.length, 0);
+  if (resetAtAnchor) {
+    await fake.clock.advance(anchor - fake.state().now);
+    assert.equal(fake.state().invoices.length, 1);
+    assert.equal(fake.state().invoices[0].amount_paid, 2500);
+  }
+  const update = { items: [{ id: created.items.data[0].id, price: 'price_year', quantity: 1 }],
+    billing_cycle_anchor: 'now', proration_behavior: 'always_invoice', proration_date: fake.state().now, payment_behavior: 'pending_if_incomplete' };
+  const changed = await stripe.subscriptions.update(created.id, update, { idempotencyKey: 'handover-annual-reset' });
+  const invoice = fake.state().invoices.at(-1);
+  assert.equal(invoice.lines.data[0].amount, 25000);
+  assert.equal(invoice.lines.data[1].amount, resetAtAnchor ? -2500 : 0, 'the free stub period must not generate unused paid-period credit');
+  assert.equal(invoice.amount_paid, resetAtAnchor ? 22500 : 25000);
+  assert.equal(changed.billing_cycle_anchor, fake.state().now);
+  assert.equal((await stripe.subscriptions.update(created.id, update, { idempotencyKey: 'handover-annual-reset' })).latest_invoice, changed.latest_invoice);
+  assert.equal(fake.state().invoices.length, resetAtAnchor ? 2 : 1);
+  fake.reset();
+  assert.deepEqual(fake.state().invoices, []);
+  assert.deepEqual(fake.state().subscriptions, []);
 });
 
 import { randomUUID } from 'node:crypto';
@@ -98,8 +119,8 @@ async function fixture(t, counted = false, includeOther = false) {
   };
 }
 
-test('GBP to EUR handover stays entitled through cancellation and settles only from verified replacement evidence', async t => {
-  const f = await fixture(t);
+test('GBP to EUR handover settles from verified evidence and permits later managed plan changes', async t => {
+  const f = await fixture(t, false, true);
   const before = await f.read();
   assert.equal((await f.start()).error, null);
   assert.deepEqual(await f.read(), before, 'collecting consent preserves the current entitlement');
@@ -131,6 +152,17 @@ test('GBP to EUR handover stays entitled through cancellation and settles only f
   assert.equal((await f.start({ currency: 'gbp' })).error.code, 'TEAM_BILLING_REQUEST_CONFLICT');
   for (const check of f.checks.filter(c => c.operation === 'currency-handover' && c.currency === 'eur')) { assert.equal(check.currency, 'eur'); assert.equal(check.fromProductKey, 'team'); }
   await f.restart(); assert.equal((await f.read()).currency, 'eur');
+  const switched = await f.send({ type: 'teamBilling.requestPlanTransition', input: { teamId: f.teamId, requestId: randomUUID(), productKey: 'other', interval: 'month:1' } });
+  assert.equal(switched.error, null);
+  await f.drain(); await f.deliver();
+  const plan = await f.read();
+  assert.equal(plan.state, 'active');
+  assert.equal(plan.productKey, 'other');
+  assert.equal(plan.currency, 'eur');
+  assert.equal(plan.quantity, 2);
+  const changed = f.fake.subscriptions.get(replacement.id);
+  assert.equal(changed.billing_cycle_anchor, replacement.billing_cycle_anchor, 'a subsequent same-interval plan change preserves the free stub');
+  assert.equal(f.fake.state().invoices.length, 0);
 });
 
 for (const amount of [-700, 700]) test(`old-currency balance ${amount} refuses safely before collecting setup or canceling`, async t => {

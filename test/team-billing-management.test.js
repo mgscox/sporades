@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { createServer } from "node:http";
+import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
 
 import {
   createControllableRuntimeClock,
@@ -1104,7 +1106,7 @@ function openFixture(options = {}) {
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   };
-  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [endTrial] INTEGER NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [resume] INTEGER NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [resetBillingCycle] INTEGER NULL, [endTrial] INTEGER NULL, [preserveTrial] INTEGER NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [resume] INTEGER NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_handovers] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [sourceSubscriptionId] TEXT NOT NULL, [sourceSnapshot] TEXT NOT NULL, [anchor] TEXT NOT NULL, [phase] TEXT NOT NULL, [setupSessionId] TEXT NULL, [latchUntil] TEXT NULL, [cancelDispatched] INTEGER NOT NULL DEFAULT 0, [attemptToken] TEXT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
@@ -1207,5 +1209,60 @@ test("a superseded provider acknowledgement cannot overwrite a replacement opera
   } finally {
     finishProvider?.({ ok: true, outcome: "acknowledged" });
     fixture.close();
+  }
+});
+
+for (const billingMode of ["classic", "flexible"]) for (const [label, periodStart, periodEnd] of [
+  ["initial period", "2027-01-31", "2027-04-30"],
+  ["clamped renewal", "2027-04-30", "2027-07-31"],
+  ["ordinary renewal", "2027-07-31", "2027-10-31"],
+]) test(`startup repair acknowledges an applied quarterly reset after ${label} (${billingMode})`, async () => {
+  const f = openFixture({ productKey: "agency", quantity: 5 });
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  let now = "2027-01-31";
+  let posts = 0;
+  let current = { id: "sub_test", object: "subscription", customer: "cus_test", livemode: false,
+    status: "active", billing_mode: { type: billingMode }, billing_cycle_anchor: seconds("2027-01-01"), pending_update: null,
+    items: { object: "list", has_more: false, data: [{ id: "si_test", object: "subscription_item", subscription: "sub_test", quantity: 5,
+      price: { id: "price_agency", object: "price", livemode: false, product: "prod_agency", recurring: { interval: "month", interval_count: 1, usage_type: "licensed" } },
+      current_period_start: seconds("2027-01-01"), current_period_end: seconds("2027-02-01") }] } };
+  const server = createServer(async (request, response) => {
+    if (request.method === "POST") {
+      for await (const _chunk of request) {}
+      posts++;
+      current.billing_cycle_anchor = seconds("2027-01-31");
+      Object.assign(current.items.data[0], { price: { ...current.items.data[0].price, id: "price_quarter", recurring: { interval: "month", interval_count: 3, usage_type: "licensed" } },
+        current_period_start: seconds("2027-01-31"), current_period_end: seconds("2027-04-30") });
+    }
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const provider = createStripeTeamBillingProvider({ config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 1000 },
+      env: { STRIPE_SECRET_KEY: "sk_test_renewal" }, apiBaseUrl: `http://127.0.0.1:${server.address().port}` });
+    f.database.clock = { now: () => new Date(`${now}T12:00:00Z`) };
+    f.setMembers(5);
+    f.database.teamBillingDefinition.catalogue.agency.stripe.sandbox = { prices: { "month:1": { priceId: "price_agency" }, "month:3": { priceId: "price_quarter" } } };
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [interval] = 'month:1'").run();
+    f.database.updateTeamBillingSubscription = (_context, input) => provider.updateManagedSubscription({
+      mode: input.mode, customerId: input.providerCustomerId, subscriptionId: input.providerSubscriptionId, subscriptionItemId: input.providerSubscriptionItemId,
+      sourcePriceId: input.sourcePriceId, targetPriceId: input.targetPriceId, targetQuantity: input.targetQuantity,
+      operationKind: input.operationKind, prorationDate: input.prorationDate, idempotencyKey: input.idempotencyKey, resetBillingCycle: input.resetBillingCycle,
+    });
+    await requestTeamBillingPlanTransition(f.database, actor, teamId, randomRequestId("a"), "agency", "month:3");
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    assert.equal(posts, 1);
+    const attempted = f.desired();
+    assert.ok(attempted.providerAttemptedAt);
+    Object.assign(current.items.data[0], { current_period_start: seconds(periodStart), current_period_end: seconds(periodEnd) });
+    now = periodStart === "2027-01-31" ? "2027-02-15" : periodStart === "2027-04-30" ? "2027-05-15" : "2027-08-15";
+    await repairTeamBillingDesiredState(f.database);
+    assert.equal(f.desired().idempotencyKey, attempted.idempotencyKey);
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    assert.equal(posts, 1, "recovery must not POST another reset for the already-applied interval");
+    assert.equal(f.desired().status, "awaiting-observation", "retrieval alone does not grant entitlement");
+    assert.equal(f.adapter.prepare("SELECT [providerPriceId] FROM [sporades_team_billing_subscriptions]").get().providerPriceId, "price_agency");
+  } finally {
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); f.close();
   }
 });

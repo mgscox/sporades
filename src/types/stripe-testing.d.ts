@@ -2,7 +2,7 @@
 export type StripeFakeObject = Record<string, any>;
 export type StripeFakeCatalogue = {
   products: Array<{ id: string; prices: Array<{ id: string; recurring: "day" | "week" | "month" | "year"; intervalCount?: number; currency?: string; unitAmount?: number; currencyOptions?: Record<string, { unitAmount: number }> }> }>;
-  portalConfigurations: Array<{ id: string; trialUpdateBehavior?: "continue_trial" | "end_trial"; products: Array<{ product: string; prices: string[] }> }>;
+  portalConfigurations: Array<{ id: string; trialUpdateBehavior?: "continue_trial" | "end_trial"; prorationBehavior?: "create_prorations" | "always_invoice" | "none"; billingCycleAnchor?: "now" | "unchanged"; scheduleAtPeriodEnd?: ("decreasing_item_amount" | "shortening_interval")[]; products: Array<{ product: string; prices: string[] }> }>;
 };
 export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"
@@ -50,7 +50,7 @@ export type StripeTeamBillingFake = {
   close(): Promise<void>;
   checkout: {
     /** Trial Checkouts create a trialing Subscription with trial_start/trial_end and no payment required. */
-    complete(id: string, options?: { customerId?: string }): Promise<StripeFakeObject>;
+    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible" }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
   portal: {
@@ -70,7 +70,7 @@ export type StripeTeamBillingFake = {
     get(id: string): StripeFakeObject;
   };
   customers: { subscriptions(id: string): StripeFakeObject[]; setBalance(id: string, currency: string, amount: number): void };
-  /** Advances due trials to active, or cancels them when scheduled; emits Subscription evidence. */
+  /** Advances due trials, scheduled cancellations and paid renewals; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {
     pending(): StripeFakeEvent[];
