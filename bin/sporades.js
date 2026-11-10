@@ -127615,6 +127615,88 @@ function migrateAuthUserProviderLabels(sqlite) {
   ));
 }
 
+// src/team-billing-prices.ts
+function validBillingCurrency(value) {
+  return typeof value === "string" && /^[a-z]{3}$/.test(value);
+}
+function validBillingAmount(value) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= 99999999;
+}
+function billingCurrencyAmount(price, currency) {
+  if (!validBillingCurrency(currency)) return void 0;
+  return currency === price.currency ? price.unitAmount : price.currencyOptions?.[currency]?.unitAmount;
+}
+function normalizeBillingCurrency(price, invalid4) {
+  if (!["currency", "unitAmount", "currencyOptions"].some((key) => Object.hasOwn(price, key))) return {};
+  if (!validBillingCurrency(price.currency) || !validBillingAmount(price.unitAmount)) throw invalid4();
+  const options = price.currencyOptions;
+  const normalized = {};
+  if (Object.hasOwn(price, "currencyOptions")) {
+    if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).length > 32) throw invalid4();
+    for (const [currency, amount] of Object.entries(options)) {
+      if (!validBillingCurrency(currency) || currency === price.currency || !amount || typeof amount !== "object" || Array.isArray(amount) || Object.keys(amount).join(",") !== "unitAmount" || !validBillingAmount(amount.unitAmount)) throw invalid4();
+      normalized[currency] = Object.freeze({ unitAmount: amount.unitAmount });
+    }
+  }
+  return {
+    currency: price.currency,
+    unitAmount: price.unitAmount,
+    ...options ? { currencyOptions: Object.freeze(normalized) } : {}
+  };
+}
+function matchesBillingCurrency(price, currency, amount) {
+  return !price.currency || billingCurrencyAmount(price, currency) !== void 0 && billingCurrencyAmount(price, currency) === amount;
+}
+function billingCurrencyMismatch() {
+  return Object.assign(new Error("The target Price does not support the subscription currency. Start a separate billing agreement to change currency."), {
+    code: "TEAM_BILLING_CURRENCY_MISMATCH",
+    hint: "Choose a Price supporting the existing subscription currency."
+  });
+}
+var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
+var PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
+var PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
+function validTeamBillingInterval(value) {
+  if (typeof value !== "string") return false;
+  const match = /^(day|week|month|year):([1-9][0-9]{0,3})$/.exec(value);
+  return Boolean(match && Number(match[2]) <= { day: 1095, week: 156, month: 36, year: 3 }[match[1]]);
+}
+function teamBillingPrices(binding) {
+  if (!binding) return [];
+  return binding.prices ? Object.entries(binding.prices).map(([interval, price]) => ({ interval, ...price })) : [{ priceId: binding.priceId, ...binding.currency ? { currency: binding.currency, unitAmount: binding.unitAmount, ...binding.currencyOptions ? { currencyOptions: binding.currencyOptions } : {} } : {} }];
+}
+function teamBillingPrice(binding, interval) {
+  if (!binding) return null;
+  if (binding.prices) return typeof interval === "string" && Object.hasOwn(binding.prices, interval) ? { interval, ...binding.prices[interval] } : null;
+  return interval === void 0 ? teamBillingPrices(binding)[0] : null;
+}
+function teamBillingPriceById(binding, priceId) {
+  return teamBillingPrices(binding).find((price) => price.priceId === priceId) ?? null;
+}
+function normalizeModeBinding(value, invalidDeclaration2) {
+  if (!isRecord2(value) || Object.keys(value).some((key) => !["priceId", "prices", "productId", "portalConfigurationId", "currency", "unitAmount", "currencyOptions"].includes(key)) || value.productId !== void 0 && (typeof value.productId !== "string" || !PRODUCT_ID_PATTERN.test(value.productId)) || value.portalConfigurationId !== void 0 && (typeof value.portalConfigurationId !== "string" || !PORTAL_CONFIGURATION_ID_PATTERN.test(value.portalConfigurationId))) throw invalidDeclaration2();
+  let priceBinding;
+  if (Object.hasOwn(value, "prices")) {
+    if (["priceId", "currency", "unitAmount", "currencyOptions"].some((key) => Object.hasOwn(value, key)) || !isRecord2(value.prices) || Object.keys(value.prices).length < 1 || Object.keys(value.prices).length > 32) throw invalidDeclaration2();
+    const prices = {};
+    for (const [interval, price] of Object.entries(value.prices)) {
+      if (!validTeamBillingInterval(interval) || !isRecord2(price) || Object.keys(price).some((key) => !["priceId", "currency", "unitAmount", "currencyOptions"].includes(key)) || typeof price.priceId !== "string" || !PRICE_ID_PATTERN.test(price.priceId)) throw invalidDeclaration2();
+      prices[interval] = Object.freeze({ priceId: price.priceId, ...normalizeBillingCurrency(price, invalidDeclaration2) });
+    }
+    priceBinding = { prices: Object.freeze(prices) };
+  } else {
+    if (typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId)) throw invalidDeclaration2();
+    priceBinding = { priceId: value.priceId, ...normalizeBillingCurrency(value, invalidDeclaration2) };
+  }
+  return Object.freeze({ ...priceBinding, ...value.productId ? { productId: value.productId } : {}, ...value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {} });
+}
+function isRecord2(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function matchesBillingPriceAmount(actual, expected) {
+  return actual?.unit_amount === expected && actual.custom_unit_amount == null && actual.tiers == null && (actual.unit_amount_decimal == null || typeof actual.unit_amount_decimal === "string" && /^\d+(?:\.0+)?$/.test(actual.unit_amount_decimal) && Number(actual.unit_amount_decimal) === expected);
+}
+
 // src/team-billing-runtime.ts
 import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
 
@@ -127675,7 +127757,7 @@ var TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 var TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 var CLAIM_TTL_MS = 5 * 60 * 1e3;
 var TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval) {
+async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval, currency) {
   const definition = database.teamBillingDefinition;
   if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition?.catalogue?.[productKey]) throw denied();
   const price = teamBillingPrice(modeBinding(database, definition.catalogue[productKey]), interval);
@@ -127686,9 +127768,10 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql2 = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql2(
-      "SELECT [id], [kind], [productKey], [providerPriceId], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+      "SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
     )).get(teamId, requestId);
     if (repeated) {
+      if (currency !== void 0 && currency !== repeated.currency) throw billingCurrencyMismatch();
       if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey || (repeated.providerPriceId ?? null) !== (price.interval ? price.priceId : null)) throw conflict();
       return planOperationResult(teamId, requestId, productKey, repeated);
     }
@@ -127698,6 +127781,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     const currentProduct = definition.catalogue[subscription.productKey];
     const targetProduct = definition.catalogue[productKey];
     assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+    if (currency !== void 0 && currency !== subscription.currency || (price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency) && billingCurrencyAmount(price, subscription.currency) === void 0) throw billingCurrencyMismatch();
     if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
     const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
     assertUsageMaximum(targetProduct, quantity);
@@ -127718,8 +127802,8 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
     )).run(now2, teamId);
     await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity, price.interval ? price.priceId : null);
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [currency]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now2, now2, subscription.mode, quantity, price.interval ? price.priceId : null, subscription.currency ?? null);
     await enqueueIntent(database, transaction, staged);
     enqueued = true;
     return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now2 });
@@ -127843,6 +127927,7 @@ async function performDesired(database, _context, payload, kind) {
     const binding = modeBinding(database, product);
     const price = desired.targetPriceId ? teamBillingPriceById(binding, desired.targetPriceId) : teamBillingPrice(binding, void 0);
     if (!price) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
+    if ((price.currency || teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.currency) && billingCurrencyAmount(price, subscription.currency) === void 0) return attention(transaction, database, desired, "CURRENCY_MISMATCH");
     if (kind === "plan-transition") {
       const refusal = transitionRefusal(subscription);
       if (refusal) return attention(transaction, database, desired, refusal);
@@ -127906,6 +127991,7 @@ async function performDesired(database, _context, payload, kind) {
         providerSubscriptionId: subscription.providerSubscriptionId,
         providerSubscriptionItemId: subscription.providerSubscriptionItemId,
         sourcePriceId: subscription.providerPriceId,
+        ...subscription.currency ? { currency: subscription.currency } : {},
         targetPriceId: price.priceId,
         ...binding.productId ? { targetProductId: binding.productId } : {},
         targetProductKey: desired.targetProductKey,
@@ -128206,6 +128292,7 @@ async function tryAdmitPlanTransition(database, transaction, auth, teamId, produ
   if (membership?.role !== "admin") return false;
   const source = await optionalCurrentSubscription(transaction, teamId);
   const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+    ...source?.currency ? { currency: source.currency } : {},
     operation: "plan-transition",
     teamId,
     teamRole: "admin",
@@ -128306,7 +128393,8 @@ function modeBinding(database, product) {
 }
 function assertCurrentModeAndCatalogue(database, subscription, product) {
   const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
-  if (!product || subscription.mode !== mode || !teamBillingPriceById(product.stripe?.[mode], subscription.providerPriceId) || product.stripe[mode].prices && teamBillingPriceById(product.stripe[mode], subscription.providerPriceId)?.interval !== subscription.interval) throw attentionRequired();
+  const price = teamBillingPriceById(product?.stripe?.[mode], subscription.providerPriceId);
+  if (price?.currency && billingCurrencyAmount(price, subscription.currency) === void 0 || !product || subscription.mode !== mode || !teamBillingPriceById(product.stripe?.[mode], subscription.providerPriceId) || product.stripe[mode].prices && teamBillingPriceById(product.stripe[mode], subscription.providerPriceId)?.interval !== subscription.interval) throw attentionRequired();
 }
 function managedTransitionAllowed(database, subscription, targetProduct, price) {
   const source = database.teamBillingDefinition.catalogue[subscription.productKey];
@@ -128347,7 +128435,7 @@ function planOperationResult(teamId, requestId, productKey, operation) {
     return Object.freeze({ state: operation.status, teamId, requestId, productKey });
   }
   if (operation.status === "failed") {
-    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required" : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode) ? "provider-state-ambiguous" : "unavailable";
+    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required" : operation.safeFailureCode === "CURRENCY_MISMATCH" ? "currency-mismatch" : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode) ? "provider-state-ambiguous" : "unavailable";
     return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
   }
   return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
@@ -128455,7 +128543,7 @@ async function applyVerifiedTeamBillingObservation(database, event) {
 function validateEnvelope2(database, event) {
   const raw = event?.raw;
   const object2 = raw?.data?.object;
-  if (event?.provider !== "stripe" || !EVENT_ID.test(String(event.providerEventId ?? "")) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode) || !canonicalTimestamp(event.occurredAt) || !isRecord2(raw) || raw.object !== "event" || raw.id !== event.providerEventId || raw.type !== event.type || raw.livemode !== event.livemode || !Number.isInteger(raw.created) || new Date(raw.created * 1e3).toISOString() !== event.occurredAt || !isRecord2(raw.data) || !isRecord2(object2) || event.objectId !== object2.id || !boundedObjectId(object2.id)) {
+  if (event?.provider !== "stripe" || !EVENT_ID.test(String(event.providerEventId ?? "")) || typeof event.livemode !== "boolean" || event.livemode !== Boolean(database.paymentsConfig?.stripe?.livemode) || !canonicalTimestamp(event.occurredAt) || !isRecord3(raw) || raw.object !== "event" || raw.id !== event.providerEventId || raw.type !== event.type || raw.livemode !== event.livemode || !Number.isInteger(raw.created) || new Date(raw.created * 1e3).toISOString() !== event.occurredAt || !isRecord3(raw.data) || !isRecord3(object2) || event.objectId !== object2.id || !boundedObjectId(object2.id)) {
     throw new Quarantine("provider-state-ambiguous");
   }
 }
@@ -128465,9 +128553,10 @@ async function applyCheckout(database, event, mode) {
   const operationId = object2.client_reference_id;
   if (object2.object !== "checkout.session" || object2.mode !== "subscription" || object2.livemode !== event.livemode || !CHECKOUT_ID.test(String(object2.id ?? "")) || !UUID.test(String(operationId ?? "")) || object2.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
   const operation = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+    "SELECT [id], [teamId], [mode], [currency], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
   )).get(operationId);
   if (!operation || operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", operation?.teamId ?? null, 50, object2.id);
+  if (operation.currency && operation.currency !== object2.currency) throw new Quarantine("catalogue-mismatch", operation.teamId, 50, object2.id);
   if (operation.providerObjectId && operation.providerObjectId !== object2.id) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object2.id);
   const completed = event.type === "checkout.session.completed";
   const customerId = completed && CUSTOMER_ID.test(String(object2.customer ?? "")) ? object2.customer : null;
@@ -128499,10 +128588,10 @@ async function applySubscription(database, event, mode) {
     throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
   }
   const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+    "SELECT [id], [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+    "SELECT [id], [teamId], [mode], [currency], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
   )).get(metadataOperationId) : null;
   const teamId = existing?.teamId ?? operation?.teamId ?? null;
   if (!teamId || existing && operation && existing.teamId !== operation.teamId || existing?.mode !== void 0 && existing.mode !== mode || operation?.mode !== void 0 && operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
@@ -128514,6 +128603,11 @@ async function applySubscription(database, event, mode) {
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?"
   )).get(teamId))?.count ?? 0);
   const normalized = normalizeSubscription(database.teamBillingDefinition, object2, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
+  if (existing?.currency && existing.currency !== normalized.currency) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
+  const customerCurrencies = await tx.prepare(tx.dialect.sql(
+    "SELECT [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [currency] IS NOT NULL"
+  )).all(teamId);
+  if (normalized.currency && customerCurrencies.some((row) => row.currency !== normalized.currency)) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   const product = database.teamBillingDefinition.catalogue[normalized.productKey];
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
@@ -128543,7 +128637,7 @@ async function applySubscription(database, event, mode) {
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
       randomUUID5(),
       teamId,
@@ -128565,11 +128659,13 @@ async function applySubscription(database, event, mode) {
       normalized.kind,
       normalized.rank,
       normalized.terminalLatch,
-      normalized.hasSchedule
+      normalized.hasSchedule,
+      normalized.currency,
+      normalized.unitAmount
     );
   } else {
     await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ? WHERE [providerSubscriptionId] = ?"
+      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?"
     )).run(
       normalized.priceId,
       normalized.interval,
@@ -128588,6 +128684,8 @@ async function applySubscription(database, event, mode) {
       normalized.rank,
       normalized.terminalLatch,
       normalized.hasSchedule,
+      normalized.currency,
+      normalized.unitAmount,
       subscriptionId
     );
   }
@@ -128604,7 +128702,7 @@ async function applySubscription(database, event, mode) {
 }
 function normalizeSubscription(definition, object2, operation, mode, eventType, teamId, desiredTeamQuantity, existing = false) {
   const items = object2.items?.data;
-  if (!isRecord2(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord2(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
+  if (!isRecord3(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord3(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   const item = items[0];
   const priceId = item.price?.id;
   const productId = typeof item.price?.product === "string" ? item.price.product : item.price?.product?.id;
@@ -128619,6 +128717,15 @@ function normalizeSubscription(definition, object2, operation, mode, eventType, 
   if (declaredPrice?.interval && declaredPrice.interval !== `${item.price.recurring.interval}:${item.price.recurring.interval_count}`) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
   }
+  const currency = object2.currency ?? null;
+  const regional = currency !== null && item.price?.currency !== currency && isRecord3(item.price?.currency_options) ? item.price.currency_options[currency] : null;
+  const charged = regional ?? item.price;
+  const unitAmount = validBillingAmount(charged?.unit_amount) ? charged.unit_amount : null;
+  if (currency !== null && !validBillingCurrency(currency) || !matchesBillingCurrency(declaredPrice, currency, unitAmount)) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  if (declaredPrice?.currency && (item.price.currency !== declaredPrice.currency || !matchesBillingPriceAmount(item.price, declaredPrice.unitAmount) || !matchesBillingPriceAmount(charged, unitAmount) || item.price.billing_scheme !== "per_unit" || item.price.type !== "recurring" || item.price.transform_quantity != null)) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
+  }
+  if (operation?.currency && operation.currency !== currency) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
   if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity || operation.providerPriceId && operation.providerPriceId !== priceId)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object2.id);
   if (product.quantity.kind !== "fixed" && item.quantity < (product.quantity.minimum ?? 1) && !(existing && product.quantity.kind === "usage")) {
@@ -128661,6 +128768,8 @@ function normalizeSubscription(definition, object2, operation, mode, eventType, 
   return {
     productKey,
     priceId,
+    currency,
+    unitAmount,
     interval: declaredPrice?.interval ?? null,
     itemId: item.id,
     quantity: item.quantity,
@@ -128680,20 +128789,21 @@ async function applyInvoiceFailure(database, event, mode) {
   const object2 = event.raw.data.object;
   const subscriptionId = object2.parent?.subscription_details?.subscription;
   const customerId = object2.customer;
-  if (object2.object !== "invoice" || !INVOICE_ID.test(String(object2.id ?? "")) || object2.parent?.type !== "subscription_details" || !isRecord2(object2.parent?.subscription_details) || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode || object2.status !== "open" || object2.paid !== false || !Number.isInteger(object2.attempt_count) || object2.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object2.id));
+  if (object2.object !== "invoice" || !INVOICE_ID.test(String(object2.id ?? "")) || object2.parent?.type !== "subscription_details" || !isRecord3(object2.parent?.subscription_details) || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")) || !CUSTOMER_ID.test(String(customerId ?? "")) || object2.livemode !== event.livemode || object2.status !== "open" || object2.paid !== false || !Number.isInteger(object2.attempt_count) || object2.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object2.id));
   const subscription = await tx.prepare(tx.dialect.sql(
-    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
+    "SELECT [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
   )).get(subscriptionId);
   if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object2.id));
   await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
+  if (subscription.currency && object2.currency !== subscription.currency) throw new Quarantine("catalogue-mismatch", subscription.teamId, 40, object2.id);
   const lines = object2.lines?.data;
-  if (!isRecord2(object2.lines) || object2.lines.object !== "list" || object2.lines.has_more !== false || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
+  if (!isRecord3(object2.lines) || object2.lines.object !== "list" || object2.lines.has_more !== false || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
   const line = lines[0];
   const details = line?.parent?.subscription_item_details;
   const pricing = line?.pricing?.price_details;
   const binding = database.teamBillingDefinition.catalogue[subscription.productKey]?.stripe?.[mode];
   const pricingProductId = typeof pricing?.product === "string" ? pricing.product : pricing?.product?.id;
-  if (!teamBillingPriceById(binding, subscription.providerPriceId) || !isRecord2(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object2.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
+  if (!teamBillingPriceById(binding, subscription.providerPriceId) || !isRecord3(line) || line.object !== "line_item" || !INVOICE_LINE_ID.test(String(line.id ?? "")) || line.invoice !== object2.id || line.livemode !== event.livemode || line.parent?.type !== "subscription_item_details" || details?.proration !== false || details?.subscription !== subscriptionId || details?.subscription_item !== subscription.providerSubscriptionItemId || line.pricing?.type !== "price_details" || pricing?.price !== subscription.providerPriceId || !PRODUCT_ID.test(String(pricingProductId ?? "")) || binding?.productId && pricingProductId !== binding.productId || line.quantity !== subscription.quantity || unixTimestamp(line.period?.start) !== subscription.currentPeriodStart || unixTimestamp(line.period?.end) !== subscription.currentPeriodEnd) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object2.id);
   if (subscription.terminalLatch === 1) return { teamId: subscription.teamId, objectId: object2.id, rank: RANK["past-due"], outcome: "ignored" };
   let outcome = "ignored";
   if (winsRatchet(
@@ -128781,7 +128891,7 @@ function safeDigest(raw) {
     return null;
   }
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
@@ -128796,9 +128906,6 @@ var TEAM_BILLING_PORTAL_MAX_ATTEMPTS = 4;
 var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
 var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
 var PRODUCT_KEY_PATTERN = /^[a-z][a-z0-9-]{0,47}$/;
-var PRICE_ID_PATTERN = /^price_[A-Za-z0-9_]{1,249}$/;
-var PRODUCT_ID_PATTERN = /^prod_[A-Za-z0-9_]{1,240}$/;
-var PORTAL_CONFIGURATION_ID_PATTERN = /^bpc_[A-Za-z0-9_]{1,240}$/;
 var CANONICAL_TIMESTAMP_PATTERN = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 var FIXED_QUANTITY_MAX = 999999;
 var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -128809,10 +128916,10 @@ function createTeamBillingTables(adapter) {
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
     () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)"
     )),
     () => adapter.exec(sql2(
-      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [currency] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, UNIQUE ([teamId], [requestId]))"
     )),
     () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL, [mode] TEXT NOT NULL, [providerEventId] TEXT NOT NULL UNIQUE, [providerObjectId] TEXT NULL, [payloadDigest] TEXT NOT NULL, [observedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL, [eventType] TEXT NULL, [eventRank] INTEGER NULL, [outcome] TEXT NULL, [safeReason] TEXT NULL)"
@@ -128835,9 +128942,9 @@ function createTeamBillingTables(adapter) {
     () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
-    ...["mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
-    ...["interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
-    ...["lastEventRank", "terminalLatch", "hasSchedule"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
+    ...["currency", "mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
+    ...["currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
+    ...["unitAmount", "lastEventRank", "terminalLatch", "hasSchedule"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
@@ -128861,8 +128968,8 @@ function normalizeTeamBillingDefinition(value) {
     const quantity = normalizeQuantity(product.quantity);
     const stripe = product.stripe;
     if (!stripe || typeof stripe !== "object" || Array.isArray(stripe) || Object.keys(stripe).sort().join(",") !== "live,sandbox") throw invalidDeclaration();
-    const sandbox = normalizeModeBinding(stripe.sandbox);
-    const live = normalizeModeBinding(stripe.live);
+    const sandbox = normalizeModeBinding(stripe.sandbox, invalidDeclaration);
+    const live = normalizeModeBinding(stripe.live, invalidDeclaration);
     for (const binding of [sandbox, live]) for (const { priceId } of teamBillingPrices(binding)) {
       if (prices.has(priceId)) throw invalidDeclaration();
       prices.add(priceId);
@@ -128873,7 +128980,7 @@ function normalizeTeamBillingDefinition(value) {
       stripe: Object.freeze({ sandbox, live })
     });
   }
-  if (value.transitions !== void 0 && (!isRecord3(value.transitions) || Object.keys(value.transitions).some((key) => !["allowSamePolicy", "endTrial"].includes(key)) || ["allowSamePolicy", "endTrial"].some((key) => value.transitions[key] !== void 0 && typeof value.transitions[key] !== "boolean"))) throw invalidDeclaration();
+  if (value.transitions !== void 0 && (!isRecord4(value.transitions) || Object.keys(value.transitions).some((key) => !["allowSamePolicy", "endTrial"].includes(key)) || ["allowSamePolicy", "endTrial"].some((key) => value.transitions[key] !== void 0 && typeof value.transitions[key] !== "boolean"))) throw invalidDeclaration();
   const transitions = value.transitions === void 0 ? null : Object.freeze({ allowSamePolicy: value.transitions.allowSamePolicy ?? false, endTrial: value.transitions.endTrial ?? false });
   if (value.usage !== void 0 && typeof value.usage !== "function" || Object.values(catalogue).some((product) => product.quantity.kind === "usage") && typeof value.usage !== "function") throw invalidDeclaration();
   const checkout = value.checkout === void 0 ? null : normalizeCheckoutDefinition(value.checkout);
@@ -128928,40 +129035,6 @@ function normalizeQuantity(value) {
   }
   throw invalidDeclaration();
 }
-function validTeamBillingInterval(value) {
-  if (typeof value !== "string") return false;
-  const match = /^(day|week|month|year):([1-9][0-9]{0,3})$/.exec(value);
-  return Boolean(match && Number(match[2]) <= { day: 1095, week: 156, month: 36, year: 3 }[match[1]]);
-}
-function teamBillingPrices(binding) {
-  if (!binding) return [];
-  return binding.prices ? Object.entries(binding.prices).map(([interval, price]) => ({ interval, priceId: price.priceId })) : [{ priceId: binding.priceId }];
-}
-function teamBillingPrice(binding, interval) {
-  if (!binding) return null;
-  if (binding.prices) return typeof interval === "string" && Object.hasOwn(binding.prices, interval) ? { interval, priceId: binding.prices[interval].priceId } : null;
-  return interval === void 0 ? { priceId: binding.priceId } : null;
-}
-function teamBillingPriceById(binding, priceId) {
-  return teamBillingPrices(binding).find((price) => price.priceId === priceId) ?? null;
-}
-function normalizeModeBinding(value) {
-  if (!isRecord3(value) || Object.keys(value).some((key) => !["priceId", "prices", "productId", "portalConfigurationId"].includes(key)) || value.productId !== void 0 && (typeof value.productId !== "string" || !PRODUCT_ID_PATTERN.test(value.productId)) || value.portalConfigurationId !== void 0 && (typeof value.portalConfigurationId !== "string" || !PORTAL_CONFIGURATION_ID_PATTERN.test(value.portalConfigurationId))) throw invalidDeclaration();
-  let priceBinding;
-  if (Object.hasOwn(value, "prices")) {
-    if (Object.hasOwn(value, "priceId") || !isRecord3(value.prices) || Object.keys(value.prices).length < 1 || Object.keys(value.prices).length > 32) throw invalidDeclaration();
-    const prices = {};
-    for (const [interval, price] of Object.entries(value.prices)) {
-      if (!validTeamBillingInterval(interval) || !isRecord3(price) || Object.keys(price).join(",") !== "priceId" || typeof price.priceId !== "string" || !PRICE_ID_PATTERN.test(price.priceId)) throw invalidDeclaration();
-      prices[interval] = Object.freeze({ priceId: price.priceId });
-    }
-    priceBinding = { prices: Object.freeze(prices) };
-  } else {
-    if (typeof value.priceId !== "string" || !PRICE_ID_PATTERN.test(value.priceId)) throw invalidDeclaration();
-    priceBinding = { priceId: value.priceId };
-  }
-  return Object.freeze({ ...priceBinding, ...value.productId ? { productId: value.productId } : {}, ...value.portalConfigurationId ? { portalConfigurationId: value.portalConfigurationId } : {} });
-}
 function invalidDeclaration() {
   return commandError(
     "Invalid Team Billing declaration.",
@@ -128999,26 +129072,29 @@ async function readCapsuleTeamBillingProjection(database, transaction, auth, tea
   if (!membership || !["admin", "member"].includes(membership.role)) throw teamBillingDenied();
   return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
 }
-async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey, interval) {
+async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey, interval, currency) {
   requireAuth({ auth }, { linked: true });
   const definition = database.teamBillingDefinition;
   if (!definition?.checkout || !database.paymentsConfig?.stripe?.enabled || !TEAM_ID_PATTERN2.test(String(teamId ?? "")) || !TEAM_ID_PATTERN2.test(String(requestId ?? "")) || typeof productKey !== "string" || !definition.catalogue[productKey]) throw teamBillingDenied();
   const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
   const price = teamBillingPrice(definition.catalogue[productKey].stripe[mode], interval);
   if (!price) throw teamBillingDenied();
+  if (currency !== void 0 && (!validBillingCurrency(currency) || billingCurrencyAmount(price, currency) === void 0)) throw teamBillingDenied();
+  currency = currency ?? price.currency;
   let enqueued = false;
   const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
-    await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey, interval: price.interval });
+    await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey, interval: price.interval, ...currency ? { currency } : {} });
     await assertTeamBillingErasureInactive(database, transaction, teamId);
     const sql2 = transaction.dialect.sql;
     const existing = await transaction.prepare(sql2(
-      "SELECT [requestId], [productKey], [providerPriceId], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
+      "SELECT [requestId], [productKey], [providerPriceId], [currency], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?"
     )).get(teamId, requestId);
     if (existing) {
-      if (existing.productKey !== productKey || existing.providerPriceId !== price.priceId) throw checkoutConflict();
+      if (existing.productKey !== productKey || existing.providerPriceId !== price.priceId || (existing.currency ?? null) !== (currency ?? null)) throw checkoutConflict();
       if (existing.status !== "completed") await assertNoTeamBillingSubscription(transaction, teamId);
       return checkoutOperationResult(database, transaction, teamId, requestId, existing);
     }
+    await assertCheckoutCurrency(transaction, teamId, currency);
     const desired = await checkoutDesiredState(database, transaction, teamId, productKey, interval);
     if (desired.trialDays !== void 0) await assertTeamTrialAvailable(transaction, teamId);
     const now2 = database.clock.now().toISOString();
@@ -129039,8 +129115,8 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
     )).run(now2, teamId);
     await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [trialDays]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, desired.trialDays ?? null);
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [currency], [trialDays]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now2, now2, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, currency ?? null, desired.trialDays ?? null);
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
     enqueued = true;
@@ -129048,6 +129124,13 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
   });
   if (enqueued) database.scheduleTeamBillingJobDispatch?.();
   return result;
+}
+async function assertCheckoutCurrency(transaction, teamId, currency) {
+  if (!currency) return;
+  const previous = await transaction.prepare(transaction.dialect.sql(
+    "SELECT [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [currency] IS NOT NULL"
+  )).all(teamId);
+  if (previous.some((row) => row.currency !== currency)) throw billingCurrencyMismatch();
 }
 async function startTeamBillingPortal(database, auth, teamId, requestId) {
   requireAuth({ auth }, { linked: true });
@@ -129113,7 +129196,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
     providerInput = await database.adapter.withTransaction(async (transaction) => {
       const sql2 = transaction.dialect.sql;
       const operation = await transaction.prepare(sql2(
-        "SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+        "SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [currency], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
       )).get(operationId);
       if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
       await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
@@ -129133,8 +129216,8 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
       };
       const binding = database.teamBillingDefinition.catalogue[operation.productKey]?.stripe?.[operation.mode];
       const price = teamBillingPriceById(binding, operation.providerPriceId);
-      if (!price) throw checkoutUnavailable();
-      await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey, interval: price.interval });
+      if (!price || price.currency && !operation.currency || operation.currency && billingCurrencyAmount(price, operation.currency) === void 0) throw checkoutUnavailable();
+      await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId: operation.teamId, productKey: operation.productKey, interval: price.interval, ...operation.currency ? { currency: operation.currency } : {} });
       const desired = await checkoutDesiredState(database, transaction, operation.teamId, operation.productKey, price.interval);
       if (operation.mode !== desired.mode || operation.quantity !== desired.quantity || operation.providerPriceId !== desired.priceId) {
         await transaction.prepare(sql2(
@@ -129152,6 +129235,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
         "SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?"
       )).get(operation.teamId);
       if (customer && customer.mode !== desired.mode) throw checkoutUnavailable();
+      await assertCheckoutCurrency(transaction, operation.teamId, operation.currency);
       if (operation.trialDays != null) await assertTeamTrialAvailable(transaction, operation.teamId, operation.id, operation.providerSubscriptionId ?? "");
       const attemptedAt = database.clock.now().toISOString();
       const claimToken = randomUUID6();
@@ -129173,6 +129257,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
         productKey: operation.productKey,
         mode: "subscription",
         priceId: desired.priceId,
+        ...operation.currency ? { currency: operation.currency } : {},
         quantity: desired.quantity,
         ...operation.trialDays == null ? {} : { trialDays: operation.trialDays },
         successPath: database.teamBillingDefinition.checkout.successPath,
@@ -129395,7 +129480,8 @@ async function admitTeamBillingActor(database, transaction, auth, input) {
     teamId: input.teamId,
     teamRole: "admin",
     ...input.productKey === void 0 ? {} : { productKey: input.productKey },
-    ...input.interval === void 0 ? {} : { interval: input.interval }
+    ...input.interval === void 0 ? {} : { interval: input.interval },
+    ...input.currency === void 0 ? {} : { currency: input.currency }
   }));
   if (!decision || typeof decision !== "object" || Array.isArray(decision) || Object.keys(decision).join(",") !== "allow" || decision.allow !== true) throw teamBillingDenied();
   return Object.freeze({ admitted: true });
@@ -129456,13 +129542,13 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
     });
   }
   const currentRows = await transaction.prepare(sql2(
-    "SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
+    "SELECT [mode], [providerPriceId], [interval], [currency], [unitAmount], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' ORDER BY [lastEventOccurredAt] DESC, [id] DESC"
   )).all(teamId);
   if (currentRows.length > 1) {
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
   }
   const row = currentRows[0] ?? await transaction.prepare(sql2(
-    "SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
+    "SELECT [mode], [providerPriceId], [interval], [currency], [unitAmount], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1"
   )).get(teamId);
   const quarantine = await transaction.prepare(sql2(
     "SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1"
@@ -129479,7 +129565,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   const binding = row.mode === "sandbox" || row.mode === "live" ? product?.stripe?.[row.mode] : null;
   const quantity = typeof row.quantity === "number" && Number.isSafeInteger(row.quantity) && row.quantity >= 1 ? row.quantity : null;
   const price = teamBillingPriceById(binding, row.providerPriceId);
-  if (!product || !price || price.interval && price.interval !== row.interval || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind !== "fixed" && quantity < (product.quantity.minimum ?? 1)) {
+  if (!product || !price || !matchesBillingCurrency(price, row.currency, row.unitAmount) || price.interval && price.interval !== row.interval || quantity === null || product.quantity.kind === "fixed" && quantity !== product.quantity.value || product.quantity.kind !== "fixed" && quantity < (product.quantity.minimum ?? 1)) {
     return Object.freeze({ state: "attention-required", teamId, reason: "catalogue-mismatch" });
   }
   if (row.cancelAtPeriodEnd !== 0 && row.cancelAtPeriodEnd !== 1) {
@@ -129490,7 +129576,7 @@ async function safeTeamBillingProjection(transaction, definition, teamId) {
   if (!occurredAt || !semantics || row.lastEventKind !== semantics.kind || Number(row.lastEventRank) !== semantics.rank || Number(row.terminalLatch) !== semantics.terminalLatch) {
     return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
   }
-  const common = { teamId, productKey: row.productKey, quantity, ...price.interval ? { interval: price.interval } : {} };
+  const common = { teamId, productKey: row.productKey, quantity, ...row.currency ? { currency: row.currency } : {}, ...price.interval ? { interval: price.interval } : {} };
   if (row.state === "trialing") {
     const trialEndsAt = canonicalTimestamp2(row.trialEndsAt);
     return Object.freeze(trialEndsAt ? { state: "trialing", ...common, trialEndsAt } : { state: "attention-required", teamId, reason: "provider-state-ambiguous" });
@@ -129514,7 +129600,7 @@ function createPrivilegedTeamBillingApi(database, contextGetter) {
     async listQuarantines(options = {}) {
       const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
       assertActive();
-      if (!isRecord3(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
+      if (!isRecord4(options) || Object.keys(options).some((key) => key !== "limit")) throw invalidTeamBillingInspection();
       const limit = options.limit ?? 50;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw invalidTeamBillingInspection();
       if (!database.teamBillingDefinition) return Object.freeze({ quarantines: Object.freeze([]) });
@@ -129555,7 +129641,7 @@ function invalidTeamBillingInspection() {
     "INVALID_TEAM_BILLING_INSPECTION"
   );
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 function canonicalTimestamp2(value) {
@@ -129856,7 +129942,7 @@ async function performTeamBillingErasure(database, context2, payload) {
       "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]"
     )).all(state.teamId);
     const checkouts = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]"
+      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]"
     )).all(state.teamId);
     const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
     if (!["sandbox", "live"].includes(mode) || customer && customer.mode !== mode || subscriptions.some((row) => row.mode !== mode) || checkouts.some((row) => row.mode && row.mode !== mode)) throw unavailable();
@@ -129867,6 +129953,7 @@ async function performTeamBillingErasure(database, context2, payload) {
       productKey: row.productKey,
       mode: "subscription",
       priceId: row.providerPriceId,
+      ...row.currency ? { currency: row.currency } : {},
       quantity: Number(row.quantity),
       ...row.trialDays == null ? {} : { trialDays: row.trialDays },
       successPath: database.teamBillingDefinition?.checkout?.successPath,
@@ -145100,7 +145187,7 @@ function authStatus2(config, serverEnv) {
   };
 }
 function normalizeAuthConfig2(authConfig) {
-  const providerConfig = isRecord4(authConfig.providers) ? authConfig.providers : {};
+  const providerConfig = isRecord5(authConfig.providers) ? authConfig.providers : {};
   for (const provider of Object.keys(providerConfig)) {
     if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
       throw commandError3(
@@ -145150,7 +145237,7 @@ function readProviderConfig2(config) {
   if (config === false || config === void 0 || config === null) {
     return { enabled: false, ...emptyProviderConfig2() };
   }
-  if (!isRecord4(config)) {
+  if (!isRecord5(config)) {
     return { enabled: false, ...emptyProviderConfig2() };
   }
   return {
@@ -145167,7 +145254,7 @@ function readProviderConfig2(config) {
 }
 function readFacebookProviderConfig2(config) {
   const normalized = readProviderConfig2(config);
-  if (!isRecord4(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+  if (!isRecord5(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
     return { ...normalized, graphVersion: "v23.0" };
   }
   return normalized;
@@ -145260,7 +145347,7 @@ function sporadesServerPlugin() {
     }
   };
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function errorDetails3(error) {
@@ -145271,12 +145358,12 @@ function errorDetails3(error) {
 }
 function candidateDiscardIsForbidden(error) {
   const diagnostics = errorDetails3(error).diagnostics;
-  return isRecord4(diagnostics) && diagnostics.candidateDiscard === "forbidden";
+  return isRecord5(diagnostics) && diagnostics.candidateDiscard === "forbidden";
 }
 function bundleErrorMessage(error) {
   const details = errorDetails3(error);
   const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
-  if (isRecord4(firstError) && typeof firstError.text === "string") {
+  if (isRecord5(firstError) && typeof firstError.text === "string") {
     return firstError.text;
   }
   return typeof details.message === "string" ? details.message : "unknown error";
@@ -149693,6 +149780,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         subscriptionId: input.providerSubscriptionId,
         subscriptionItemId: input.providerSubscriptionItemId,
         sourcePriceId: input.sourcePriceId,
+        ...input.currency ? { currency: input.currency } : {},
         targetPriceId: input.targetPriceId,
         ...input.targetProductId ? { targetProductId: input.targetProductId } : {},
         targetQuantity: input.targetQuantity,
@@ -154430,7 +154518,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     if (message.type === "teamBilling.startCheckout") {
       try {
         const input = message.input;
-        const data2 = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
+        const data2 = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
         sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data: data2, error: null });
       } catch (error) {
         sendJson(client, {
@@ -154438,9 +154526,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           type: "error",
           data: null,
           error: {
-            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED",
-            message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Checkout request conflicts with existing work." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
-            hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Use a new request identifier for a different product." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "Finish, abandon, or allow the current Team Checkout to expire before starting another." : "Sign in as the current policy-approved billing administrator and retry."
+            code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED",
+            message: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "The target Price does not support the existing billing currency." : error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Checkout request conflicts with existing work." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
+            hint: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency." : error?.code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Use a new request identifier for a different product, interval, or currency." : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "Finish, abandon, or allow the current Team Checkout to expire before starting another." : "Sign in as the current policy-approved billing administrator and retry."
           }
         });
       }
@@ -154468,7 +154556,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
     if (message.type === "teamBilling.requestPlanTransition") {
       try {
         const input = message.input;
-        const data2 = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
+        const data2 = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
         sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data: data2, error: null });
       } catch (error) {
         const code2 = [
@@ -154477,7 +154565,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
           "TEAM_BILLING_SUBSCRIPTION_CANCELLING",
           "TEAM_BILLING_SUBSCRIPTION_PAST_DUE",
-          "TEAM_BILLING_UNKNOWN_SCHEDULE"
+          "TEAM_BILLING_UNKNOWN_SCHEDULE",
+          "TEAM_BILLING_CURRENCY_MISMATCH"
         ].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED";
         sendJson(client, {
           id: message.id ?? null,
@@ -154485,8 +154574,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
           data: null,
           error: {
             code: code2,
-            message: code2 === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work." : code2 === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal." : code2 === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
-            hint: code2 === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch." : "Sign in as the current policy-approved billing administrator and retry with a new request identifier."
+            message: code2 === "TEAM_BILLING_CURRENCY_MISMATCH" ? "The target Price does not support the subscription currency." : code2 === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work." : code2 === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal." : code2 === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
+            hint: code2 === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency." : code2 === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch." : "Sign in as the current policy-approved billing administrator and retry with a new request identifier."
           }
         });
       }
@@ -160348,7 +160437,7 @@ function validateCapsuleServicesConfig(services, projectDir = process.cwd()) {
   if (services === void 0) {
     return null;
   }
-  if (!isRecord5(services)) {
+  if (!isRecord6(services)) {
     throw commandError4("Invalid Capsule services declaration.", "Set `services` in sporades.json to an object.");
   }
   for (const key of Object.keys(services)) {
@@ -160540,7 +160629,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
   return model;
 }
 function validateDatabaseServiceConfig(database) {
-  if (!isRecord5(database)) {
+  if (!isRecord6(database)) {
     throw commandError4(
       "Invalid database Capsule service declaration.",
       'Set `services.database` to `{ "kind": "database", "engine": "libsql" }` or `{ "kind": "database", "engine": "postgres" }`.'
@@ -160560,7 +160649,7 @@ function validateDatabaseServiceConfig(database) {
   }
 }
 function validateStorageServiceConfig(storage) {
-  if (!isRecord5(storage)) {
+  if (!isRecord6(storage)) {
     throw commandError4(
       "Invalid storage Capsule service declaration.",
       'Set `services.storage` to `{ "kind": "storage", "engine": "minio" }`.'
@@ -160662,7 +160751,7 @@ function serviceLabels(labels, kind, engine) {
     "com.sporades.capsule-service.engine": engine
   };
 }
-function isRecord5(value) {
+function isRecord6(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function commandError4(message, hint) {
@@ -161008,6 +161097,7 @@ function validateCatalogue(catalogue) {
     products.set(product.id, /* @__PURE__ */ new Set());
     for (const price of product.prices) {
       requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring) && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1 && (price.intervalCount ?? 1) <= { day: 1095, week: 156, month: 36, year: 3 }[price.recurring]);
+      normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
       prices.add(price.id);
       products.get(product.id).add(price.id);
     }
@@ -161112,18 +161202,33 @@ async function createStripeTeamBillingFake(options) {
   function get(map, key) {
     return map.get(key) ?? fail5(`No such resource: '${key}'.`, 404, "resource_missing");
   }
-  function price(priceId) {
+  function catalogueEntry(priceId) {
     for (const product of catalogue.products) {
       const entry = product.prices.find((item) => item.id === priceId);
-      if (entry) return {
-        id: entry.id,
-        object: "price",
-        livemode: false,
-        product: product.id,
-        recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" }
-      };
+      if (entry) return { product, entry };
     }
     return fail5("Unknown catalogue Price.");
+  }
+  function price(priceId, currency) {
+    const { product, entry } = catalogueEntry(priceId);
+    const selected = currency ?? entry.currency;
+    requireValue(!selected || billingCurrencyAmount(entry, selected) !== void 0, "Price does not support the subscription currency.");
+    return {
+      id: entry.id,
+      object: "price",
+      livemode: false,
+      product: product.id,
+      ...entry.currency ? {
+        currency: entry.currency,
+        unit_amount: entry.unitAmount,
+        ...entry.currencyOptions ? { currency_options: Object.fromEntries(
+          Object.entries(entry.currencyOptions).map(([code2, option]) => [code2, { unit_amount: option.unitAmount }])
+        ) } : {},
+        billing_scheme: "per_unit",
+        type: "recurring"
+      } : {},
+      recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" }
+    };
   }
   function periodEnd(start, priceValue) {
     const { interval, interval_count: count } = priceValue.recurring;
@@ -161197,8 +161302,9 @@ async function createStripeTeamBillingFake(options) {
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id2("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
+    requireValue(![...subscriptions.values()].some((sub) => sub.customer === customerId && sub.currency !== session.currency), "Customer currency cannot change.");
     const subscriptionId = id2("sub");
-    const itemPrice = price(session.line_items.data[0].price.id);
+    const itemPrice = price(session.line_items.data[0].price.id, session.currency);
     const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
     const trialEnd = trialDays ? now2 + trialDays * 86400 : null;
     const subscription = {
@@ -161206,6 +161312,7 @@ async function createStripeTeamBillingFake(options) {
       object: "subscription",
       livemode: false,
       customer: customerId,
+      ...session.currency ? { currency: session.currency } : {},
       status: trialDays ? "trialing" : "active",
       trial_start: trialDays ? now2 : null,
       trial_end: trialEnd,
@@ -161283,6 +161390,7 @@ async function createStripeTeamBillingFake(options) {
       object: "invoice",
       livemode: false,
       customer: subscription.customer,
+      ...subscription.currency ? { currency: subscription.currency } : {},
       billing_reason: "subscription_update",
       status: "paid",
       paid: true,
@@ -161293,7 +161401,7 @@ async function createStripeTeamBillingFake(options) {
   }
   async function switchPrice(subscriptionId, priceId) {
     const subscription = liveSubscription(subscriptionId);
-    applyPrice(subscription, price(priceId));
+    applyPrice(subscription, price(priceId, subscription.currency));
     return subscriptionEvent(subscription);
   }
   async function setCancellation(subscriptionId, cancel) {
@@ -161320,7 +161428,7 @@ async function createStripeTeamBillingFake(options) {
   async function operate(operation, resourceId, p2, fault) {
     switch (operation) {
       case "checkout.sessions.create": {
-        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer"]);
+        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
         requireValue(p2.mode === "subscription");
         exactKeys2(p2.line_items, ["0"]);
         exactKeys2(p2.line_items[0], ["price", "quantity"]);
@@ -161330,6 +161438,10 @@ async function createStripeTeamBillingFake(options) {
         exactKeys2(p2.subscription_data.metadata, ["sporades_team_billing_operation"]);
         requireValue(p2.client_reference_id === p2.metadata.sporades_team_billing_operation && p2.client_reference_id === p2.subscription_data.metadata.sporades_team_billing_operation);
         if (p2.customer) get(customers, p2.customer);
+        const { entry } = catalogueEntry(p2.line_items[0].price);
+        const itemPrice = price(p2.line_items[0].price, p2.currency);
+        const sessionCurrency = p2.currency ?? entry.currency;
+        const sessionAmount = sessionCurrency ? billingCurrencyAmount(entry, sessionCurrency) : void 0;
         const sessionId = id2("cs_test");
         const session = {
           id: sessionId,
@@ -161337,6 +161449,7 @@ async function createStripeTeamBillingFake(options) {
           mode: "subscription",
           status: "open",
           livemode: false,
+          ...sessionCurrency ? { currency: sessionCurrency, amount_total: sessionAmount * integer(p2.line_items[0].quantity) } : {},
           url: `https://checkout.stripe.com/c/pay/${sessionId}`,
           customer: p2.customer ?? null,
           subscription: null,
@@ -161346,7 +161459,7 @@ async function createStripeTeamBillingFake(options) {
           expires_at: integer(p2.expires_at, 253402300799),
           metadata: copy(p2.metadata),
           subscription_data: copy(p2.subscription_data),
-          line_items: { object: "list", has_more: false, data: [{ price: price(p2.line_items[0].price), quantity: integer(p2.line_items[0].quantity) }] }
+          line_items: { object: "list", has_more: false, data: [{ price: itemPrice, quantity: integer(p2.line_items[0].quantity) }] }
         };
         sessions.set(sessionId, session);
         return copy(session);
@@ -161395,7 +161508,7 @@ async function createStripeTeamBillingFake(options) {
         const item = subscription.items.data[0];
         requireValue(p2.items[0].id === item.id && p2.proration_behavior === "create_prorations" && p2.payment_behavior === "pending_if_incomplete");
         integer(p2.proration_date, 253402300799);
-        const targetPrice = price(p2.items[0].price);
+        const targetPrice = price(p2.items[0].price, subscription.currency);
         const quantity = integer(p2.items[0].quantity);
         if (fault?.status === "paymentActionRequired") {
           subscription.pending_update = {
@@ -161549,6 +161662,7 @@ async function createStripeTeamBillingFake(options) {
           object: "invoice",
           livemode: false,
           customer: subscription.customer,
+          ...subscription.currency ? { currency: subscription.currency } : {},
           status: "open",
           paid: false,
           attempt_count: 1,

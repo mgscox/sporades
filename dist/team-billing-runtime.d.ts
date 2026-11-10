@@ -1,3 +1,4 @@
+export { validTeamBillingInterval, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
 type LooseRecord = Record<string, any>;
 export declare const TEAM_BILLING_PRODUCT_MAX = 32;
 export declare const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
@@ -25,17 +26,6 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
     catalogue: Readonly<LooseRecord>;
     authorize: any;
 }>;
-/** Canonical Stripe recurring interval key; Stripe limits recurrence to three years. */
-export declare function validTeamBillingInterval(value: any): value is string;
-export declare function teamBillingPrices(binding: any): LooseRecord[];
-export declare function teamBillingPrice(binding: any, interval: any): {
-    interval: string;
-    priceId: any;
-} | {
-    priceId: any;
-    interval?: undefined;
-} | null;
-export declare function teamBillingPriceById(binding: any, priceId: any): LooseRecord | null;
 export declare function readCurrentUserTeamBilling(database: LooseRecord, auth: LooseRecord, teamId: any): Promise<any>;
 /**
  * Provider-free Team Billing truth for Capsule server policy. Unlike a
@@ -59,6 +49,7 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
 }> | Readonly<{
     trialEndsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -67,6 +58,7 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
 }> | Readonly<{
     endsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -74,6 +66,7 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
 }> | Readonly<{
     renewsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -81,6 +74,7 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
 }> | Readonly<{
     currentPeriodEnd: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -88,12 +82,13 @@ export declare function readCapsuleTeamBillingProjection(database: LooseRecord, 
     reason?: undefined;
 }> | Readonly<{
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
     state: "cancelled";
 }>>;
-export declare function startTeamBillingCheckout(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any): Promise<any>;
+export declare function startTeamBillingCheckout(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any, currency?: any): Promise<any>;
 export declare function startTeamBillingPortal(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any): Promise<any>;
 export declare function performTeamBillingCheckout(database: LooseRecord, context: LooseRecord, payload: any, attempt?: number): Promise<{
     observed: boolean;
@@ -141,6 +136,7 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     trialEndsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -149,6 +145,7 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     endsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -156,6 +153,7 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     renewsAt: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -163,6 +161,7 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }> | Readonly<{
     currentPeriodEnd: string;
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -170,6 +169,7 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
     reason?: undefined;
 }> | Readonly<{
     interval?: any;
+    currency?: any;
     teamId: string;
     productKey: any;
     quantity: any;
@@ -189,5 +189,4 @@ export declare function createPrivilegedTeamBillingApi(database: LooseRecord, co
     }>>;
 }>;
 export declare function teamBillingDenied(): import("./runtime-errors.js").HelperError;
-export {};
 //# sourceMappingURL=team-billing-runtime.d.ts.map
