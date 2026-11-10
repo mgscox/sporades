@@ -50,6 +50,7 @@ waitForHostHelperMarker,
 stopHostHelper,
 waitForPath,
 waitForChildPid,
+createHostPauseGate,
 hostEnv,
 writeHostProfileConfig,
 installFakeSsh,
@@ -375,22 +376,25 @@ test("first Host helper upgrade requires stable quiescence when a legacy action 
     const stage = path.join(remoteBin, `.sporades-host-helper-stage-${checksum}.mjs`);
     await copyFile(hostHelperPath, stage);
     await chmod(stage, 0o755);
+    const DRAIN_SCAN = "SPORADES_FAKE_HOST_UPGRADE_DRAIN_SCAN_PAUSE_MS";
+    const gate = await createHostPauseGate(dir);
     const env = {
       SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
       SPORADES_TEST_SHA256_PATH: path.join(repoRoot, "test", "support", "sha256sum.mjs"),
       SPORADES_TEST_PROC_ROOT: procRoot,
-      SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "2000",
       SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+      ...gate.env(DRAIN_SCAN),
     };
     const upgrade = startExecutable(stage, ["--install-host-helper", target, checksum], { cwd: dir, env });
-    await waitForFileText(target, (contents) => contents.includes("SPORADES_HOST_HELPER_DISPATCHER_V1"));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Scan 1 found no legacy action. The action becomes identifiable before scan 2, so a drain that
+    // finished on one empty snapshot would exit instead of reaching the gate after scan 2.
+    await gate.entered(DRAIN_SCAN, { action: upgrade });
     await writeFakeProcEntry(procRoot, 43001, target);
-    let settled = false;
-    upgrade.result.then(() => { settled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 120));
-    assert.equal(settled, false, "one empty proc snapshot must not finish legacy drain");
+    await gate.release(DRAIN_SCAN, 1);
+    await gate.entered(DRAIN_SCAN, { visit: 2, action: upgrade });
     await rm(path.join(procRoot, "43001"), { recursive: true, force: true });
+    await gate.open(DRAIN_SCAN);
+    await gate.release(DRAIN_SCAN, 2);
     const result = await upgrade.result;
     assert.equal(result.code, 0, result.stderr || result.stdout);
   });
@@ -964,6 +968,7 @@ test("sporades host bootstrap revalidates the trusted chain immediately before a
     const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
     const docker = await installFakeDocker(path.join(dir, "docker"));
     const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const gate = await createHostPauseGate(dir);
     const action = startHostHelper({
       action: "host.bootstrap",
       host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
@@ -977,12 +982,14 @@ test("sporades host bootstrap revalidates the trusted chain immediately before a
         PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
         SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: "bootstrap-health-route-publish",
         SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
-        SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+        ...gate.env("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS"),
       },
     });
     await waitForPath(marker);
+    await gate.entered("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS", { action });
     await rename(domainDirectory, preservedDirectory);
     await symlink(outside, domainDirectory, "dir");
+    await gate.release("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
     const result = await action.result;
     assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
     assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before);
@@ -1024,18 +1031,21 @@ test("sporades host bootstrap keeps privileged access-log repair on retained ino
     const outsideBefore = await lstat(outside);
     const outsideHash = createHash("sha256").update(await readFile(outside)).digest("hex");
     const marker = path.join(dir, "descriptor-boundary.marker");
+    const gate = await createHostPauseGate(dir);
     const action = startHostHelper(request, {
       cwd: dir,
       env: {
         ...env,
         SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: "bootstrap-access-log-descriptor-mutate",
         SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
-        SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+        ...gate.env("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS"),
       },
     });
     await waitForPath(marker);
+    await gate.entered("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS", { action });
     await rename(logFile, retainedLogFile);
     await symlink(outside, logFile);
+    await gate.release("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
     const result = await action.result;
     assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
 
@@ -1289,6 +1299,7 @@ test("sporades host helper descriptor-fences sealed-env key creation after quies
       host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
       capsule: { subname: "team-notes" },
     };
+    const gate = await createHostPauseGate(dir);
     const action = startHostHelper(request, {
       cwd: dir,
       env: {
@@ -1296,15 +1307,17 @@ test("sporades host helper descriptor-fences sealed-env key creation after quies
         SPORADES_TEST_RUNTIME_DATA_MUTATION_BOUNDARY: "runtime-data-descriptor-mutate",
         SPORADES_TEST_RUNTIME_DATA_MUTATION_MARKER: marker,
         SPORADES_TEST_RUNTIME_DATA_MUTATION_TARGET_SUFFIX: ".private.pem",
-        SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS: "700",
+        ...gate.env("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS"),
       },
     });
     try {
       const keyPath = (await waitForHostHelperMarker(action, marker, (contents) => contents.endsWith(".private.pem\n"))).trim();
+      await gate.entered("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS", { action });
       assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["inspect", "stop", "rm"]);
       const retained = `${keyPath}.retained`;
       await rename(keyPath, retained);
       await symlink(outside, keyPath);
+      await gate.release("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS");
       const result = await action.result;
       assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule runtime restoration failed.", result.stdout);
       assert.equal(JSON.parse(await readFile(fixture.registryRecordPath, "utf8")).status, "stopped");
@@ -2618,6 +2631,7 @@ test("sporades host helper revalidates trust immediately before apply and rollba
       const sentinel = path.join(outside, "sentinel.bin");
       await writeFile(sentinel, Buffer.from([0, 1, 2, 253, 254, 255]));
       const before = createHash("sha256").update(await readFile(sentinel)).digest("hex");
+      const gate = await createHostPauseGate(caseRoot);
       const action = startHostHelper(fixture.request, {
         cwd: caseRoot,
         detached: true,
@@ -2625,13 +2639,15 @@ test("sporades host helper revalidates trust immediately before apply and rollba
           ...fixture.docker.env,
           SPORADES_TEST_ROUTE_MUTATION_BOUNDARY: boundary,
           SPORADES_TEST_ROUTE_MUTATION_MARKER: marker,
-          SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS: "700",
+          ...gate.env("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS"),
         },
       });
       try {
         await waitForHostHelperMarker(action, marker, (text) => text === `${boundary}\n`);
+        await gate.entered("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS", { action });
         await rename(domainDirectory, preservedDirectory);
         await symlink(outside, domainDirectory, "dir");
+        await gate.release("SPORADES_FAKE_ROUTE_MUTATION_PAUSE_MS");
         const result = await action.result;
         assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", `${boundary}: ${result.stdout}`);
         assert.equal(createHash("sha256").update(await readFile(sentinel)).digest("hex"), before, boundary);
@@ -2642,6 +2658,7 @@ test("sporades host helper revalidates trust immediately before apply and rollba
         assert.ok(originalEntry, `${boundary}: original route bytes must remain in the fenced directory`);
         assert.match(await readFile(path.join(preservedDirectory, originalEntry), "utf8"), /127\.0\.0\.1:49153/, boundary);
       } finally {
+        await gate.releaseAll();
         await stopHostHelper(action);
       }
     }
@@ -2662,13 +2679,14 @@ test("sporades host helper scavenges a dead stale-lock quarantine after SIGKILL"
         createdAt: Date.now() - 60_000,
       })}\n`,
     );
+    const gate = await createHostPauseGate(dir);
     const holder = startHostHelper(fixture.request, {
       cwd: dir,
-      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
+      env: { ...fixture.docker.env, ...gate.env("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS") },
     });
     const routeDir = path.dirname(fixture.routeFile);
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Killed while provably holding the lock; the gate is never released.
+    await gate.entered("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS", { action: holder });
     process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 
@@ -3367,6 +3385,7 @@ test("sporades host helper quiesces Docker before descriptor-fenced runtime-data
     const sentinelHash = createHash("sha256").update(await readFile(sentinel)).digest("hex");
     const marker = path.join(dir, "runtime-data.marker");
     const retainedData = `${fixture.dataDir}.retained`;
+    const gate = await createHostPauseGate(dir);
     const action = startHostHelper({
       action: "capsule.start",
       host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: fixture.remoteRoot },
@@ -3379,13 +3398,15 @@ test("sporades host helper quiesces Docker before descriptor-fenced runtime-data
         SPORADES_TEST_RUNTIME_DATA_MUTATION_BOUNDARY: "runtime-data-descriptor-mutate",
         SPORADES_TEST_RUNTIME_DATA_MUTATION_MARKER: marker,
         SPORADES_TEST_RUNTIME_DATA_MUTATION_TARGET_SUFFIX: "/data",
-        SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS: "700",
+        ...gate.env("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS"),
       },
     });
     await waitForPath(marker);
+    await gate.entered("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS", { action });
     assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
     await rename(fixture.dataDir, retainedData);
     await symlink(outside, fixture.dataDir);
+    await gate.release("SPORADES_FAKE_RUNTIME_DATA_MUTATION_PAUSE_MS");
     const result = await action.result;
     assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule data path failed its no-follow trust check.", result.stdout);
     assert.deepEqual((await docker.calls()).map((call) => call.args[0]), ["stop", "rm"]);
