@@ -850,7 +850,7 @@ codes. Worker refusals settle the operation as failed without a provider update:
 | --- | --- |
 | Cancellation scheduled | `TEAM_BILLING_SUBSCRIPTION_CANCELLING` |
 | `past_due` or `unpaid` | `TEAM_BILLING_SUBSCRIPTION_PAST_DUE` |
-| An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
+| An attached schedule the runtime does not own | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
 
 Passing `resume: true` lifts only the cancellation refusal: the same provider
 update switches the plan and clears `cancel_at_period_end` / `cancel_at`, so a
@@ -858,9 +858,55 @@ Team that changes its mind while cancelling keeps its existing Subscription.
 Every other guard still stands, and without `resume: true` the cancellation
 refusal is unchanged.
 
-Sporades does not own Subscription Schedules yet, so every attached schedule
-is unknown. These guards apply to cross-policy and interval switches
-as well as the opt-in same-policy path.
+The `authorize` policy may return `timing: "period-end"` for a plan
+transition instead of the default `"now"`. The server owns the decision; the
+browser never sends a timing. A period-end transition does not touch the
+Subscription's items directly: Sporades creates a Subscription Schedule
+(`from_subscription`), updates it with the current phase (the exact current
+Price and quantity) plus one future phase (the target Price and quantity,
+`proration_behavior: "none"`) and `end_behavior: "release"`. Stripe applies the
+future phase at the period boundary even while the Capsule is down, which is
+why Schedules are used instead of a runtime timer. The durable desired state
+gains a `scheduled` status: provider acknowledgement grants no entitlement,
+and settlement waits for verified Subscription evidence showing the target
+after the boundary. A later period-end request rewrites the pending phase of
+the same schedule (latest-wins) rather than refusing it. A trial subscription
+never rides a schedule: `timing: "period-end"` falls back to `"now"` and
+`authorize` cannot defer a trialling switch.
+
+An attached schedule the runtime itself created (through the durable intent)
+is owned and never blocks its own transition or seat work. Any other attached
+schedule, such as one created in the Stripe Dashboard, is foreign: it does not
+change entitlement, which still follows the current items, but it makes new
+managed transitions and seat/usage quantity writes refuse
+`TEAM_BILLING_UNKNOWN_SCHEDULE`. Convergence records the subscription's
+`schedule` correlation privately with the rest of the provider facts.
+
+While a runtime-owned schedule is attached, seat (accepted Team member) and
+usage quantity writes must not use `subscriptions.update`: direct edits would
+be overwritten when the next phase is entered. They are routed through
+`subscriptionSchedules.update`, restaging the scheduled transition so the new
+count lands in both the current phase (billed immediately) and the future
+phase (the target Price with the new quantity). Verified evidence of the
+current phase settles nothing; only boundary evidence of the target settles
+the scheduled operation.
+
+Use `cancelScheduledPlanTransition` to release the runtime-owned schedule of a
+scheduled period-end change:
+
+```ts
+await teamBilling.cancelScheduledPlanTransition({
+  teamId, requestId: crypto.randomUUID(),
+});
+```
+
+The current plan keeps running to its period end and the target never
+applies. Release happens through `subscriptionSchedules.release` in the same
+serialized provider lane as every other Team Billing write, is idempotent by
+Team, and settles only after verified Subscription evidence shows the schedule
+detached and the current tuple unchanged. Cancelling with nothing scheduled is
+a safe `TEAM_BILLING_REQUEST_CONFLICT`; a foreign schedule refuses the same
+way as other managed work.
 
 A switch during `trialing` preserves the existing `trial_end` by default,
 including interval changes; the target product's `trialDays` does not start a
@@ -897,7 +943,9 @@ The app renders the returned `pending`, `completed`, `superseded`, or safe
 Subscription, item, or idempotency identity. Repeating the same
 Team/request/product/interval observes the same operation; reusing its request ID for a
 different product or interval is a safe conflict. Capsule `authorize` remains the local
-business-policy seam, including whether a downgrade is allowed.
+business-policy seam, including whether a downgrade is allowed and whether it
+applies now (`timing: "now"`, the default) or at the period end
+(`timing: "period-end"`) through the Subscription Schedule path above.
 
 Admission and the desired-state Job commit together. Before each provider
 attempt Sporades reauthorizes the original linked Team administrator, re-reads
@@ -997,7 +1045,11 @@ Sporades blocks new Team Checkout, Portal, managed Plan, and seat work.
 
 The reserved Job resolves every issued Checkout without guessing, immediately
 cancels every known or newly discovered live Subscription, and retries with
-stable provider idempotency. Exact 404 responses may establish safely closed
+stable provider idempotency. Every attached Subscription Schedule the provider
+reports is released before the Subscription it guards is cancelled, so no live
+schedule survives the quiescence fence; a cancelled Subscription also cancels
+its schedule, and release evidence is recorded in the same object tombstones.
+Exact 404 responses may establish safely closed
 objects; network absence and incomplete lists may not. An open Checkout that
 completes during expiry is accepted only after Stripe's exact non-expireable
 response and a fresh verified retrieve. Restart and provider-lane recovery use

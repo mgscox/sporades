@@ -429,6 +429,13 @@ export type TeamBillingPlanTransitionResult =
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
   | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "currency-mismatch" | "provider-state-ambiguous" | "unavailable"; paymentAction?: TeamBillingPaymentAction };
 
+/** Releases the runtime-owned schedule of a period-end plan change; the current plan keeps running. */
+export type TeamBillingCancelScheduledPlanTransitionRequest = { teamId: string; requestId: string };
+export type TeamBillingCancelScheduledPlanTransitionResult =
+  | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
+  | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "provider-state-ambiguous" | "unavailable" };
+
 export type TeamBillingErasureRequest = { teamId: string; requestId: string };
 export type TeamBillingErasureResult =
   | { state: "pending"; teamId: string; requestId: string; requestedAt: string }
@@ -441,6 +448,8 @@ export type TeamBillingApi = {
   startCurrencyHandover(input: TeamBillingCurrencyHandoverRequest): Promise<SporadesResult<TeamBillingCurrencyHandoverResult>>;
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
   requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
+  /** Releases the schedule of a `period-end` plan change; the current plan keeps running until it settles. */
+  cancelScheduledPlanTransition(input: TeamBillingCancelScheduledPlanTransitionRequest): Promise<SporadesResult<TeamBillingCancelScheduledPlanTransitionResult>>;
   /** Proves provider quiescence before the app performs its separate local Team deletion transaction. */
   prepareErasure(input: TeamBillingErasureRequest): Promise<SporadesResult<TeamBillingErasureResult>>;
 };

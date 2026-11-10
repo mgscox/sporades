@@ -832,7 +832,8 @@ export type TeamBillingAuthorityInput = {
   /** Verified source currency for a currency handover; currency is the requested target. */
   fromCurrency?: string;
 };
-export type TeamBillingAuthorityDecision = { allow: boolean };
+export type TeamBillingAuthorityDecision = { allow: boolean; /** `"period-end"` defers a plan-transition to the current period's end through a Stripe Subscription Schedule. Default `"now"`. */
+  timing?: "now" | "period-end" };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
 export type TeamBillingProjection =
   | { state: "inactive"; teamId: string }

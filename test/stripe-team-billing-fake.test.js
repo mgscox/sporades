@@ -329,6 +329,47 @@ test("pending seat changes need successful payment; expiration and cancellation 
   });
 });
 
+test("an attached schedule is released at its boundary, owned by the fake and cancelled with the Subscription", async (t) => {
+  for (const resolution of ["boundary", "cancel"]) await t.test(resolution, async (t) => {
+    const f = await fixture(t); const { fake, provider, stripe } = f;
+    const { subscription, item } = await paid(f);
+    const periodEnd = item.current_period_end;
+    // Managed period-end switch: create the schedule, then set the future phase.
+    const created = await stripe.subscriptionSchedules.create({ from_subscription: subscription.id });
+    assert.equal(created.status, "active");
+    assert.equal(created.subscription, subscription.id);
+    assert.equal((await stripe.subscriptions.retrieve(subscription.id)).schedule, created.id);
+    const updated = await stripe.subscriptionSchedules.update(created.id, {
+      end_behavior: "release",
+      phases: [
+        { items: [{ price: "price_team", quantity: item.quantity }] },
+        { items: [{ price: "price_studio", quantity: 5 }], proration_behavior: "none" },
+      ],
+    });
+    assert.equal(updated.phases.length, 2);
+    assert.equal(updated.phases[0].items[0].price.id, "price_team");
+    assert.equal(updated.phases[1].items[0].price.id, "price_studio");
+    if (resolution === "boundary") {
+      await fake.clock.advance(periodEnd - fake.state().now);
+      const switched = await stripe.subscriptions.retrieve(subscription.id);
+      assert.equal(switched.schedule, null);
+      assert.equal(switched.items.data[0].price.id, "price_studio");
+      assert.equal(switched.items.data[0].quantity, 5);
+      assert.equal(fake.state().schedules.find((entry) => entry.id === created.id).status, "released");
+    } else {
+      // Settles the research open question: cancelling the Subscription while a
+      // schedule is attached succeeds and cancels the schedule.
+      const canceled = await stripe.subscriptions.cancel(subscription.id);
+      assert.equal(canceled.status, "canceled");
+      assert.equal(fake.state().schedules.find((entry) => entry.id === created.id).status, "canceled");
+      await fake.clock.advance(periodEnd - fake.state().now);
+      assert.equal((await stripe.subscriptions.retrieve(subscription.id)).status, "canceled", "a cancelled schedule never applies its phase");
+      assert.equal((await stripe.subscriptions.retrieve(subscription.id)).items.data[0].price.id, "price_team");
+    }
+    await fake.events.deliver();
+  });
+});
+
 test("literal loopback, sandbox-only authentication, exact API version and unsupported calls fail closed", async (t) => {
   for (const webhookTarget of ["https://stripe.com/webhook", "http://localhost:5218/webhook", "http://127.1:5218/", "http://127.0.0.1:5218@evil.test/", "http://127.0.0.1/"]) {
     await assert.rejects(createStripeTeamBillingFake({ webhookTarget, webhookSecret: secret, catalogue }));
@@ -362,7 +403,7 @@ test("endpoint and event parity fails when the real provider or convergence adds
   ]);
   const calls = new Set([...provider.matchAll(/await stripe\.([\w.]+)\(/g)].map((entry) => entry[1]));
   const routes = new Set([...fake.matchAll(/\["(?:POST|GET|DELETE)", .*?, "([\w.]+)"\]/g)].map((entry) => entry[1]));
-  assert.equal(calls.size, 12);
+  assert.equal(calls.size, 15);
   assert.deepEqual([...routes].sort(), [...calls].sort());
   const supported = convergence.match(/const SUPPORTED = new Set\(\[([\s\S]*?)\]\)/)[1];
   const events = fake.match(/const EVENTS = \[([\s\S]*?)\]/)[1];
