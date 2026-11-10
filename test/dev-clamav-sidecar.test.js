@@ -201,12 +201,13 @@ else process.exit(1);
 
 test("Dev ClamAV readiness uses its host monotonic deadline at the exact proof boundary", async () => {
   for (const [name, proofTime, expectedReady] of [["before", 99, true], ["at", 100, true], ["after", 101, false]]) {
-    const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-deadline-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); const proofEmitted = path.join(dir, "proof-emitted"); let manager;
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-dev-clamav-deadline-${name}-`)); const docker = path.join(dir, "docker.mjs"); const state = path.join(dir, "state.json"); const proofEmitted = path.join(dir, "proof-emitted"); let manager; let deadlineRead = false;
     await writeFile(docker, `#!/usr/bin/env node\nimport fs from "node:fs";\nconst args=process.argv.slice(2);\nif(args[0]==="image")process.exit(0);\nif(args[0]==="run"){fs.writeFileSync(${JSON.stringify(state)},String(process.pid));setTimeout(()=>{fs.writeFileSync(${JSON.stringify(proofEmitted)},"1");process.stdout.write("sporades-clamav-ready-v1\\n");},10);process.on("SIGTERM",()=>process.exit(0));setInterval(()=>{},1000);}\nelse if(args[0]==="rm"){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),"SIGTERM");}catch{}process.exit(0);}\nelse if(args[0]==="container"&&args[1]==="inspect"&&args.includes("--format")){try{process.kill(Number(fs.readFileSync(${JSON.stringify(state)},"utf8")),0);process.stdout.write("true\\n");}catch{process.exit(1);}}\nelse process.exit(1);\n`); await chmod(docker, 0o755);
     try {
-      const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 100, readinessTiming: { // The host clock reads 0 until the fake container has emitted its proof, so a
-        // real expiry timer that fires early under load cannot consume the proof-time reading.
-        now: () => (existsSync(proofEmitted) ? proofTime : 0), containerIsRunning: async () => true } }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
+      const outcome = await startDevClamavSidecar({ projectDir: dir, dockerfile: path.join(dir, "Dockerfile.base"), buildContext: dir, dockerCommand: docker, readinessTimeoutMs: 100, readinessTiming: { // The first reading initializes the deadline and is always 0, even if the child has already
+        // emitted its proof. Later readings stay 0 until the proof is emitted, so a real expiry
+        // timer that fires early under load cannot consume the proof-time reading.
+        now: () => { if (!deadlineRead) { deadlineRead = true; return 0; } return existsSync(proofEmitted) ? proofTime : 0; }, containerIsRunning: async () => true } }).then((value) => ({ value }), (error) => ({ error })); manager = outcome.value;
       assert.equal(Boolean(outcome.value), expectedReady, name); if (!expectedReady) assert.equal(outcome.error?.code, "FILE_INSPECTION_UNAVAILABLE", name);
     } finally { await manager?.stop().catch(() => {}); await rm(dir, { recursive: true, force: true }); }
   }
