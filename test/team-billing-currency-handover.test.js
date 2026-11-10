@@ -51,7 +51,7 @@ import { createStripeCallbackEndpoint } from '../dist/stripe-webhook-runtime.js'
 import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocketHub } from '../dist/server-runtime-source.js';
 import { startTeamBillingCheckout, readCurrentUserTeamBilling } from '../dist/team-billing-runtime.js';
 
-async function fixture(t, counted = false) {
+async function fixture(t, counted = false, includeOther = false) {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-handover-'));
   const checks = [];
   let allow = true;
@@ -61,12 +61,17 @@ async function fixture(t, counted = false) {
     checkout: { successPath: '/billing', cancelPath: '/billing' },
     authorize: (_ctx, input) => { checks.push(input); return { allow: input.operation === 'read' || allow && (input.operation !== 'currency-handover' || input.fromCurrency === 'gbp') }; },
   } };
+  const fakeCatalogue = structuredClone(catalogue);
+  if (includeOther) {
+    fakeCatalogue.products.push({ id: 'prod_other', prices: [{ id: 'price_other', recurring: 'month', currency: 'gbp', unitAmount: 2900, currencyOptions: { eur: { unitAmount: 3500 } } }] });
+    definition.teamBilling.catalogue.other = { quantity: { kind: 'fixed', value: 2 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, { productId: mode === 'live' ? 'prod_live_other' : 'prod_other', prices: { 'month:1': { priceId: mode === 'live' ? 'price_live_other' : 'price_other', currency: 'gbp', unitAmount: 2900, currencyOptions: { eur: { unitAmount: 3500 } } } } }])) };
+  }
   const open = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'handover', auth: { providers: { email: true } }, payments: { stripe: config } }, definition, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
   let database = await open();
   const server = createServer(async (req, res) => { try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); } catch { res.writeHead(500).end(); } });
   const hub = createWebSocketHub(() => database); server.on('upgrade', (req, socket) => hub.accept(req, socket));
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  const fake = await createStripeTeamBillingFake({ catalogue, webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: 'manual' });
+  const fake = await createStripeTeamBillingFake({ catalogue: fakeCatalogue, webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: 'manual' });
   t.after(async () => { await fake.close(); hub.disconnectAll(); server.closeAllConnections(); await new Promise(r => server.close(r)); await database.close(); await rm(dir, { recursive: true, force: true }); });
   database.stripeApiBaseUrl = fake.origin; await database.init(); database.scheduleTeamBillingJobDispatch = () => {};
   const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/?connectionToken=${hub.createConnectionToken()}`); await once(ws, 'open');
@@ -287,4 +292,61 @@ test('deadline discovery restores a source that was never canceled after a prefl
   await f.fake.subscriptions.renew(f.initial.subscription); await f.deliver();
   assert.equal((await f.read()).state, 'active');
   assert.equal((await f.start({ requestId: randomUUID() })).error, null);
+});
+
+
+test('a successful currency handover supersedes an expired failed plan intent across restart', async t => {
+  const f = await fixture(t, false, true);
+  const { requestTeamBillingPlanTransition } = await import('../dist/team-billing-management.js');
+  const planRequest = randomUUID();
+  f.fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, planRequest, 'other', 'month:1'); await f.drain();
+  assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, planRequest, 'other', 'month:1')).reason, 'payment-action-required');
+  await f.fake.clock.advance(3600); await f.deliver();
+  await f.start(); await f.drain();
+  await f.fake.checkout.complete(f.fake.state().checkouts.find(s => s.mode === 'setup').id); await f.deliver(); await f.deliver();
+  assert.equal((await f.read()).currency, 'eur'); assert.equal((await f.read()).productKey, 'team');
+  const writes = f.fake.requests().filter(r => r.operation === 'subscriptions.update').length;
+  await f.restart(); await f.drain(); await f.deliver();
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, writes, 'restart cannot resurrect the abandoned target');
+  assert.equal((await f.read()).productKey, 'team'); assert.equal((await f.read()).currency, 'eur');
+});
+
+test('startup repair cannot revive a handover completed while its lifecycle lock was pending', async t => {
+  const f = await fixture(t); await f.start(); await f.drain();
+  await f.fake.checkout.complete(f.fake.state().checkouts.find(s => s.mode === 'setup').id); await f.deliver();
+  const created = f.fake.events.pending().find(e => e.type === 'customer.subscription.created');
+  assert.ok(created);
+  const { applyVerifiedTeamBillingObservation } = await import('../dist/team-billing-convergence.js');
+  const { repairTeamBillingCurrencyHandovers } = await import('../dist/team-billing-currency-handover.js');
+  const adapter = f.database.adapter;
+  let injected = false;
+  const racingAdapter = new Proxy(adapter, { get(target, key) {
+    if (key !== 'withTransaction') return Reflect.get(target, key);
+    return callback => target.withTransaction(tx => callback(new Proxy(tx, { get(inner, name) {
+      if (name !== 'prepare') return Reflect.get(inner, name);
+      return sql => {
+        const statement = inner.prepare(sql);
+        return new Proxy(statement, { get(stmt, method) {
+          if (method !== 'all') { const value = Reflect.get(stmt, method); return typeof value === 'function' ? value.bind(stmt) : value; }
+          return async (...args) => {
+            const rows = await stmt.all(...args);
+            if (!injected) {
+              injected = true;
+              // Model a committed replacement after discovery, before lock admission.
+              await applyVerifiedTeamBillingObservation({ ...f.database, adapter: tx }, {
+                provider: 'stripe', providerEventId: created.id, type: created.type, livemode: false,
+                occurredAt: new Date(created.created * 1000).toISOString(), objectId: created.data.object.id, raw: created,
+              });
+            }
+            return rows;
+          };
+        } });
+      };
+    } })));
+  } });
+  await repairTeamBillingCurrencyHandovers({ ...f.database, adapter: racingAdapter });
+  assert.ok(injected);
+  assert.equal((await f.start()).data.state, 'completed');
+  assert.equal((await f.read()).currency, 'eur');
 });

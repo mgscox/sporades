@@ -117,7 +117,10 @@ test("ending a trial waits for payment and lost acknowledgements replay one invo
       await assert.rejects(f.provider.updateManagedSubscription(update), unavailable);
       assert.deepEqual(await f.provider.updateManagedSubscription(update), { ok: true, outcome: "acknowledged" });
     } else {
-      assert.deepEqual(await f.provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+      const result = await f.provider.updateManagedSubscription(update);
+      assert.equal(result.ok, true);
+      assert.equal(result.outcome, "payment-action-required");
+      assert.match(result.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\/acct_[A-Za-z0-9]+\/test_[A-Za-z0-9_]+\?s=em$/);
       const pending = f.fake.subscriptions.get(before.id);
       assert.equal(pending.status, "trialing");
       assert.equal(pending.trial_end, before.trial_end);
@@ -428,7 +431,11 @@ test("real callback verification and atomic convergence accept the fake's events
   await fake.clock.advance(3600);
   fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
   const update = updateInput(subscription, item);
-  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  const action = await provider.updateManagedSubscription(update);
+  assert.equal(action.outcome, "payment-action-required");
+  assert.match(action.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\/acct_[A-Za-z0-9]+\/test_[A-Za-z0-9_]+\?s=em$/);
+  assert.equal(action.paymentAction.expiresAt, new Date((fake.subscriptions.get(subscription.id).pending_update.expires_at) * 1000).toISOString());
+  assert.equal(Object.isFrozen(action.paymentAction), true);
   const stripe = sdk(fake);
   const pending = await stripe.subscriptions.retrieve(subscription.id);
   assert.deepEqual(pending.items.data, subscription.items.data);
@@ -441,12 +448,13 @@ test("real callback verification and atomic convergence accept the fake's events
   assert.equal(pendingReplay.lastResponse.headers["idempotent-replayed"], "true");
   assert.deepEqual(pendingReplay.items, pending.items);
   assert.deepEqual(pendingReplay.pending_update, pending.pending_update);
-  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  assert.equal((await provider.updateManagedSubscription(update)).outcome, "payment-action-required");
   assert.equal(fake.state().events.length, eventCount, "pending replay must not emit another event");
   assert.deepEqual((await fake.events.deliver()).map((entry) => entry.status), [200]);
   await settled(database);
   assert.deepEqual({ ...projection() }, { state: "active", quantity: 2, productKey: "team", cancelAtPeriodEnd: 0 });
   await fake.subscriptions.completePayment(subscription.id);
+  assert.equal(fake.events.pending().at(-1).type, "customer.subscription.pending_update_applied");
   await fake.events.deliver(); await settled(database);
   assert.equal(projection().productKey, "studio"); assert.equal(projection().quantity, 5);
   const resolved = await stripe.subscriptions.retrieve(subscription.id);
@@ -454,7 +462,7 @@ test("real callback verification and atomic convergence accept the fake's events
   assert.equal(resolved.items.data[0].price.id, "price_studio");
   assert.equal(resolved.items.data[0].quantity, 5);
   assert.deepEqual((await replay()).pending_update, pending.pending_update, "POST replay retains its original pending response even after payment");
-  assert.deepEqual(await provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+  assert.equal((await provider.updateManagedSubscription(update)).outcome, "payment-action-required");
   assert.equal(fake.events.pending().length, 0, "replay must not overwrite resolved state or emit evidence");
   assert.deepEqual((await stripe.subscriptions.retrieve(subscription.id)).items, resolved.items);
   await fake.subscriptions.failPayment(subscription.id); await fake.events.deliver(); await settled(database);

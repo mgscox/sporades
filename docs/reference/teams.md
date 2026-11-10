@@ -495,7 +495,9 @@ The target Price must declare the requested currency. A current linked Team admi
 must pass `authorize` for `operation: "currency-handover"` both at admission and
 before each provider attempt. Policy receives target `productKey`, `interval`,
 `currency` and verified source `fromProductKey`, `fromInterval`, `fromCurrency`.
-The Capsule owns consent copy, including the new amount and currency.
+The Capsule owns consent copy, including the new amount and currency. Accepting
+a handover supersedes an abandoned failed managed-plan intent, so restart cannot
+apply its old target to the replacement.
 
 Poll with the same exact request until `ready`, then navigate to its validated,
 expiring Stripe-hosted setup Checkout URL. Setup collects a payment method for the
@@ -826,6 +828,12 @@ codes. Worker refusals settle the operation as failed without a provider update:
 | `past_due` or `unpaid` | `TEAM_BILLING_SUBSCRIPTION_PAST_DUE` |
 | An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
 
+Passing `resume: true` lifts only the cancellation refusal: the same provider
+update switches the plan and clears `cancel_at_period_end` / `cancel_at`, so a
+Team that changes its mind while cancelling keeps its existing Subscription.
+Every other guard still stands, and without `resume: true` the cancellation
+refusal is unchanged.
+
 Sporades does not own Subscription Schedules yet, so every attached schedule
 is unknown. These guards apply to cross-policy and interval switches
 as well as the opt-in same-policy path.
@@ -849,7 +857,11 @@ original choice. Provider acknowledgement grants no entitlement; settlement
 requires verified Subscription evidence of the target and the ended trial.
 If the trial has already ended before dispatch, the final provider read refuses
 a changed target rather than resetting a paid period. An already-active exact
-target is acknowledged without another write and still awaits verified evidence.
+target without cancellation is acknowledged without another write and still
+awaits verified evidence. Cancellation scheduled after that trial-ending target
+applied refuses with `TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS`, including for
+`resume: true`; recovery never changes the dispatched provider tuple or replays
+`trial_end: "now"` against a paid period.
 Portal configuration must match this policy as described above.
 
 Fake-provider tests cover trial preservation, immediate ending and invoicing.
@@ -870,7 +882,18 @@ floored by the target's declared `minimum` when it uses `team-members`. It
 updates the one attested Subscription item Price and quantity together using Stripe
 `create_prorations`, the desired intent's stable `proration_date`, and
 `pending_if_incomplete`; it does not create an immediate standalone invoice.
-Payment action required becomes a safe failed state for app-owned recovery.
+Payment action required becomes a safe failed state whose `payment-action-required`
+reason carries an expiring `paymentAction` capability: a validated
+`https://invoice.stripe.com/i/…` hosted-invoice URL plus its expiry, taken from
+the pending update. Validation accepts Stripe's account/token path
+(`/i/acct_…/…`) and optional `?s=em` email-source query, while rejecting other
+hosts, credentials, ports, fragments and other query parameters at the provider
+boundary and before returning stored capabilities. The capability disappears
+once expired. Entitlement stays on the
+applied Subscription items until the customer pays, so it is unchanged while the
+update is pending; `customer.subscription.pending_update_applied` then settles
+the same operation as done and `customer.subscription.pending_update_expired`
+settles it as refused.
 Retries preserve the exact provider tuple and idempotency key.
 
 For an active `team-members` Plan, a committed Join, removal, or leave stages

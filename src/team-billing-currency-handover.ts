@@ -53,6 +53,8 @@ export async function startTeamBillingCurrencyHandover(db: Obj, auth: Obj, input
       "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')",
     )).get(teamId);
     if (busy) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
+    // An abandoned plan must not reappear against the replacement after restart.
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ? AND [status] IN ('failed', 'attention-required')")).run(teamId);
     const quantity = await readTeamBillingQuantity(db, tx, teamId, product.quantity);
     if (product.quantity.maximum !== undefined && quantity > product.quantity.maximum) throw failure();
     const customer = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
@@ -243,15 +245,25 @@ export async function repairTeamBillingCurrencyHandovers(db: Obj) {
     const rows = await tx.prepare(tx.dialect.sql(
       "SELECT [o].*, [h].[phase], [h].[anchor] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[kind] = 'currency-handover' AND ([o].[status] IN ('queued', 'running', 'retrying', 'awaiting-observation') OR ([o].[status] = 'failed' AND [h].[cancelDispatched] = 1 AND [h].[phase] NOT IN ('closed', 'completed')))",
     )).all();
-    for (const row of rows) {
-      await lockTeamLifecycle(tx, row.teamId, failure);
-      if (row.anchor <= now(db)) {
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE' WHERE [id] = ?")).run(row.id);
-        await enqueue(db, tx, row.id, "deadline", randomUUID());
-      } else {
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'queued' WHERE [id] = ?")).run(row.id);
-        await enqueue(db, tx, row.id, row.phase === "setup" ? "setup" : "replace", randomUUID());
-      }
+    for (const candidate of rows) {
+      await lockTeamLifecycle(tx, candidate.teamId, failure);
+      const row = await tx.prepare(tx.dialect.sql(
+        "SELECT [o].*, [h].[phase], [h].[anchor], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?",
+      )).get(candidate.id);
+      if (!row || !["setup", "replace"].includes(row.phase)
+        || !["queued", "running", "retrying", "awaiting-observation", "failed"].includes(row.status)
+        || row.status === "failed" && row.cancelDispatched !== 1) continue;
+      // Verified completion can race even this read; settlement must still own recoverable state.
+      const guard = " WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation', 'failed') " +
+        "AND EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[operationId] = ? AND [h].[phase] IN ('setup', 'replace') " +
+        "AND ([sporades_team_billing_operations].[status] <> 'failed' OR [h].[cancelDispatched] = 1))";
+      const expired = row.anchor <= now(db);
+      const changed = await tx.prepare(tx.dialect.sql(
+        (expired ? "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE'"
+          : "UPDATE [sporades_team_billing_operations] SET [status] = 'queued'") + guard,
+      )).run(row.id, row.id);
+      if (Number(changed.changes ?? changed.changesCount) !== 1) continue;
+      await enqueue(db, tx, row.id, expired ? "deadline" : row.phase === "setup" ? "setup" : "replace", randomUUID());
     }
   });
 }

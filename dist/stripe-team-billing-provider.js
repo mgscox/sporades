@@ -1,6 +1,7 @@
 import { validBillingCurrency } from "./team-billing-prices.js";
 import Stripe from "stripe";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
+import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 /** Internal purpose-specific provider seam for the headless Team Checkout Job. */
 export function createStripeTeamBillingProvider(options) {
     const config = options.config;
@@ -102,13 +103,15 @@ export function createStripeTeamBillingProvider(options) {
             throwIfAborted(options.signal);
             attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
             if (input.operationKind === "plan-transition") {
-                const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
-                if (refusal)
+                const refusal = teamBillingTransitionRefusal(current.status, input.resume !== true && (current.cancel_at_period_end === true || current.cancel_at != null), current.schedule != null);
+                if (refusal) {
                     throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
+                }
             }
             if (input.endTrial === true && current.status !== "trialing") {
                 const item = current.items.data[0];
                 if (current.status !== "active" || current.pending_update != null
+                    || current.cancel_at_period_end === true || current.cancel_at != null
                     || item.price.id !== input.targetPriceId || item.quantity !== input.targetQuantity) {
                     throw Object.assign(new Error("Team Billing trial state changed before the switch."), {
                         code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", retryable: false,
@@ -129,6 +132,8 @@ export function createStripeTeamBillingProvider(options) {
                     proration_behavior: "create_prorations",
                     proration_date: input.prorationDate,
                     payment_behavior: "pending_if_incomplete",
+                    expand: ["latest_invoice"],
+                    ...(input.resume === true ? { cancel_at_period_end: false } : {}),
                     ...(input.endTrial === true ? { trial_end: "now" } : {}),
                 }, { idempotencyKey: input.idempotencyKey });
             }
@@ -136,16 +141,28 @@ export function createStripeTeamBillingProvider(options) {
                 throwProviderOperationFailure(error);
             }
             throwIfAborted(options.signal);
+            let paymentAction;
             if (updated.pending_update != null) {
                 // pending_if_incomplete leaves the applied items unchanged. Attest the
                 // requested tuple in pending_update rather than treating it as applied.
                 attestManagedSubscription(updated, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
                 const pending = updated.pending_update;
                 if (!Number.isSafeInteger(pending.expires_at) || pending.expires_at < 1
+                    || pending.expires_at > 253_402_300_799
                     || !Array.isArray(pending.subscription_items) || pending.subscription_items.length !== 1) {
                     throw providerFailure(false);
                 }
                 attestManagedItem(pending.subscription_items[0], input, new Set([input.targetPriceId]), true);
+                // The pending update is paid on Stripe's hosted invoice page; a URL
+                // from any other host is an arbitrary URL and is never surfaced.
+                const invoice = updated.latest_invoice;
+                if (invoice?.object !== "invoice" || !validTeamBillingHostedInvoiceUrl(invoice.hosted_invoice_url)) {
+                    throw providerFailure(false);
+                }
+                paymentAction = Object.freeze({
+                    url: invoice.hosted_invoice_url,
+                    expiresAt: new Date(pending.expires_at * 1000).toISOString(),
+                });
             }
             else {
                 attestManagedSubscription(updated, input, new Set([input.targetPriceId]), true);
@@ -155,6 +172,7 @@ export function createStripeTeamBillingProvider(options) {
             return Object.freeze({
                 ok: true,
                 outcome: paymentActionRequired ? "payment-action-required" : "acknowledged",
+                ...(paymentAction ? { paymentAction } : {}),
             });
         },
         async quiesceTeamBilling(input) {
@@ -359,11 +377,12 @@ function erasureCancellationKey(erasureKey, subscriptionId) {
 }
 function validateManagedSubscriptionInput(input, livemode) {
     const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-    const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "currency", "endTrial"].includes(key)).sort();
+    const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "endTrial"].includes(key)).sort();
     if (!input || typeof input !== "object" || Array.isArray(input)
         || keys.join("\0") !== required.join("\0")
         || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
         || !["plan-transition", "seat-convergence"].includes(input.operationKind)
+        || (input.resume !== undefined && typeof input.resume !== "boolean")
         || (input.currency !== undefined && !validBillingCurrency(input.currency))
         || (input.endTrial !== undefined && (typeof input.endTrial !== "boolean" || input.operationKind !== "plan-transition"))
         || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)

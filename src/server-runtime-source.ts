@@ -1010,6 +1010,7 @@ export async function openDevDatabase(
         prorationDate: input.prorationDate,
         idempotencyKey: input.idempotencyKey,
         operationKind: input.operationKind,
+        ...(input.resume === true ? { resume: true } : {}),
         ...(input.endTrial === true ? { endTrial: true } : {}),
       }));
     },
@@ -6279,7 +6280,7 @@ export function createWebSocketHub(
     if (message.type === "teamBilling.requestPlanTransition") {
       try {
         const input = message.input;
-        const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
+        const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.resume, input?.currency);
         sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
       } catch (error: any) {
         const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
