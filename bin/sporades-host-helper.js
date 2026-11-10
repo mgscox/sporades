@@ -46632,7 +46632,7 @@ var mutationExecution = new MutationExecutionStorage();
 init_cli_support();
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.49";
+var CLI_VERSION = "0.9.50";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
@@ -53759,6 +53759,7 @@ async function withManagedRouteLock(routeFile, fn) {
     await writeFile6(process.env.SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER, "route-lock-proof-retained\n", { mode: 384 });
   }
   await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS");
+  await fakeManagedRouteLockGate("SPORADES_FAKE_ROUTE_LOCK_HOLD_UNTIL_PATH");
   if (!await processRetainsOsFlock(lockFile)) throw routeTrustError();
   await assertActiveManagedRouteTrust(routeFile);
   return fn();
@@ -53909,6 +53910,12 @@ async function fakeManagedRouteLockPause(name2) {
   if (raw && /^[1-9][0-9]*$/.test(raw)) {
     await delay(Math.min(Number(raw), 6e4));
   }
+}
+async function fakeManagedRouteLockGate(name2) {
+  const gate = process.env[name2];
+  if (!gate) return;
+  const deadline = Date.now() + 6e4;
+  while (!await pathExists(gate) && Date.now() < deadline) await delay(10);
 }
 async function removePathIfPresent(targetPath, options = {}) {
   const existed = await pathExists(targetPath);
