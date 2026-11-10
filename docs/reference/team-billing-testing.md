@@ -101,10 +101,12 @@ accepts `{ billingMode: "classic" | "flexible" }` per subscription, defaulting t
 `flexible`. Flexible interval changes preserve the anchor unless the update
 explicitly resets it; `always_invoice` accompanies managed longer-interval resets.
 A pending payment leaves the active Price and period intact until `completePayment`.
-Optional Price `unitAmount` is integer USD cents (default 1000). `state().invoices`
-records successful reset invoices with a full-period target line and a simple
+Without currency declarations, optional Price `unitAmount` is integer USD cents
+(default 1000). Currency-declared Prices use integer minor units and the
+subscription's selected regional amount. `state().invoices` records successful
+reset invoices in that currency with a full-period target line and a simple
 second-based unused-period credit. This narrow model excludes taxes, discounts,
-foreign currencies, and general proration accounting; verify Stripe's actual
+currency conversion, and general proration accounting; verify Stripe's actual
 amounts separately. Portal fixtures accept `prorationBehavior`, `billingCycleAnchor`,
 and `scheduleAtPeriodEnd`, with the same defaults as the Capsule declaration,
 to test policy attestation and drift.
@@ -234,3 +236,21 @@ hosted pages, payment authentication, taxes, invoice amounts, real delivery
 schedules, sandbox/live API compatibility, or Hosted Capsule callback TLS.
 Those acceptance steps remain separately authorized human work. See
 [ADR 0058](../adr/0058-team-billing-test-provider-boundary.md).
+
+A fake Price may declare `currency`, `unitAmount`, and `currencyOptions` using the
+same minor-unit contract as Team Billing bindings. For example:
+
+```ts
+{ id: "price_kitchen", recurring: "month", currency: "gbp", unitAmount: 1900,
+  currencyOptions: { usd: { unitAmount: 2900 } } }
+```
+
+The fake accepts Checkout's `currency`, selects its regional amount, and exposes
+`currency` and `amount_total` on the Session. Like the real provider, its Prices keep
+the default currency and amount in the base fields and carry regional amounts in
+`currency_options`; convergence resolves the subscription's charged amount from the
+selected currency. Updates, pending payments, renewals,
+failed invoices and Portal switches preserve it. Unsupported Price currencies
+and incompatible Customer currencies are refused. Omitting currency facts keeps
+existing fixtures unchanged. Fake-backed tests certify the runtime protocol;
+real Stripe regional charging remains a release smoke check.

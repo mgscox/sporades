@@ -59,7 +59,7 @@ isolated sandbox and synthetic customer/payment method, with no production data:
    operation and no Portal URL on drift. Restore the reviewed configuration.
 
 Record invoice line amounts, credit rounding, payment timing and pending-anchor
-semantics as provider evidence. The fake's USD credit model is deliberately narrow
+semantics as provider evidence. The fake's same-currency credit model is deliberately narrow
 and does not certify Stripe accounting, taxes, discounts or Portal scheduling.
 
 ## Reconciliation with trial transitions

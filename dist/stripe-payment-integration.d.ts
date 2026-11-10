@@ -1,3 +1,5 @@
+export { validateTeamBillingPriceEvidence } from "./team-billing-price-evidence.js";
+export type { TeamBillingPriceEvidenceInput } from "./types/stripe.js";
 import type { StripePaymentIntegration, StripePaymentIntegrationOptions } from "./types/stripe.js";
 export type { StripePaymentIntegration, StripePaymentIntegrationOptions, StripePaymentsDisabledResult, StripeCustomerPortalSessionInput, StripeCustomerPortalSessionResult, StripeWebhookVerificationInput, VerifiedStripeEvent, } from "./types/stripe.js";
 /**

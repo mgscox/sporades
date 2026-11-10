@@ -103,3 +103,12 @@ export type StripePaymentIntegration = StripeDisabledPaymentIntegration | Stripe
 /** Creates the server-only integration used by generated blank-Capsule wiring. */
 export function createStripePaymentIntegration(options: Readonly<{ enabled: false }>): StripeDisabledPaymentIntegration;
 export function createStripePaymentIntegration(options: Extract<StripePaymentIntegrationOptions, { enabled: true }>): StripeEnabledPaymentIntegration;
+
+/** Saved Stripe Prices, with currency_options expanded, for offline activation validation. */
+export type TeamBillingPriceEvidenceInput = Readonly<{
+  catalogue: Record<string, import("./server.js").TeamBillingProductDeclaration>;
+  mode: "sandbox" | "live";
+  evidence: unknown;
+}>;
+/** Throws TEAM_BILLING_PRICE_EVIDENCE_MISMATCH without exposing provider facts. Does no provider I/O. */
+export function validateTeamBillingPriceEvidence(input: TeamBillingPriceEvidenceInput): Readonly<{ ok: true }>;

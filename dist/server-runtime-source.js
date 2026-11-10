@@ -851,6 +851,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 subscriptionId: input.providerSubscriptionId,
                 subscriptionItemId: input.providerSubscriptionItemId,
                 sourcePriceId: input.sourcePriceId,
+                ...(input.currency ? { currency: input.currency } : {}),
                 targetPriceId: input.targetPriceId,
                 ...(input.targetProductId ? { targetProductId: input.targetProductId } : {}),
                 targetQuantity: input.targetQuantity,
@@ -6014,7 +6015,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         if (message.type === "teamBilling.startCheckout") {
             try {
                 const input = message.input;
-                const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
+                const data = await startTeamBillingCheckout(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.startCheckout.result", data, error: null });
             }
             catch (error) {
@@ -6023,17 +6024,18 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     type: "error",
                     data: null,
                     error: {
-                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS"].includes(error?.code)
+                        code: ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CHECKOUT_ACTIVE", "TEAM_BILLING_CHECKOUT_UNAVAILABLE", "TEAM_BILLING_SUBSCRIPTION_EXISTS", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
                             ? error.code : "TEAM_BILLING_DENIED",
-                        message: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
-                            ? "Team Checkout request conflicts with existing work."
-                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active."
-                                : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
-                        hint: error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
-                            ? "Use a new request identifier for a different product."
-                            : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
-                                ? "Finish, abandon, or allow the current Team Checkout to expire before starting another."
-                                : "Sign in as the current policy-approved billing administrator and retry.",
+                        message: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "The target Price does not support the existing billing currency."
+                            : error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+                                ? "Team Checkout request conflicts with existing work."
+                                : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE" ? "A Team Checkout is already active." : error?.code === "TEAM_BILLING_SUBSCRIPTION_EXISTS" ? "The Team already has a subscription." : "Team Checkout is unavailable.",
+                        hint: error?.code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency."
+                            : error?.code === "TEAM_BILLING_REQUEST_CONFLICT"
+                                ? "Use a new request identifier for a different product, interval, or currency."
+                                : error?.code === "TEAM_BILLING_CHECKOUT_ACTIVE"
+                                    ? "Finish, abandon, or allow the current Team Checkout to expire before starting another."
+                                    : "Sign in as the current policy-approved billing administrator and retry.",
                     },
                 });
             }
@@ -6066,12 +6068,12 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         if (message.type === "teamBilling.requestPlanTransition") {
             try {
                 const input = message.input;
-                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval);
+                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
             }
             catch (error) {
                 const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
-                    "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_UNKNOWN_SCHEDULE"].includes(error?.code)
+                    "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_UNKNOWN_SCHEDULE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
                     ? error.code : "TEAM_BILLING_DENIED";
                 sendJson(client, {
                     id: message.id ?? null,
@@ -6079,11 +6081,13 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                     data: null,
                     error: {
                         code,
-                        message: code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work."
-                            : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal."
-                                : code === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
-                        hint: code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch."
-                            : "Sign in as the current policy-approved billing administrator and retry with a new request identifier.",
+                        message: code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "The target Price does not support the subscription currency."
+                            : code === "TEAM_BILLING_REQUEST_CONFLICT" ? "Team Plan request conflicts with existing work."
+                                : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "This Plan switch belongs in the configured Customer Portal."
+                                    : code === "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" ? "Team billing state requires attention." : "Team Plan change is unavailable.",
+                        hint: code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency."
+                            : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch."
+                                : "Sign in as the current policy-approved billing administrator and retry with a new request identifier.",
                     },
                 });
             }

@@ -47,8 +47,8 @@ async function fixture(t, options = {}) {
   const stripe = sdk(fake);
   return { fake, provider, stripe };
 }
-async function paid(f, options) {
-  const checkout = await f.provider.create(input);
+async function paid(f, options, checkoutInput = {}) {
+  const checkout = await f.provider.create({ ...input, ...checkoutInput });
   const session = await f.fake.checkout.complete(checkout.sessionId, options);
   const subscription = f.fake.subscriptions.get(session.subscription);
   return { session, subscription, item: subscription.items.data[0] };
@@ -717,14 +717,16 @@ test('multi-interval Prices reset calendar periods only when an applied interval
   assert.equal(new Date(applied.items.data[0].current_period_end * 1000).getUTCMonth(), (start.getUTCMonth() + 3) % 12);
 });
 
-for (const billingMode of ["classic", "flexible"]) test(`managed annual upgrade invoices the full annual line in ${billingMode} mode`, async t => {
+for (const currency of [undefined, "gbp", "usd"]) for (const billingMode of ["classic", "flexible"]) test(`managed annual upgrade invoices the full annual line in ${billingMode} mode (${currency ?? "legacy"})`, async t => {
+  const monthly = currency ? { currency: "gbp", currencyOptions: { usd: { unitAmount: 1200 } } } : {};
+  const annual = currency ? { currency: "gbp", currencyOptions: { usd: { unitAmount: 12000 } } } : {};
   const f = await fixture(t, { catalogue: { ...catalogue, products: [
-    { id: "prod_team", prices: [{ id: "price_team", recurring: "month", unitAmount: 1000 }] },
-    { id: "prod_studio", prices: [{ id: "price_studio", recurring: "year", unitAmount: 10000 }] },
+    { id: "prod_team", prices: [{ id: "price_team", recurring: "month", unitAmount: 1000, ...monthly }] },
+    { id: "prod_studio", prices: [{ id: "price_studio", recurring: "year", unitAmount: 10000, ...annual }] },
   ] } });
-  const { subscription, item } = await paid(f, { billingMode });
+  const { subscription, item } = await paid(f, { billingMode }, currency ? { currency } : {});
   await f.fake.clock.advance(86400);
-  const update = updateInput(subscription, item, { resetBillingCycle: true });
+  const update = updateInput(subscription, item, { resetBillingCycle: true, ...(currency ? { currency } : {}) });
   f.fake.faults.inject({ operation: "subscriptions.update", status: 503, when: "after" });
   await assert.rejects(f.provider.updateManagedSubscription(update), unavailable);
   const updated = f.fake.subscriptions.get(subscription.id);
@@ -734,7 +736,14 @@ for (const billingMode of ["classic", "flexible"]) test(`managed annual upgrade 
   const invoice = f.fake.state().invoices[0];
   assert.equal(invoice.created, f.fake.state().now);
   assert.equal(invoice.status, "paid");
-  assert.equal(invoice.lines.data[0].amount, 50000, "five annual units billed in full before unused monthly credit");
+  assert.equal(invoice.currency, currency ?? "usd");
+  assert.equal(invoice.lines.data[0].amount, currency === "usd" ? 60000 : 50000, "five annual units billed in full before unused monthly credit");
+  const monthlyAmount = currency === "usd" ? 1200 : 1000;
+  const credit = -Math.round(monthlyAmount * item.quantity * (item.current_period_end - f.fake.state().now)
+    / (item.current_period_end - item.current_period_start));
+  assert.equal(invoice.lines.data[1].amount, credit);
+  assert.equal(invoice.amount_paid, invoice.lines.data[0].amount + credit);
+  assert.equal(updated.items.data[0].price.unit_amount, 10000, "Price retains its default amount");
   assert.equal(invoice.lines.data[0].period.end, updated.items.data[0].current_period_end);
   const attempts = f.fake.requests().filter(r => r.operation === 'subscriptions.update').length;
   await f.fake.clock.advance(86400);

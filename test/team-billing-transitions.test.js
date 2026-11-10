@@ -38,8 +38,8 @@ for (const source of ['basic', 'legacy']) test(`${source} to offered fixed plan 
   assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'month:1')).state, 'completed');
 });
 
-for (const billingMode of ['classic', 'flexible']) test(`switching a trial plan preserves trial end and only verified evidence grants the target (${billingMode})`, async t => {
-  const f = await fixture(t, 'basic', false, { trialDays: 14, billingMode });
+for (const currency of [undefined, 'usd']) for (const billingMode of ['classic', 'flexible']) test(`switching a trial plan preserves trial end and only verified evidence grants the target (${billingMode}, ${currency ?? "legacy"})`, async t => {
+  const f = await fixture(t, 'basic', false, { trialDays: 14, billingMode, currency });
   const before = f.fake.subscriptions.get(f.subscriptionId);
   const requestId = randomUUID();
   assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1')).state, 'pending');
@@ -51,16 +51,22 @@ for (const billingMode of ['classic', 'flexible']) test(`switching a trial plan 
   assert.equal(f.fake.requests().find(r => r.operation === 'subscriptions.update').parameters.billing_cycle_anchor, undefined);
   assert.equal(updated.items.data[0].current_period_end, before.trial_end);
   assert.equal(updated.items.data[0].price.id, 'price_offered_year');
+  assert.equal(updated.currency, currency);
   assert.equal(f.fake.state().checkouts.length, 1);
   assert.equal((await f.read()).state, 'pending');
   await f.deliver();
   assert.deepEqual(await f.read(), { state: 'trialing', teamId: f.teamId, productKey: 'offered', interval: 'year:1', quantity: 1,
-    trialEndsAt: new Date(before.trial_end * 1000).toISOString() });
+    trialEndsAt: new Date(before.trial_end * 1000).toISOString(), ...(currency ? { currency } : {}) });
+  for (const input of f.checks.filter(c => c.operation === 'plan-transition')) {
+    assert.equal(input.currency, currency);
+    assert.equal(input.fromProductKey, 'basic');
+    assert.equal(input.fromInterval, 'month:1');
+  }
   assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1')).state, 'completed');
 });
 
-for (const billingMode of ['classic', 'flexible']) for (const pending of [false, true]) for (const interval of ['month:1', 'year:1']) test(`server endTrial policy ends and invoices the trial switch, settling only after callbacks (${billingMode}, pending=${pending}, ${interval})`, async t => {
-  const f = await fixture(t, 'basic', false, { trialDays: 14, endTrial: true, billingMode, counted: true });
+for (const currency of [undefined, 'usd']) for (const billingMode of ['classic', 'flexible']) for (const pending of [false, true]) for (const interval of ['month:1', 'year:1']) test(`server endTrial policy ends and invoices the trial switch, settling only after callbacks (${billingMode}, ${currency ?? "legacy"}, pending=${pending}, ${interval})`, async t => {
+  const f = await fixture(t, 'basic', false, { trialDays: 14, endTrial: true, currency, billingMode, counted: true });
   const before = f.fake.subscriptions.get(f.subscriptionId);
   const requestId = randomUUID();
   if (pending) f.fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
@@ -76,14 +82,21 @@ for (const billingMode of ['classic', 'flexible']) for (const pending of [false,
   assert.ok(updated.trial_end < before.trial_end);
   assert.equal(updated.items.data[0].current_period_start, updated.trial_end);
   assert.equal(updated.items.data[0].price.id, interval === 'year:1' ? 'price_offered_year' : 'price_offered_month');
+  assert.equal(updated.currency, currency);
   const invoice = f.fake.state().invoices.find(i => i.id === updated.latest_invoice);
   assert.equal(f.fake.state().invoices.length, 1, 'ending the trial produces exactly one invoice');
-  assert.equal(invoice.lines.data[0].amount, 1000);
+  assert.equal(invoice.lines.data[0].amount, currency ? 2900 : 1000);
   assert.equal(invoice.status, 'paid');
+  assert.equal(invoice.currency, currency ?? 'usd');
   assert.equal(invoice.customer, updated.customer);
   assert.equal(invoice.parent.subscription_details.subscription, updated.id);
   const write = f.fake.requests().find(r => r.operation === 'subscriptions.update');
   assert.equal(write.parameters.trial_end, 'now');
+  for (const input of f.checks.filter(c => c.operation === 'plan-transition')) {
+    assert.equal(input.currency, currency);
+    assert.equal(input.fromProductKey, 'basic');
+    assert.equal(input.fromInterval, 'month:1');
+  }
   // A delayed paid callback must resolve the original trial-ending tuple first.
   f.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'delayed-member', 'member', ?)").run(f.teamId, new Date().toISOString());
   await stageTeamBillingMembershipChange(f.database, f.teamId);
@@ -102,6 +115,7 @@ for (const billingMode of ['classic', 'flexible']) for (const pending of [false,
   assert.equal((await f.read()).state, 'active');
   assert.equal((await f.read()).productKey, 'offered');
   assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, retryRequestId, 'offered', interval)).state, 'completed');
+  assert.equal((await f.read()).currency, currency);
 });
 
 for (const billingMode of ['classic', 'flexible']) test(`an annual switch refuses changed trial state before writing and retries after verified expiry (${billingMode})`, async t => {
@@ -125,6 +139,7 @@ for (const billingMode of ['classic', 'flexible']) test(`an annual switch refuse
   assert.equal((await f.read()).state, 'pending');
   await f.deliver();
   assert.equal((await f.read()).state, 'active');
+  assert.equal((await f.read()).productKey, 'offered');
   assert.equal((await f.read()).interval, 'year:1');
 });
 
@@ -214,10 +229,11 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
   const teamId = randomUUID();
   const checks = [];
   const offered = new Set([source, 'offered']);
+  const priceCurrency = options.currency ? { currency: 'gbp', unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } } : {};
   const catalogue = Object.fromEntries([source, 'offered'].map(key => [key, {
     ...(options.trialDays ? { trialDays: options.trialDays } : {}), quantity: options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
       productId: `prod_${mode === 'live' ? 'live_' : ''}${key}`, portalConfigurationId: `bpc_${mode}_${key}`,
-      prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month` }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year` } },
+      prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month`, ...priceCurrency }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year`, ...priceCurrency } },
     }])),
   }]));
   const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
@@ -233,7 +249,7 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
   callback.on('upgrade', (req, socket) => hub.accept(req, socket));
   callback.listen(0, '127.0.0.1'); await once(callback, 'listening');
   const fake = await createStripeTeamBillingFake({ webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${callback.address().port}/stripe/webhook`, delivery: 'manual', catalogue: {
-    products: [source, 'offered'].map(key => ({ id: `prod_${key}`, prices: [{ id: `price_${key}_month`, recurring: 'month' }, { id: `price_${key}_year`, recurring: 'year' }] })), portalConfigurations: [],
+    products: [source, 'offered'].map(key => ({ id: `prod_${key}`, prices: [{ id: `price_${key}_month`, recurring: 'month', ...priceCurrency }, { id: `price_${key}_year`, recurring: 'year', ...priceCurrency }] })), portalConfigurations: [],
   } });
   t.after(async () => { await fake.close(); hub.disconnectAll(); callback.closeAllConnections(); await new Promise(resolve => callback.close(resolve)); await database.close(); await rm(dir, { recursive: true, force: true }); });
   database.stripeApiBaseUrl = fake.origin; await database.init();
@@ -255,7 +271,7 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
   database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(teamId, actor.userId, now);
   const drain = async () => { for (let i = 0; i < 5; i++) { await runCurrentUserJobWorker(database); await new Promise(r => setTimeout(r, 10)); } };
   const deliver = async () => { assert.ok((await fake.events.deliver()).every(r => r.status === 200)); await drain(); };
-  await startTeamBillingCheckout(database, actor, teamId, randomUUID(), source, 'month:1'); await drain();
+  await startTeamBillingCheckout(database, actor, teamId, randomUUID(), source, 'month:1', options.currency); await drain();
   const completed = await fake.checkout.complete(fake.state().checkouts[0].id, { billingMode: options.billingMode ?? 'flexible' });
   if (checkoutOnly) {
     const event = fake.events.pending().find(event => event.type === 'checkout.session.completed');

@@ -1,3 +1,4 @@
+import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
 import { teamBillingPriceById } from "./team-billing-runtime.js";
 // Transaction-pure convergence of verified Stripe facts into runtime-owned Team
 // Billing state. This module deliberately never owns a transaction: the Stripe
@@ -118,10 +119,11 @@ async function applyCheckout(database: LooseRecord, event: LooseRecord, mode: st
     || !CHECKOUT_ID.test(String(object.id ?? "")) || !UUID.test(String(operationId ?? ""))
     || object.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object.id));
   const operation = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] " +
+    "SELECT [id], [teamId], [mode], [currency], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] " +
     "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
   )).get(operationId);
   if (!operation || operation.mode !== mode) throw new Quarantine("provider-state-ambiguous", operation?.teamId ?? null, 50, object.id);
+  if (operation.currency && operation.currency !== object.currency) throw new Quarantine("catalogue-mismatch", operation.teamId, 50, object.id);
   if (operation.providerObjectId && operation.providerObjectId !== object.id) throw new Quarantine("provider-state-ambiguous", operation.teamId, 50, object.id);
   const completed = event.type === "checkout.session.completed";
   const customerId = completed && CUSTOMER_ID.test(String(object.customer ?? "")) ? object.customer : null;
@@ -157,12 +159,12 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
   }
   const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] " +
+    "SELECT [id], [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] " +
     "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?",
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId)
     ? await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [teamId], [mode], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
+      "SELECT [id], [teamId], [mode], [currency], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
       "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
     )).get(metadataOperationId) : null;
   const teamId = existing?.teamId ?? operation?.teamId ?? null;
@@ -177,6 +179,11 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
   )).get(teamId))?.count ?? 0);
   const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
+  if (existing?.currency && existing.currency !== normalized.currency) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
+  const customerCurrencies = await tx.prepare(tx.dialect.sql(
+    "SELECT [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [currency] IS NOT NULL",
+  )).all(teamId);
+  if (normalized.currency && customerCurrencies.some((row: LooseRecord) => row.currency !== normalized.currency)) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   const product = database.teamBillingDefinition.catalogue[normalized.productKey];
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
@@ -203,18 +210,18 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule]) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity,
       normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule);
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount);
   } else {
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [billingMode] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
-      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ? WHERE [providerSubscriptionId] = ?",
+      "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?",
     )).run(normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state,
       normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt,
-      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, subscriptionId);
+      event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount, subscriptionId);
   }
   if (operation) {
     await tx.prepare(tx.dialect.sql(
@@ -250,6 +257,24 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
   if (declaredPrice?.interval && declaredPrice.interval !== `${item.price.recurring.interval}:${item.price.recurring.interval_count}`) {
     throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   }
+  const currency = object.currency ?? null;
+  // A regional subscription charges the selected currency's amount from
+  // currency_options, while the Price keeps its default currency and amount
+  // in the base fields; comparing the base fields with the selected currency
+  // would quarantine legitimate regional subscriptions.
+  const regional = currency !== null && item.price?.currency !== currency
+    && isRecord(item.price?.currency_options) ? item.price.currency_options[currency] : null;
+  const charged = regional ?? item.price;
+  const unitAmount = validBillingAmount(charged?.unit_amount) ? charged.unit_amount : null;
+  if ((currency !== null && !validBillingCurrency(currency))
+    || !matchesBillingCurrency(declaredPrice!, currency, unitAmount)) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  if (declaredPrice?.currency && (item.price.currency !== declaredPrice.currency
+    || !matchesBillingPriceAmount(item.price, declaredPrice.unitAmount)
+    || !matchesBillingPriceAmount(charged, unitAmount)
+    || item.price.billing_scheme !== "per_unit" || item.price.type !== "recurring" || item.price.transform_quantity != null)) {
+    throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
+  }
+  if (operation?.currency && operation.currency !== currency) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
   if (operation && (operation.productKey !== productKey || Number(operation.quantity) !== item.quantity
     || (operation.providerPriceId && operation.providerPriceId !== priceId))) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
   if (product.quantity.kind === "fixed" && product.quantity.value !== item.quantity) throw new Quarantine("catalogue-mismatch", teamId, 50, object.id);
@@ -297,7 +322,7 @@ function normalizeSubscription(definition: LooseRecord, object: LooseRecord, ope
     ? teamBillingStoredSubscriptionSemantics("cancelled", cancel)
     : teamBillingSubscriptionSemantics(eventType as any, state, cancel);
   if (!semantics) throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-  return { productKey, priceId, billingMode, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
+  return { productKey, priceId, billingMode, currency, unitAmount, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
     cancelAtPeriodEnd: cancel ? 1 : 0, hasSchedule: object.schedule == null ? 0 : 1, kind: semantics.kind, rank: semantics.rank, terminalLatch: semantics.terminalLatch };
 }
 
@@ -312,11 +337,12 @@ async function applyInvoiceFailure(database: LooseRecord, event: LooseRecord, mo
     || object.livemode !== event.livemode || object.status !== "open" || object.paid !== false
     || !Number.isInteger(object.attempt_count) || object.attempt_count < 1) throw new Quarantine("provider-state-ambiguous", null, 40, boundedObjectId(object.id));
   const subscription = await tx.prepare(tx.dialect.sql(
-    "SELECT [teamId], [mode], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] " +
+    "SELECT [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [quantity], [currentPeriodStart], [currentPeriodEnd], [terminalLatch], [lastEventOccurredAt], [lastEventRank] " +
     "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?",
   )).get(subscriptionId);
   if (!subscription || subscription.mode !== mode) throw new Quarantine("provider-state-ambiguous", subscription?.teamId ?? null, 40, boundedObjectId(object.id));
   await assertCustomerAssociation(tx, subscription.teamId, mode, customerId);
+  if (subscription.currency && object.currency !== subscription.currency) throw new Quarantine("catalogue-mismatch", subscription.teamId, 40, object.id);
   const lines = object.lines?.data;
   if (!isRecord(object.lines) || object.lines.object !== "list" || object.lines.has_more !== false
     || !Array.isArray(lines) || lines.length !== 1) throw new Quarantine("provider-state-ambiguous", subscription.teamId, 40, object.id);
