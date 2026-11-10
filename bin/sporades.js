@@ -120453,7 +120453,8 @@ async function awaitCompletedStagingReceipt(database, key) {
     if (!row || row.state !== "staging") return row;
     const expiry = Date.parse(row.expiresAt);
     if (!Number.isFinite(expiry) || expiry <= Date.now()) return row;
-    await new Promise((resolve2) => setTimeout(resolve2, Math.min(25, attempt + 1, expiry - Date.now())));
+    const pollDelay = database.__ingressPollDelay ?? ((milliseconds) => new Promise((resolve2) => setTimeout(resolve2, milliseconds)));
+    await pollDelay(Math.min(25, attempt + 1, expiry - Date.now()));
   }
   throw Object.assign(new Error("Multipart ingress staging did not complete."), { code: "INGRESS_STAGING_INCOMPLETE" });
 }
