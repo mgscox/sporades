@@ -49,6 +49,7 @@ function validateCatalogue(catalogue) {
     }
     for (const config of catalogue.portalConfigurations) {
         requireValue(/^bpc_[A-Za-z0-9_]+$/.test(config.id) && !configs.has(config.id) && Array.isArray(config.products) && config.products.length);
+        requireValue(config.trialUpdateBehavior === undefined || ["continue_trial", "end_trial"].includes(config.trialUpdateBehavior));
         configs.add(config.id);
         const seen = new Set();
         for (const product of config.products) {
@@ -135,6 +136,7 @@ export async function createStripeTeamBillingFake(options) {
     const customers = new Map();
     const subscriptions = new Map();
     const portalSessions = new Map();
+    const invoices = new Map();
     const eventLog = [];
     const delivered = new Set();
     const deliveryLog = [];
@@ -291,6 +293,18 @@ export async function createStripeTeamBillingFake(options) {
         }
         item.price = copy(targetPrice);
     }
+    function endTrial(subscription) {
+        const item = subscription.items.data[0];
+        subscription.status = "active";
+        subscription.trial_end = now;
+        item.current_period_start = now;
+        item.current_period_end = periodEnd(now, item.price);
+        const invoice = { id: idForInvoice(), object: "invoice", livemode: false, customer: subscription.customer,
+            billing_reason: "subscription_update", status: "paid", paid: true,
+            parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } } };
+        invoices.set(invoice.id, invoice);
+        subscription.latest_invoice = invoice.id;
+    }
     async function switchPrice(subscriptionId, priceId) {
         const subscription = liveSubscription(subscriptionId);
         applyPrice(subscription, price(priceId));
@@ -309,7 +323,7 @@ export async function createStripeTeamBillingFake(options) {
         return { id: configId, object: "billing_portal.configuration", active: true, livemode: false, features: {
                 payment_method_update: { enabled: true }, invoice_history: { enabled: true },
                 subscription_cancel: { enabled: true, mode: "at_period_end" },
-                subscription_update: { enabled: true, default_allowed_updates: ["price"],
+                subscription_update: { enabled: true, default_allowed_updates: ["price"], trial_update_behavior: entry.trialUpdateBehavior ?? "continue_trial",
                     products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } })) },
             } };
     }
@@ -370,7 +384,8 @@ export async function createStripeTeamBillingFake(options) {
                 exactKeys(p, []);
                 return copy(get(subscriptions, resourceId));
             case "subscriptions.update": {
-                exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"]);
+                exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["trial_end"]);
+                requireValue(p.trial_end === undefined || p.trial_end === "now");
                 exactKeys(p.items, ["0"]);
                 exactKeys(p.items[0], ["id", "price", "quantity"]);
                 const subscription = liveSubscription(resourceId);
@@ -381,11 +396,14 @@ export async function createStripeTeamBillingFake(options) {
                 const quantity = integer(p.items[0].quantity);
                 if (fault?.status === "paymentActionRequired") {
                     subscription.pending_update = { expires_at: now + 3600,
+                        ...(p.trial_end === "now" ? { trial_end: now } : {}),
                         subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
                 }
                 else {
                     applyPrice(subscription, targetPrice);
                     item.quantity = quantity;
+                    if (p.trial_end === "now")
+                        endTrial(subscription);
                     subscription.pending_update = null;
                 }
                 return subscriptionEvent(subscription);
@@ -498,6 +516,8 @@ export async function createStripeTeamBillingFake(options) {
                 const requested = pending.subscription_items[0];
                 applyPrice(subscription, requested.price);
                 subscription.items.data[0].quantity = requested.quantity;
+                if (pending.trial_end != null)
+                    endTrial(subscription);
                 subscription.pending_update = null;
                 if (subscription.status !== "trialing")
                     subscription.status = "active";
@@ -579,12 +599,13 @@ export async function createStripeTeamBillingFake(options) {
         },
         requests: () => copy(requests),
         state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
-            checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
+            invoices: [...invoices.values()], checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
         reset() {
             sessions.clear();
             customers.clear();
             subscriptions.clear();
             portalSessions.clear();
+            invoices.clear();
             idempotency.clear();
             lastCreated.clear();
             eventLog.length = 0;

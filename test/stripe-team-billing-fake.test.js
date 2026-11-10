@@ -105,6 +105,52 @@ test("trial Checkout is free until its end and the fake converts or cancels it",
   });
 });
 
+test("ending a trial waits for payment and lost acknowledgements replay one invoice", async t => {
+  for (const fault of ["paymentActionRequired", "timeout"]) await t.test(fault, async t => {
+    const f = await fixture(t);
+    const checkout = await f.provider.create({ ...input, trialDays: 14 });
+    const session = await f.fake.checkout.complete(checkout.sessionId);
+    const before = f.fake.subscriptions.get(session.subscription);
+    const update = updateInput(before, before.items.data[0], { endTrial: true });
+    f.fake.faults.inject({ operation: "subscriptions.update", status: fault, ...(fault === "timeout" ? { when: "after" } : {}) });
+    if (fault === "timeout") {
+      await assert.rejects(f.provider.updateManagedSubscription(update), unavailable);
+      assert.deepEqual(await f.provider.updateManagedSubscription(update), { ok: true, outcome: "acknowledged" });
+    } else {
+      assert.deepEqual(await f.provider.updateManagedSubscription(update), { ok: true, outcome: "payment-action-required" });
+      const pending = f.fake.subscriptions.get(before.id);
+      assert.equal(pending.status, "trialing");
+      assert.equal(pending.trial_end, before.trial_end);
+      assert.equal(pending.items.data[0].price.id, before.items.data[0].price.id);
+      assert.equal(f.fake.state().invoices.length, 0);
+      await f.fake.clock.advance(60);
+      await f.fake.subscriptions.completePayment(before.id);
+    }
+    const applied = f.fake.subscriptions.get(before.id);
+    assert.equal(applied.status, "active");
+    assert.ok(applied.trial_end < before.trial_end);
+    assert.equal(applied.items.data[0].price.id, "price_studio");
+    assert.equal(applied.items.data[0].quantity, 5);
+    assert.equal(f.fake.state().invoices.length, 1);
+    assert.equal(f.fake.state().invoices[0].id, applied.latest_invoice);
+    assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, 1);
+  });
+});
+
+test("endTrial never resets a paid period when a queued trial switch dispatches after expiry", async t => {
+  const f = await fixture(t);
+  const checkout = await f.provider.create({ ...input, trialDays: 1 });
+  const session = await f.fake.checkout.complete(checkout.sessionId);
+  const before = f.fake.subscriptions.get(session.subscription);
+  await f.fake.clock.advance(86460);
+  const paid = f.fake.subscriptions.get(before.id);
+  assert.equal(paid.status, "active");
+  await assert.rejects(f.provider.updateManagedSubscription(updateInput(before, before.items.data[0], { endTrial: true })),
+    { code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" });
+  assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, 0);
+  assert.deepEqual(f.fake.subscriptions.get(before.id), paid);
+});
+
 test("interval switches during a trial preserve its end for conversion and cancellation", async (t) => {
   for (const billingMode of ["classic", "flexible"]) for (const via of ["portal", "provider-update", "pending-payment"]) for (const cancel of [false, true]) {
     await t.test(`${billingMode} ${via}: ${cancel ? "cancel" : "convert"}`, async (t) => {
@@ -116,12 +162,7 @@ test("interval switches during a trial preserve its end for conversion and cance
       if (via === "portal") await fake.portal.switchPrice(subscription.id, "price_studio");
       else {
         if (via === "pending-payment") fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
-        await assert.rejects(provider.updateManagedSubscription(updateInput(subscription, item)), { code: "TEAM_BILLING_SUBSCRIPTION_TRIALING" });
-        await sdk(fake).subscriptions.update(subscription.id, {
-          items: [{ id: item.id, price: "price_studio", quantity: 5 }],
-          proration_behavior: "create_prorations", proration_date: item.current_period_start,
-          payment_behavior: "pending_if_incomplete",
-        });
+        await provider.updateManagedSubscription(updateInput(subscription, item));
         if (via === "pending-payment") await fake.subscriptions.completePayment(subscription.id);
       }
       const switched = fake.subscriptions.get(subscription.id);

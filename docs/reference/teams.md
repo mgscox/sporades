@@ -645,6 +645,9 @@ then retrieves the declared `bpc_…` configuration before creating a session.
 Sporades requires the configuration to be active in the exact sandbox/live
 mode, with payment-method updates and invoice history enabled, cancellation at
 period end, quantity editing disabled, and an exact Product-to-Price allow-list.
+The configuration's `subscription_update.trial_update_behavior` must be
+`continue_trial` by default, or `end_trial` when `transitions.endTrial: true`
+is declared. Missing or mismatched trial behavior refuses Portal creation.
 Products sharing a configuration must share the same quantity policy: fixed
 quantities match only the same fixed value, while Team-member quantities match
 only the same declared `minimum` (including whether it was omitted). The
@@ -704,13 +707,37 @@ codes. Worker refusals settle the operation as failed without a provider update:
 | --- | --- |
 | Cancellation scheduled | `TEAM_BILLING_SUBSCRIPTION_CANCELLING` |
 | `past_due` or `unpaid` | `TEAM_BILLING_SUBSCRIPTION_PAST_DUE` |
-| `trialing` | `TEAM_BILLING_SUBSCRIPTION_TRIALING` |
 | An attached schedule | `TEAM_BILLING_UNKNOWN_SCHEDULE` |
 
 Sporades does not own Subscription Schedules yet, so every attached schedule
-is unknown. Verified trials retain their entitled product and automatic quantity
-convergence; managed plan switches still refuse. These guards apply to existing cross-policy and interval switches
+is unknown. These guards apply to cross-policy and interval switches
 as well as the opt-in same-policy path.
+
+A switch during `trialing` preserves the existing `trial_end` by default,
+including interval changes; the target product's `trialDays` does not start a
+new trial. Verified Subscription evidence grants the target product with the
+same `trialEndsAt`. Automatic seat convergence also preserves the trial.
+To end trials when switching, declare the server policy:
+
+```ts
+transitions: { allowSamePolicy: true, endTrial: true }
+```
+
+`endTrial` is a boolean server declaration, never a browser request option.
+For a verified trial, Sporades records that choice with durable plan intent and
+sends `trial_end: "now"` alongside the Price and quantity update. Stripe ends
+the trial and starts billing immediately; payment-action requirements still
+use the existing pending-update flow. Retries and restart repair retain the
+original choice. Provider acknowledgement grants no entitlement; settlement
+requires verified Subscription evidence of the target and the ended trial.
+If the trial has already ended before dispatch, the final provider read refuses
+a changed target rather than resetting a paid period. An already-active exact
+target is acknowledged without another write and still awaits verified evidence.
+Portal configuration must match this policy as described above.
+
+Fake-provider tests cover trial preservation, immediate ending and invoicing.
+Real Stripe API trial preservation still requires a manager-run test-clock
+check; see the [trial-transition research note](../research/2026-11-09-team-billing-trial-transitions.md).
 
 The app renders the returned `pending`, `completed`, `superseded`, or safe
 `failed` state. The response contains no intent, Job, Price, Customer,
@@ -725,7 +752,7 @@ the current Subscription and catalogue, and derives the accepted-member count,
 floored by the target's declared `minimum` when it uses `team-members`. It
 updates the one attested Subscription item Price and quantity together using
 the desired intent's stable `proration_date` and `pending_if_incomplete`.
-A longer declared recurring interval (for example monthly → annual) explicitly
+For a paid Subscription, a longer declared recurring interval (for example monthly → annual) explicitly
 resets `billing_cycle_anchor` to `now` and sends `proration_behavior: always_invoice`,
 so flexible subscriptions invoice the new full period at the switch, with unused
 previous-period credit. The reset decision is stored with the intent for restart
@@ -735,7 +762,12 @@ applied period. Recovery retrieves the provider Subscription and avoids another
 reset POST when the exact target, reset anchor and full recurring period are
 already applied. Before the first attempt,
 the target still refreshes to the latest
-accepted-member count. Other changes retain `create_prorations`. The anchor is
+accepted-member count. Other changes retain `create_prorations`. A continuing trial preserves its trial
+period without an anchor reset; `transitions.endTrial` starts and invoices the
+target period once through `trial_end: "now"`. Trial preservation is also stored
+with the intent. If the trial expires before dispatch or during pending payment,
+the provider read refuses a changed target before writing; request again after
+verified expiry evidence arrives. The anchor is
 encoded as a string before `2026-09-30.endive` (including the pinned dahlia API),
 and as `{ type: "now" }` from endive. Legacy single-Price bindings have no declared
 interval and retain their existing update behavior. Verified observations store

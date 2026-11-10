@@ -255,7 +255,7 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
     const deleted = eventType === "customer.subscription.deleted";
     const trialStart = unixTimestamp(object.trial_start);
     const trialEndsAt = unixTimestamp(object.trial_end);
-    if (object.trial_end != null && (!trialStart || !trialEndsAt || trialEndsAt <= trialStart)) {
+    if (object.trial_end != null && (!trialStart || !trialEndsAt || trialEndsAt < trialStart || (object.status === "trialing" && trialEndsAt === trialStart))) {
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     }
     let state;

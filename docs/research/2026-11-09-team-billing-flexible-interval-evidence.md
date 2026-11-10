@@ -57,3 +57,16 @@ isolated sandbox and synthetic customer/payment method, with no production data:
 Record invoice line amounts, credit rounding, payment timing and pending-anchor
 semantics as provider evidence. The fake's USD credit model is deliberately narrow
 and does not certify Stripe accounting, taxes, discounts or Portal scheduling.
+
+## Reconciliation with trial transitions
+
+The latest-main merge retains #370's continuing-trial policy: monthly-to-annual
+switches during a trial omit the anchor reset and create no immediate invoice.
+Trial preservation is durable too: if the provider trial expires before dispatch
+or during pending payment, a changed target is refused before any write. A new
+request after verified expiry uses a new paid-period intent and reset key. Explicit `transitions.endTrial`
+ends the trial and invoices the target period once; attempted trial endings keep
+their original tuple until verified evidence stages changed seats. Regression coverage crosses classic and flexible modes, including a
+pending payment completed later; both fake update paths share the same invoice
+calculation. Live accounting and trial preservation remain manager test-clock
+checks.

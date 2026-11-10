@@ -61,7 +61,6 @@ test("Plan transition guards refuse each unsafe state at admission and worker ex
   for (const [column, value, code] of [
     ["cancelAtPeriodEnd", 1, "TEAM_BILLING_SUBSCRIPTION_CANCELLING"],
     ["state", "past-due", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
-    ["state", "trialing", "TEAM_BILLING_SUBSCRIPTION_TRIALING"],
     ["hasSchedule", 1, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
   ]) {
     for (const phase of ["request", "worker"]) {
@@ -83,6 +82,31 @@ test("Plan transition guards refuse each unsafe state at admission and worker ex
   }
 });
 
+test("durable trial policy survives repair and configuration changes until ended evidence settles it", async () => {
+  const f = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+    f.database.teamBillingDefinition.transitions = { allowSamePolicy: true, endTrial: true };
+    await requestTeamBillingPlanTransition(f.database, actor, teamId, randomRequestId("a"), "agency");
+    f.database.teamBillingDefinition.transitions.endTrial = false;
+    await repairTeamBillingDesiredState(f.database);
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    const first = f.providerCalls[0];
+    assert.equal(first.endTrial, true);
+    // Even an exact target tuple must remain pending while verified truth is trialing.
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [productKey] = 'agency', [providerPriceId] = 'price_agency', [quantity] = 1").run();
+    assert.equal((await settleVerifiedTeamBillingTarget(f.database, { teamId, productKey: "agency", quantity: 1, subscriptionId: "sub_test" })).settled, false);
+    assert.equal(f.operation().status, "awaiting-observation");
+    await repairTeamBillingDesiredState(f.database);
+    await performTeamBillingPlanTransition(f.database, {}, desiredPayload(f.desired()));
+    assert.equal(f.providerCalls[1].endTrial, true);
+    assert.equal(f.providerCalls[1].idempotencyKey, first.idempotencyKey);
+    f.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'active'").run();
+    assert.equal((await settleVerifiedTeamBillingTarget(f.database, { teamId, productKey: "agency", quantity: 1, subscriptionId: "sub_test" })).settled, true);
+    assert.equal(f.operation().status, "completed");
+  } finally { f.close(); }
+});
+
 test("revoking same-policy opt-in fences an already queued transition", async () => {
   const fixture = openFixture({ productKey: "studio", quantity: 1 });
   try {
@@ -98,7 +122,7 @@ test("revoking same-policy opt-in fences an already queued transition", async ()
   } finally { fixture.close(); }
 });
 
-test("trial evidence retains automatic seat convergence while plan transitions stay guarded", async () => {
+test("trial evidence retains automatic seat convergence", async () => {
   const fixture = openFixture();
   try {
     fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
@@ -884,7 +908,7 @@ function openFixture(options = {}) {
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   };
-  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [resetBillingCycle] INTEGER NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [resetBillingCycle] INTEGER NULL, [endTrial] INTEGER NULL, [preserveTrial] INTEGER NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)");

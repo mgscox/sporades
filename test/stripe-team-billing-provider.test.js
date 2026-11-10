@@ -326,6 +326,8 @@ test("the internal Team Billing provider attests one explicit Portal configurati
 test("Portal configuration attestation rejects mutable defaults and every catalogue drift", async () => {
   const invalidConfigurations = [
     { active: false },
+    { features: { subscription_update: { trial_update_behavior: "end_trial" } } },
+    { features: { subscription_update: { trial_update_behavior: null } } },
     { livemode: true },
     { features: { payment_method_update: { enabled: false } } },
     { features: { invoice_history: { enabled: false } } },
@@ -344,6 +346,21 @@ test("Portal configuration attestation rejects mutable defaults and every catalo
     }, async (apiBaseUrl) => {
       const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
       await assert.rejects(provider.retrievePortalConfiguration(portalConfigurationInput), rejectedProviderFailure);
+    });
+  }
+});
+
+test("Portal trial policy attestation requires the exact declared behavior", async () => {
+  for (const endTrial of [false, true]) {
+    await withProvider((_request, response) => {
+      const configuration = validPortalConfiguration();
+      configuration.features.subscription_update.trial_update_behavior = endTrial ? "end_trial" : "continue_trial";
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(configuration));
+    }, async (apiBaseUrl) => {
+      const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+      assert.deepEqual(await provider.retrievePortalConfiguration({ ...portalConfigurationInput, endTrial }), { ok: true });
+      await assert.rejects(provider.retrievePortalConfiguration({ ...portalConfigurationInput, endTrial: !endTrial }), rejectedProviderFailure);
     });
   }
 });
@@ -502,6 +519,10 @@ test("managed subscription updates enforce the exact mode and operation envelope
   for (const override of [
     { mode: "live" },
     { operationKind: "portal-change" },
+    { preserveTrial: "true" },
+    { preserveTrial: true, endTrial: true },
+    { preserveTrial: true, resetBillingCycle: true },
+    { preserveTrial: true, operationKind: "seat-convergence" },
     { prorationDate: 2_000_000_123.5 },
     { unexpected: true },
   ]) {
@@ -618,6 +639,7 @@ function validPortalConfiguration() {
       subscription_update: {
         enabled: true,
         default_allowed_updates: ["price"],
+        trial_update_behavior: "continue_trial",
         proration_behavior: "create_prorations",
         billing_cycle_anchor: "unchanged",
         schedule_at_period_end: { conditions: [] },

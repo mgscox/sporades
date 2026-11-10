@@ -56,6 +56,7 @@ function validateCatalogue(catalogue: StripeFakeCatalogue) {
   }
   for (const config of catalogue.portalConfigurations) {
     requireValue(/^bpc_[A-Za-z0-9_]+$/.test(config.id) && !configs.has(config.id) && Array.isArray(config.products) && config.products.length);
+    requireValue(config.trialUpdateBehavior === undefined || ["continue_trial", "end_trial"].includes(config.trialUpdateBehavior));
     configs.add(config.id);
     const seen = new Set<string>();
     for (const product of config.products) {
@@ -238,21 +239,25 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const subscription = liveSubscription(subscriptionId);
     subscription.items.data[0].quantity = integer(quantity); return subscriptionEvent(subscription);
   }
-  function applyPrice(subscription: Obj, targetPrice: Obj, quantity: number, reset = false, invoiceNow = false) {
+  function applyPrice(subscription: Obj, targetPrice: Obj, quantity: number, reset = false, invoiceNow = false, endTrialNow = false) {
     const item = subscription.items.data[0];
     const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval
       || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
-    const resetPeriod = reset || subscription.status !== "trialing" && subscription.billing_mode.type === "classic" && changedInterval;
-    if (resetPeriod && (invoiceNow || subscription.billing_mode.type === "classic")) {
+    const resetPeriod = endTrialNow || subscription.status !== "trialing" && (reset || subscription.billing_mode.type === "classic" && changedInterval);
+    if (resetPeriod && (invoiceNow || endTrialNow || subscription.billing_mode.type === "classic")) {
       const amount = targetPrice.unit_amount * quantity;
-      const credit = -Math.round(item.price.unit_amount * item.quantity
+      const credit = subscription.status === "trialing" ? 0 : -Math.round(item.price.unit_amount * item.quantity
         * Math.max(0, item.current_period_end - now) / (item.current_period_end - item.current_period_start));
-      invoices.push({ id: id("in"), object: "invoice", subscription: subscription.id, created: now,
+      const invoice = { id: id("in"), object: "invoice", livemode: false, customer: subscription.customer,
+        billing_reason: "subscription_update", paid: true,
+        parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } }, subscription: subscription.id, created: now,
         status: "paid", currency: targetPrice.currency, amount_paid: Math.max(0, amount + credit),
         lines: { object: "list", data: [
           { price: targetPrice.id, amount, proration: false, quantity, period: { start: now, end: periodEnd(now, targetPrice) } },
           { price: item.price.id, amount: credit, proration: true },
-        ] } });
+        ] } };
+      invoices.push(invoice);
+      subscription.latest_invoice = invoice.id;
     }
     if (resetPeriod) {
       subscription.billing_cycle_anchor = now;
@@ -260,6 +265,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       item.current_period_end = periodEnd(now, targetPrice);
     }
     item.price = copy(targetPrice); item.quantity = quantity;
+    if (endTrialNow) { subscription.status = "active"; subscription.trial_end = now; }
   }
   async function switchPrice(subscriptionId: string, priceId: string) {
     const subscription = liveSubscription(subscriptionId);
@@ -278,7 +284,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     return { id: configId, object: "billing_portal.configuration", active: true, livemode: false, features: {
       payment_method_update: { enabled: true }, invoice_history: { enabled: true },
       subscription_cancel: { enabled: true, mode: "at_period_end" },
-      subscription_update: { enabled: true, default_allowed_updates: ["price"],
+      subscription_update: { enabled: true, default_allowed_updates: ["price"], trial_update_behavior: entry.trialUpdateBehavior ?? "continue_trial",
         proration_behavior: entry.prorationBehavior ?? "create_prorations",
         billing_cycle_anchor: entry.billingCycleAnchor ?? "unchanged",
         schedule_at_period_end: { conditions: (entry.scheduleAtPeriodEnd ?? []).map(type => ({ type })) },
@@ -322,7 +328,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       case "customers.retrieve": exactKeys(p, []); return copy(get(customers, resourceId));
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
-        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor"]);
+        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "trial_end"]);
+        requireValue(p.trial_end === undefined || p.trial_end === "now");
         requireValue(p.billing_cycle_anchor === undefined || p.billing_cycle_anchor === "now");
         exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["id", "price", "quantity"]);
         const subscription = liveSubscription(resourceId); const item = subscription.items.data[0];
@@ -333,9 +340,10 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
           subscription.pending_update = { expires_at: now + 3600,
             billing_cycle_anchor: p.billing_cycle_anchor === "now" ? now : null,
             proration_behavior: p.proration_behavior,
+            ...(p.trial_end === "now" ? { trial_end: now } : {}),
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
         } else {
-          applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice");
+          applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice", p.trial_end === "now");
           subscription.pending_update = null;
         }
         return subscriptionEvent(subscription);
@@ -418,7 +426,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const subscription = liveSubscription(id); const pending = subscription.pending_update;
         requireValue(pending && pending.expires_at > now, "No payable pending update.");
         const requested = pending.subscription_items[0];
-        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice");
+        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice", pending.trial_end != null);
         subscription.pending_update = null;
         if (subscription.status !== "trialing") subscription.status = "active";
         return subscriptionEvent(subscription);

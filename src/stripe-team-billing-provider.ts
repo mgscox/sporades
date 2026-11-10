@@ -100,6 +100,19 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end === true || current.cancel_at != null, current.schedule != null);
         if (refusal) throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
       }
+      if ((input.endTrial === true || input.preserveTrial === true) && current.status !== "trialing") {
+        const item = current.items.data[0];
+        if (current.status !== "active" || current.pending_update != null
+          || item.price.id !== input.targetPriceId || item.quantity !== input.targetQuantity) {
+          throw Object.assign(new Error("Team Billing trial state changed before the switch."), {
+            code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", retryable: false,
+          });
+        }
+        // A changed trial may only acknowledge an already-applied exact target.
+        attestManagedSubscription(current, input, new Set([input.targetPriceId]), true);
+        return Object.freeze({ ok: true, outcome: "acknowledged" });
+      }
+
       // An applied reset needs no second POST, even after provider keys expire.
       const item = current.items.data[0];
       const recurring = item.price.recurring;
@@ -124,6 +137,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
             ...(input.resetBillingCycle ? { billing_cycle_anchor: billingCycleAnchorNow(config.apiVersion) } : {}),
             proration_date: input.prorationDate,
             payment_behavior: "pending_if_incomplete",
+            ...(input.endTrial === true ? { trial_end: "now" as const } : {}),
           }, { idempotencyKey: input.idempotencyKey });
         } catch (error: any) {
           throwProviderOperationFailure(error);
@@ -303,13 +317,16 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resetBillingCycle"].includes(key)).sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resetBillingCycle", "endTrial", "preserveTrial"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
     || (input.resetBillingCycle !== undefined && typeof input.resetBillingCycle !== "boolean")
     || (input.resetBillingCycle === true && input.operationKind !== "plan-transition")
     || !["plan-transition", "seat-convergence"].includes(input.operationKind)
+    || (input.preserveTrial !== undefined && (typeof input.preserveTrial !== "boolean" || input.operationKind !== "plan-transition"))
+    || (input.preserveTrial === true && (input.endTrial === true || input.resetBillingCycle === true))
+    || (input.endTrial !== undefined && (typeof input.endTrial !== "boolean" || input.operationKind !== "plan-transition"))
     || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
     || !validSubscriptionItemId(input.subscriptionItemId)
     || !validPriceId(input.sourcePriceId) || !validPriceId(input.targetPriceId)
@@ -371,7 +388,8 @@ function validProductId(value: any) {
 
 function validatePortalConfigurationInput(input: LooseRecord) {
   if (!input || typeof input !== "object" || Array.isArray(input)
-    || Object.keys(input).filter(key => key !== "expectedPolicy").sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || Object.keys(input).filter(key => !["expectedPolicy", "endTrial"].includes(key)).sort().join("\0") !== ["configurationId", "expectedProducts", "mode"].join("\0")
+    || (input.endTrial !== undefined && typeof input.endTrial !== "boolean")
     || !validPortalConfigurationId(input.configurationId) || !["sandbox", "live"].includes(input.mode)
     || !Array.isArray(input.expectedProducts) || input.expectedProducts.length < 1) throw providerFailure(false);
 
@@ -415,6 +433,7 @@ function attestPortalConfiguration(portalConfiguration: LooseRecord, input: Loos
     || portalConfiguration.features?.invoice_history?.enabled !== true
     || portalConfiguration.features?.subscription_cancel?.enabled !== true
     || portalConfiguration.features?.subscription_cancel?.mode !== "at_period_end"
+    || subscriptionUpdate?.trial_update_behavior !== (input.endTrial === true ? "end_trial" : "continue_trial")
     || subscriptionUpdate?.enabled !== true
     || subscriptionUpdate.proration_behavior !== policy.prorationBehavior
     || (subscriptionUpdate.billing_cycle_anchor === null ? "unchanged" : subscriptionUpdate.billing_cycle_anchor) !== policy.billingCycleAnchor
