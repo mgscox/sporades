@@ -1,5 +1,17 @@
 # Changes
 
+## v0.9.50 - 2026-11-10
+
+Changes since v0.9.49.
+
+### 🔧 Improvements
+
+- Regenerate dist and bin [skip ci] (5fcd6bf7).
+
+### 🧪 Tests
+
+- Prove read-only inspection with a lock gate, not a 300 ms budget (#396) (d2364b3b).
+
 ## v0.9.49 - 2026-11-10
 
 Changes since v0.9.48.
