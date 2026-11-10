@@ -1,3 +1,4 @@
+import { assertCurrencyHandoverInactive, readCurrencyHandoverLatch } from "./team-billing-currency-handover.js";
 import { normalizeModeBinding, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
 export { validTeamBillingInterval, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
 import { billingCurrencyAmount, matchesBillingCurrency, validBillingCurrency, billingCurrencyMismatch } from "./team-billing-prices.js";
@@ -60,6 +61,10 @@ export function createTeamBillingTables(adapter) {
             "[idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, " +
             "[providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL" +
             ")")),
+        () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_handovers] (" +
+            "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [sourceSubscriptionId] TEXT NOT NULL, [sourceSnapshot] TEXT NOT NULL, " +
+            "[anchor] TEXT NOT NULL, [phase] TEXT NOT NULL, [setupSessionId] TEXT NULL, [latchUntil] TEXT NULL, [cancelDispatched] INTEGER NOT NULL DEFAULT 0, [attemptToken] TEXT NULL)")),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "replacedBy", "TEXT"),
         () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] (" +
             "[teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL" +
             ")")),
@@ -212,7 +217,7 @@ export async function readCurrentUserTeamBilling(database, auth, teamId) {
         throw teamBillingDenied();
     return database.adapter.withTransaction(async (transaction) => {
         await admitTeamBillingReader(database, transaction, auth, teamId);
-        return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+        return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId, database.clock.now());
     });
 }
 async function admitTeamBillingReader(database, transaction, auth, teamId) {
@@ -240,7 +245,7 @@ export async function readCapsuleTeamBillingProjection(database, transaction, au
     const membership = await transaction.prepare(transaction.dialect.sql("SELECT [role] FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?")).get(teamId, auth.userId);
     if (!membership || !["admin", "member"].includes(membership.role))
         throw teamBillingDenied();
-    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId);
+    return safeTeamBillingProjection(transaction, database.teamBillingDefinition, teamId, database.clock.now());
 }
 export async function startTeamBillingCheckout(database, auth, teamId, requestId, productKey, interval, currency) {
     requireAuth({ auth }, { linked: true });
@@ -260,6 +265,7 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
     const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
         await admitTeamBillingActor(database, transaction, auth, { operation: "checkout", teamId, productKey, interval: price.interval, ...(currency ? { currency } : {}) });
         await assertTeamBillingErasureInactive(database, transaction, teamId);
+        await assertCurrencyHandoverInactive(transaction, teamId);
         const sql = transaction.dialect.sql;
         const existing = await transaction.prepare(sql("SELECT [requestId], [productKey], [providerPriceId], [currency], [status], [providerObjectId], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
             "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
@@ -304,7 +310,8 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
 async function assertCheckoutCurrency(transaction, teamId, currency) {
     if (!currency)
         return;
-    const previous = await transaction.prepare(transaction.dialect.sql("SELECT [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [currency] IS NOT NULL")).all(teamId);
+    const previous = await transaction.prepare(transaction.dialect.sql("SELECT [currency] FROM [sporades_team_billing_subscriptions] [s] WHERE [teamId] = ? AND [currency] IS NOT NULL AND [replacedBy] IS NULL " +
+        "AND NOT EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[sourceSubscriptionId] = [s].[providerSubscriptionId] AND [h].[latchUntil] IS NOT NULL)")).all(teamId);
     if (previous.some((row) => row.currency !== currency))
         throw billingCurrencyMismatch();
 }
@@ -318,6 +325,7 @@ export async function startTeamBillingPortal(database, auth, teamId, requestId) 
     const result = await withTeamBillingAdmissionTransaction(database, async (transaction) => {
         await admitTeamBillingActor(database, transaction, auth, { operation: "portal", teamId });
         await assertTeamBillingErasureInactive(database, transaction, teamId);
+        await assertCurrencyHandoverInactive(transaction, teamId);
         const sql = transaction.dialect.sql;
         const existing = await transaction.prepare(sql("SELECT [requestId], [kind], [productKey], [status], [mode], [quantity], [providerObjectId], [providerCustomerId], [configurationId], [returnPath], [continuationUrl], [continuationExpiresAt], [safeFailureCode], [createdAt] " +
             "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
@@ -383,6 +391,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
             if (!operation || !["queued", "running", "retrying"].includes(operation.status))
                 return null;
             await assertTeamBillingErasureInactive(database, transaction, operation.teamId);
+            await assertCurrencyHandoverInactive(transaction, operation.teamId);
             const actor = await transaction.prepare(sql("SELECT [id], [displayName], [email], [picture], [isAuthenticated], [isGuest], [provider], [userKind] FROM [sporades_auth_users] WHERE [id] = ?")).get(operation.actorUserId);
             if (!actor)
                 throw teamBillingDenied();
@@ -690,6 +699,9 @@ export async function admitTeamBillingActor(database, transaction, auth, input) 
         ...(input.productKey === undefined ? {} : { productKey: input.productKey }),
         ...(input.interval === undefined ? {} : { interval: input.interval }),
         ...(input.currency === undefined ? {} : { currency: input.currency }),
+        ...(input.fromCurrency === undefined ? {} : { fromCurrency: input.fromCurrency }),
+        ...(input.fromProductKey === undefined ? {} : { fromProductKey: input.fromProductKey }),
+        ...(input.fromInterval == null ? {} : { fromInterval: input.fromInterval }),
     }));
     if (!decision || typeof decision !== "object" || Array.isArray(decision)
         || Object.keys(decision).join(",") !== "allow" || decision.allow !== true)
@@ -708,7 +720,10 @@ export async function assertTeamBillingErasureInactive(database, transaction, te
     if (active || erased)
         throw teamBillingDenied();
 }
-export async function safeTeamBillingProjection(transaction, definition, teamId) {
+export async function safeTeamBillingProjection(transaction, definition, teamId, clock = new Date()) {
+    const latch = await readCurrencyHandoverLatch(transaction, definition, teamId, clock);
+    if (latch)
+        return latch;
     const sql = transaction.dialect.sql;
     const desired = await transaction.prepare(sql("SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
     if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
@@ -729,7 +744,7 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
             reason: desired.safeFailureCode === "CATALOGUE_MISMATCH" ? "catalogue-mismatch" : "provider-state-ambiguous" });
     }
     const operation = await transaction.prepare(sql("SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
-        "WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")).get(teamId);
+        "WHERE [teamId] = ? AND [kind] <> 'currency-handover' AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1")).get(teamId);
     if (operation) {
         const requestedAt = canonicalTimestamp(operation.createdAt);
         if (!requestedAt) {
@@ -746,12 +761,16 @@ export async function safeTeamBillingProjection(transaction, definition, teamId)
         });
     }
     const currentRows = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [currency], [unitAmount], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId);
+        "FROM [sporades_team_billing_subscriptions] [s] WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] <> 'cancelled' " +
+        "AND NOT EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[sourceSubscriptionId] = [s].[providerSubscriptionId] AND [h].[cancelDispatched] = 1 AND [h].[anchor] <= ?) " +
+        "ORDER BY [lastEventOccurredAt] DESC, [id] DESC")).all(teamId, clock.toISOString());
     if (currentRows.length > 1) {
         return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });
     }
     const row = currentRows[0] ?? await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [currency], [unitAmount], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodEnd], [trialEndsAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch] " +
-        "FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId);
+        "FROM [sporades_team_billing_subscriptions] [s] WHERE [teamId] = ? AND [replacedBy] IS NULL " +
+        "AND NOT EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[sourceSubscriptionId] = [s].[providerSubscriptionId] AND [h].[cancelDispatched] = 1 AND [h].[anchor] <= ?) " +
+        "ORDER BY [lastEventOccurredAt] DESC, [observedAt] DESC, [id] DESC LIMIT 1")).get(teamId, clock.toISOString());
     const quarantine = await transaction.prepare(sql("SELECT [observedAt], [eventRank], [safeReason] FROM [sporades_team_billing_observations] " +
         "WHERE [teamId] = ? AND [outcome] = 'quarantined' ORDER BY [observedAt] DESC, [eventRank] DESC, [id] DESC LIMIT 1")).get(teamId);
     if (quarantine && (!row || !canonicalTimestamp(row.lastEventOccurredAt) || quarantine.observedAt > row.lastEventOccurredAt
@@ -871,7 +890,7 @@ function canonicalReturnPath(value) {
     }
 }
 async function assertNoTeamBillingSubscription(transaction, teamId) {
-    const subscription = await transaction.prepare(transaction.dialect.sql("SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND ([state] <> 'cancelled' OR [terminalLatch] IS NULL OR [terminalLatch] <> 1) LIMIT 1")).get(teamId);
+    const subscription = await transaction.prepare(transaction.dialect.sql("SELECT [id] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [replacedBy] IS NULL AND ([state] <> 'cancelled' OR [terminalLatch] IS NULL OR [terminalLatch] <> 1) LIMIT 1")).get(teamId);
     const unresolved = subscription ? null : await transaction.prepare(transaction.dialect.sql("SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' AND [providerSubscriptionId] IS NOT NULL " +
         "AND [providerSubscriptionId] NOT IN (SELECT [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] = 'cancelled' AND [terminalLatch] = 1) LIMIT 1")).get(teamId, teamId);
     if (subscription || unresolved)
@@ -907,7 +926,7 @@ async function portalDesiredState(database, transaction, teamId) {
     const mode = database.paymentsConfig.stripe.livemode ? "live" : "sandbox";
     const customer = await transaction.prepare(sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
     const subscriptions = await transaction.prepare(sql("SELECT [mode], [providerPriceId], [interval], [productKey], [quantity], [state] FROM [sporades_team_billing_subscriptions] " +
-        "WHERE [teamId] = ? AND [state] IN ('trialing', 'active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC")).all(teamId);
+        "WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] IN ('trialing', 'active', 'cancelling', 'past-due') ORDER BY [observedAt] DESC, [id] DESC")).all(teamId);
     const subscription = subscriptions.length === 1 ? subscriptions[0] : null;
     const product = database.teamBillingDefinition.catalogue[subscription?.productKey];
     const binding = product?.stripe?.[mode];

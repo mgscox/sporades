@@ -34,6 +34,14 @@ export declare function readCurrentUserTeamBilling(database: LooseRecord, auth: 
  * The surrounding Capsule context owns and revokes the transaction.
  */
 export declare function readCapsuleTeamBillingProjection(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, teamId: any): Promise<Readonly<{
+    renewsAt: any;
+    interval?: any;
+    state: "active";
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    currency: any;
+}> | Readonly<{
     state: "attention-required";
     teamId: string;
     reason: "provider-state-ambiguous" | "catalogue-mismatch";
@@ -120,7 +128,15 @@ export declare function admitTeamBillingActor(database: LooseRecord, transaction
 export declare function teamBillingErasureKey(database: LooseRecord, teamId: string): string;
 export declare function teamBillingErasureObjectKey(database: LooseRecord, providerObjectId: string): string;
 export declare function assertTeamBillingErasureInactive(database: LooseRecord, transaction: LooseRecord, teamId: string): Promise<void>;
-export declare function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string): Promise<Readonly<{
+export declare function safeTeamBillingProjection(transaction: LooseRecord, definition: LooseRecord, teamId: string, clock?: Date): Promise<Readonly<{
+    renewsAt: any;
+    interval?: any;
+    state: "active";
+    teamId: string;
+    productKey: any;
+    quantity: any;
+    currency: any;
+}> | Readonly<{
     state: "attention-required";
     teamId: string;
     reason: "provider-state-ambiguous" | "catalogue-mismatch";
