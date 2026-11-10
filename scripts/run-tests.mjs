@@ -218,13 +218,21 @@ function command(command, commandArgs, { structured = false, quiet = false, time
     });
   });
 }
+const NODE_AGGREGATE_DIAGNOSTIC = /^(?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) \d+(?:\.\d+)?$/;
 function progress({ type, data }, state) {
   if (type === 'test:stdout' || type === 'test:stderr') {
     resourceError(data.message, state);
     (type === 'test:stderr' ? process.stderr : process.stdout).write(data.message);
     return;
   }
-  if (type === 'test:diagnostic') { console.log(data.message); return; }
+  if (type === 'test:diagnostic') {
+    // After resource exhaustion, node's own aggregate counts still score the killed file as
+    // "fail 1", contradicting the environment result. Whether they are printed before the run
+    // is stopped is a race, so drop them: QA_SUMMARY and RESOURCE EXHAUSTION are authoritative.
+    if (resourceExhaustion && NODE_AGGREGATE_DIAGNOSTIC.test(data.message)) return;
+    console.log(data.message);
+    return;
+  }
   const file = data.entryFile ?? data.file;
   // The native file wrapper is not an additional registered test.
   const entry = state.file ?? file;
