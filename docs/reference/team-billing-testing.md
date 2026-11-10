@@ -96,19 +96,20 @@ Portal configuration. For example, one Product's `prices` can be
 Calendar periods clamp month/year renewals to the last valid day. An applied
 interval change resets the period at the fake clock; a pending payment leaves
 the active Price and period intact until `completePayment`. The fake validates
-proration parameters but does not calculate invoice amounts or credits.
+proration parameters but does not calculate prorated amounts or credits. Anchored
+currency replacements record their full configured amount when the anchor is due.
 
 ## Control transitions and delivery
 
 All returned objects are independent JSON snapshots of the supported provider
 subset. `state()` includes `catalogue`, `now`, `customers`, `subscriptions`,
-`checkouts`, `portalSessions` and `events`. Bearer keys are never logged or
+`checkouts`, `portalSessions`, `invoices` and `events`. Bearer keys are never logged or
 returned. The in-memory state belongs to one fake and lasts until `reset()` or
 `close()`; settle outstanding work before resetting it.
 
 | Control | Effect |
 | --- | --- |
-| `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. An existing Session Customer cannot be replaced. |
+| `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. Setup-mode Sessions instead save a payment method through a successful SetupIntent without creating a Subscription or charging. An existing Session Customer cannot be replaced. |
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
 | `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period if its recurring interval/count changes, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
@@ -119,7 +120,8 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
 | `subscriptions.get(id)`, `customers.subscriptions(customerId)` | Inspects provider state. |
-| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, and converting due trials to active. |
+| `customers.setBalance(customerId, currency, amount)` | Sets an exact integer Customer balance for currency-handover refusal tests. |
+| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, converting due trials to active, and billing an anchored replacement when due. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
 
 Team Billing catalogue products declared with `trialDays` use trial Checkout through the real
@@ -132,6 +134,17 @@ managed updates, and pending-payment completion; conversion starts the new paid
 interval at the trial end.
 Use `subscriptions.failPayment` to exercise the ordinary past-due path.
 The fake models this state and protocol; it does not contact Stripe or charge money.
+
+Currency handover uses setup Checkout, cancellation with `prorate: false` and
+`invoice_now: false`, and a new-currency Subscription with
+`proration_behavior: "none"` and the saved period-end anchor. The fake refuses
+two active currencies for one Customer, while canceled history can retain its
+old currency. The initial replacement period is free. Use
+`customers.setBalance(customerId, "gbp", -500)` to exercise a stranded balance,
+and `faults.inject({ operation: "subscriptions.create", status: 500 })` to
+interrupt cancellation/creation. Manual delivery can test either webhook order,
+restart recovery, and entitlement held by the runtime latch. See
+[currency handover](./teams.md#change-a-team-s-billing-currency).
 
 Delivery defaults to `"auto"`. With `delivery: "manual"`, `events.pending()`
 returns undelivered events. Use `events.deliver(id?)`,
@@ -161,7 +174,8 @@ fake.faults.clear();
 
 Operation names mirror SDK calls: `checkout.sessions.create|retrieve|expire`,
 `billingPortal.configurations.retrieve`, `billingPortal.sessions.create`,
-`subscriptions.retrieve|update|list|cancel`, and `customers.retrieve`.
+`subscriptions.create|retrieve|update|list|cancel`, `prices.retrieve`, and
+`customers.retrieve`.
 Fault statuses accept Stripe 4xx/5xx errors (including 409, 429, 500 and 503) or
 `"timeout"`. `when: "before"` fails without executing the call; `"after"`
 executes it and loses the acknowledgement. Timeout faults hold the connection

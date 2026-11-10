@@ -1,10 +1,11 @@
+import { applyCurrencySetup } from "./team-billing-currency-handover.js";
 import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
 import { teamBillingPriceById } from "./team-billing-runtime.js";
 // Transaction-pure convergence of verified Stripe facts into runtime-owned Team
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
 import { createHash, randomUUID } from "node:crypto";
-import { settleVerifiedTeamBillingTarget, stageTeamBillingUsageRepair, stageAcknowledgedTeamBillingUsageTransitionRepair } from "./team-billing-management.js";
+import { settleVerifiedTeamBillingTarget, stageTeamBillingMembershipChange, stageTeamBillingUsageRepair, stageAcknowledgedTeamBillingUsageTransitionRepair } from "./team-billing-management.js";
 import { teamBillingStoredSubscriptionSemantics, teamBillingSubscriptionSemantics } from "./team-billing-subscription-semantics.js";
 import { billableTeamMemberQuantity } from "./team-billing-quantity.js";
 
@@ -117,6 +118,11 @@ async function applyCheckout(database: LooseRecord, event: LooseRecord, mode: st
   const tx = database.adapter;
   const object = event.raw.data.object;
   const operationId = object.client_reference_id;
+  if (object.mode === "setup") {
+    const result = await applyCurrencySetup(database, event, mode);
+    if (!result) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object.id));
+    return result;
+  }
   if (object.object !== "checkout.session" || object.mode !== "subscription" || object.livemode !== event.livemode
     || !CHECKOUT_ID.test(String(object.id ?? "")) || !UUID.test(String(operationId ?? ""))
     || object.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object.id));
@@ -161,13 +167,13 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(subscriptionId));
   }
   const existing = await tx.prepare(tx.dialect.sql(
-    "SELECT [id], [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule] " +
+    "SELECT [id], [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule], [replacedBy] " +
     "FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?",
   )).get(subscriptionId);
   const operation = metadataOperationId && UUID.test(metadataOperationId)
     ? await tx.prepare(tx.dialect.sql(
-      "SELECT [id], [teamId], [mode], [currency], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
-      "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'",
+      "SELECT [id], [teamId], [mode], [kind], [currency], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] " +
+      "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] IN ('checkout', 'currency-handover')",
     )).get(metadataOperationId) : null;
   const teamId = existing?.teamId ?? operation?.teamId ?? null;
   if (!teamId || (existing && operation && existing.teamId !== operation.teamId) || existing?.mode !== undefined && existing.mode !== mode
@@ -176,16 +182,24 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
   if (operation?.providerSubscriptionId && operation.providerSubscriptionId !== subscriptionId) throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
   await assertCustomerAssociation(tx, teamId, mode, customerId);
 
+  const handover = operation?.kind === "currency-handover" ? await tx.prepare(tx.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_handovers] WHERE [operationId] = ?",
+  )).get(operation.id) : null;
+  if (operation?.kind === "currency-handover" && (!handover || !existing && (!handover.latchUntil || handover.phase !== "replace" || object.billing_cycle_anchor !== Date.parse(handover.anchor) / 1000))) {
+    throw new Quarantine("provider-state-ambiguous", teamId, 50, subscriptionId);
+  }
+  if (existing?.replacedBy && event.type !== "customer.subscription.deleted") return { teamId, objectId: subscriptionId, rank: 50, outcome: "ignored" };
+
   const deleted = event.type === "customer.subscription.deleted";
-  const desiredTeamQuantity = existing ? null : Number((await tx.prepare(tx.dialect.sql(
+  const desiredTeamQuantity = existing || handover ? null : Number((await tx.prepare(tx.dialect.sql(
     "SELECT COUNT(*) AS [count] FROM [sporades_team_memberships] WHERE [teamId] = ?",
   )).get(teamId))?.count ?? 0);
   const normalized = normalizeSubscription(database.teamBillingDefinition, object, existing ? null : operation, mode, event.type, teamId, desiredTeamQuantity, Boolean(existing));
   if (existing?.currency && existing.currency !== normalized.currency) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   const customerCurrencies = await tx.prepare(tx.dialect.sql(
-    "SELECT [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [currency] IS NOT NULL",
+    "SELECT [providerSubscriptionId], [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] <> 'cancelled' AND [currency] IS NOT NULL",
   )).all(teamId);
-  if (normalized.currency && customerCurrencies.some((row: LooseRecord) => row.currency !== normalized.currency)) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
+  if (!existing?.replacedBy && normalized.currency && customerCurrencies.some((row: LooseRecord) => row.currency !== normalized.currency && row.providerSubscriptionId !== handover?.sourceSubscriptionId && row.providerSubscriptionId !== existing?.replacedBy)) throw new Quarantine("catalogue-mismatch", teamId, 50, subscriptionId);
   const product = database.teamBillingDefinition.catalogue[normalized.productKey];
   if (existing?.terminalLatch === 1) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank, outcome: "ignored" };
@@ -229,6 +243,14 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?",
     )).run(customerId, subscriptionId, event.occurredAt, operation.id);
+  }
+  if (handover && normalized.state === "active") {
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [replacedBy] = ? WHERE [providerSubscriptionId] = ? AND [teamId] = ?")).run(subscriptionId, handover.sourceSubscriptionId, teamId);
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'completed', [latchUntil] = NULL WHERE [operationId] = ?")).run(operation.id);
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL WHERE [id] = ?")).run(operation.id);
+    if (product.quantity.kind === "team-members") await stageTeamBillingMembershipChange(
+      { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }, teamId,
+    );
   }
   await settleVerifiedTeamBillingTarget(
     { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },

@@ -1,3 +1,4 @@
+import { TEAM_BILLING_CURRENCY_HANDOVER_JOB, startTeamBillingCurrencyHandover, performTeamBillingCurrencyHandover, repairTeamBillingCurrencyHandovers } from "./team-billing-currency-handover.js";
 import { snapshotIngressDecision, ingressRefusalJob } from "./file-ingress-refusal.js";
 import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
 import { validateEndpointSessionDeclaration } from "./endpoint-session.js";
@@ -881,6 +882,7 @@ export async function openDevDatabase(
         throw error;
       }
     },
+    performTeamBillingCurrencyHandover: (context: LooseRecord, payload: LooseRecord) => performTeamBillingCurrencyHandover(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     performTeamBillingErasure: async (context: LooseRecord, payload: LooseRecord) => {
       try { return await performTeamBillingErasure(database, context, payload); }
       catch (error) {
@@ -966,6 +968,8 @@ export async function openDevDatabase(
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5_000 }, true, availableAt, availableAt !== undefined),
     enqueueTeamBillingSeatConvergenceJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_SEAT_CONVERGENCE_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 60_000 }, true, availableAt, availableAt !== undefined),
+    enqueueTeamBillingCurrencyHandoverJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CURRENCY_HANDOVER_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true, availableAt, availableAt !== undefined),
     enqueueTeamBillingErasureJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_ERASURE_JOB, payload, idempotencyKey, { maxAttempts: 6, delayMs: 60_000 }, true, availableAt, availableAt !== undefined),
     stageTeamBillingMembershipChange: (teamId: string) => stageTeamBillingMembershipChange(database, teamId),
@@ -1222,6 +1226,7 @@ export async function openDevDatabase(
         await runLifecycleHook(database.lifecycleHooks.init, context);
       }
       if (database.teamBillingDefinition) {
+        await repairTeamBillingCurrencyHandovers(database);
         await repairTeamBillingDesiredStateAtStartup(database);
         await repairTeamBillingErasureStateAtStartup(database);
       }
@@ -6257,6 +6262,17 @@ export function createWebSocketHub(
                 : "Sign in as the current policy-approved billing administrator and retry.",
           },
         });
+      }
+      return;
+    }
+
+    if (message.type === "teamBilling.startCurrencyHandover") {
+      try {
+        const data = await startTeamBillingCurrencyHandover(database, client.session.auth, message.input);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.startCurrencyHandover.result", data, error: null });
+      } catch (error: any) {
+        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"].includes(error?.code) ? error.code : "TEAM_BILLING_DENIED";
+        sendJson(client, { id: message.id ?? null, type: "error", data: null, error: { code, message: "Team currency handover is unavailable.", hint: "Retry as the current policy-approved Team billing administrator." } });
       }
       return;
     }

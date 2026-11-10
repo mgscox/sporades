@@ -203,6 +203,9 @@ export const teamBilling = {
   openPortal(input) {
     return connect().teamBillingOpenPortal(input);
   },
+  startCurrencyHandover(input) {
+    return connect().teamBillingStartCurrencyHandover(input);
+  },
   requestPlanTransition(input) {
     return connect().teamBillingRequestPlanTransition(input);
   },
@@ -1645,6 +1648,7 @@ function createConnection() {
     teamBillingGet(teamId) { return request("teamBilling.get", { teamId }); },
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
+    teamBillingStartCurrencyHandover(input) { return request("teamBilling.startCurrencyHandover", { input }); },
     teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
     teamBillingPrepareErasure(input) { return request("teamBilling.prepareErasure", { input }); },
     journeyEnable(options = {}) {

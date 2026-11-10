@@ -50,6 +50,92 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         || (input.customerId && session.customer !== input.customerId)) throw providerFailure(false);
       return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
     },
+    async createCurrencySetup(input: LooseRecord) {
+      validateCurrencyHandover(input, true);
+      throwIfAborted(options.signal);
+      try {
+        await preflightCurrencyHandover(stripe, input, config.livemode);
+        const session = await stripe.checkout.sessions.create({
+          mode: "setup", customer: input.customerId,
+          success_url: new URL(input.successPath, config.publicOrigin).toString(),
+          cancel_url: new URL(input.cancelPath, config.publicOrigin).toString(),
+          client_reference_id: input.operationId, expires_at: input.providerExpiresAt,
+          metadata: { sporades_team_billing_operation: input.operationId },
+        }, { idempotencyKey: `${input.idempotencyKey}:setup` });
+        throwIfAborted(options.signal);
+        if (session.mode !== "setup" || session.customer !== input.customerId || session.livemode !== config.livemode
+          || session.client_reference_id !== input.operationId || session.expires_at !== input.providerExpiresAt
+          || !validSessionId(session.id) || !validUrl(session.url, session.id)) throw providerFailure(false);
+        return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
+      } catch (error: any) { throwCurrencyProviderFailure(error); }
+    },
+    async replaceCurrencySubscription(input: LooseRecord) {
+      validateCurrencyHandover(input, false);
+      throwIfAborted(options.signal);
+      try {
+        let untouched = true;
+        try {
+          const source = await preflightCurrencyHandover(stripe, input, config.livemode);
+          const session: LooseRecord = await stripe.checkout.sessions.retrieve(input.setupSessionId, { expand: ["setup_intent"] });
+          const setup = session.setup_intent;
+          if (session.mode !== "setup" || session.status !== "complete" || session.customer !== input.customerId
+            || session.livemode !== config.livemode || session.client_reference_id !== input.operationId
+            || session.metadata?.sporades_team_billing_operation !== input.operationId
+            || setup?.object !== "setup_intent" || setup.status !== "succeeded" || setup.customer !== input.customerId
+            || setup.livemode !== config.livemode || !/^pm_[A-Za-z0-9_]{1,240}$/.test(String(setup.payment_method))) throw providerFailure(false);
+          throwIfAborted(options.signal);
+          untouched = false;
+          if (source.status !== "canceled") {
+            const canceled = await stripe.subscriptions.cancel(input.sourceSubscriptionId,
+              { prorate: false, invoice_now: false }, { idempotencyKey: `${input.idempotencyKey}:cancel` });
+            if (canceled.id !== input.sourceSubscriptionId || canceled.customer !== input.customerId
+              || canceled.livemode !== config.livemode || canceled.status !== "canceled") throw providerFailure(false);
+          }
+          throwIfAborted(options.signal);
+          const created = await stripe.subscriptions.create({
+            customer: input.customerId, currency: input.currency,
+            items: [{ price: input.priceId, quantity: input.quantity }],
+            default_payment_method: setup.payment_method,
+            billing_cycle_anchor: input.anchor, proration_behavior: "none",
+            metadata: { sporades_team_billing_operation: input.operationId },
+          }, { idempotencyKey: `${input.idempotencyKey}:subscription` });
+          throwIfAborted(options.signal);
+          if (!validSubscriptionId(created.id) || created.customer !== input.customerId || created.livemode !== config.livemode
+            || created.currency !== input.currency || created.billing_cycle_anchor !== input.anchor
+            || created.items.data.length !== 1 || created.items.has_more
+            || created.items.data[0].price.id !== input.priceId || created.items.data[0].quantity !== input.quantity) throw providerFailure(false);
+          return Object.freeze({ ok: true, subscriptionId: created.id });
+        } catch (error: any) { if (untouched && error?.retryable === false) error.handoverUntouched = true; throw error; }
+      } catch (error: any) { throwCurrencyProviderFailure(error); }
+    },
+    async reconcileCurrencyHandover(input: LooseRecord) {
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join() !== "customerId,operationId,sourceSubscriptionId"
+        || !validCustomerId(input.customerId) || !validUuid(input.operationId) || !validSubscriptionId(input.sourceSubscriptionId)) throw providerFailure(false);
+      throwIfAborted(options.signal);
+      try {
+        let cursor: string | undefined;
+        const replacements: LooseRecord[] = [];
+        let sourceUncancelled = false;
+        for (let page = 0; page < 4; page += 1) {
+          const list: LooseRecord = await stripe.subscriptions.list({ customer: input.customerId, status: "all", limit: 100, ...(cursor ? { starting_after: cursor } : {}) });
+          if (list.object !== "list" || !Array.isArray(list.data) || typeof list.has_more !== "boolean") throw providerFailure(false);
+          for (const subscription of list.data) {
+            attestErasureSubscription(subscription, subscription.id, input.customerId, config.livemode);
+            if (subscription.id !== input.sourceSubscriptionId) replacements.push(subscription);
+            else sourceUncancelled = !["canceled", "incomplete_expired"].includes(subscription.status);
+          }
+          throwIfAborted(options.signal);
+          if (!list.has_more) {
+            const current = replacements.filter(sub => !["canceled", "incomplete_expired"].includes(sub.status));
+            if (current.length > 1) throw providerFailure(false);
+            return Object.freeze(current.length ? { closed: false, ...(current[0].metadata?.sporades_team_billing_operation === input.operationId ? { subscriptionId: current[0].id } : {}) } : { closed: true, sourceUncancelled });
+          }
+          cursor = list.data.at(-1)?.id;
+          if (!validSubscriptionId(cursor)) throw providerFailure(false);
+        }
+        throw providerFailure(false);
+      } catch (error: any) { throwCurrencyProviderFailure(error); }
+    },
     async retrievePortalConfiguration(input: LooseRecord) {
       validatePortalConfigurationInput(input);
       throwIfAborted(options.signal);
@@ -181,7 +267,13 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       for (const recovery of input.checkoutRecoveries ?? []) {
         let recovered: LooseRecord;
         try {
-          recovered = await stripe.checkout.sessions.create({
+          recovered = await stripe.checkout.sessions.create(recovery.mode === "setup" ? {
+            mode: "setup", customer: recovery.customerId,
+            success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
+            cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
+            client_reference_id: recovery.operationId, expires_at: recovery.providerExpiresAt,
+            metadata: { sporades_team_billing_operation: recovery.operationId },
+          } : {
             mode: "subscription",
             ...(recovery.currency ? { currency: recovery.currency } : {}),
             line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
@@ -196,7 +288,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
           }, { idempotencyKey: recovery.idempotencyKey });
         } catch (error: any) { throwProviderOperationFailure(error); }
         if (!validSessionId(recovered?.id) || recovered.client_reference_id !== recovery.operationId
-          || recovered.livemode !== config.livemode || recovered.mode !== "subscription") throw providerFailure(false);
+          || recovered.livemode !== config.livemode || recovered.mode !== recovery.mode) throw providerFailure(false);
         checkoutSessionIds.add(recovered.id);
       }
       for (const sessionId of [...checkoutSessionIds].sort()) {
@@ -304,12 +396,12 @@ function validateErasureInput(input: LooseRecord, livemode: boolean) {
     || new Set(input.checkoutSessionIds).size !== input.checkoutSessionIds.length
     || new Set(input.subscriptionIds).size !== input.subscriptionIds.length
     || input.checkoutRecoveries !== undefined && (!Array.isArray(input.checkoutRecoveries)
-      || !input.checkoutRecoveries.every((recovery: any) => { try { validateInput(recovery); return true; } catch { return false; } }))
+      || !input.checkoutRecoveries.every((recovery: any) => { try { validateInput(recovery.mode === "setup" ? { ...recovery, mode: "subscription" } : recovery); return true; } catch { return false; } }))
     || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 255) throw providerFailure(false);
 }
 
 function attestErasureCheckout(session: LooseRecord, sessionId: string, livemode: boolean) {
-  if (session?.object !== "checkout.session" || session.id !== sessionId || session.mode !== "subscription"
+  if (session?.object !== "checkout.session" || session.id !== sessionId || !["subscription", "setup"].includes(session.mode)
     || session.livemode !== livemode || !["open", "complete", "expired"].includes(session.status)) throw providerFailure(false);
 }
 
@@ -581,4 +673,52 @@ function providerFailure(retryable: boolean) {
   error.code = retryable ? "TEAM_BILLING_PROVIDER_UNAVAILABLE" : "TEAM_BILLING_PROVIDER_REJECTED";
   error.retryable = retryable;
   return error;
+}
+
+function validateCurrencyHandover(input: LooseRecord, setup: boolean) {
+  const keys = ["operationId", "customerId", "sourceSubscriptionId", "sourcePriceId", "sourceItemId", "sourceCurrency", "sourceQuantity", "anchor", "currency", "priceId", "quantity", "idempotencyKey",
+    ...(setup ? ["successPath", "cancelPath", "providerExpiresAt"] : ["setupSessionId"])].sort();
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join() !== keys.join()
+    || !validUuid(input.operationId) || !validCustomerId(input.customerId) || !validSubscriptionId(input.sourceSubscriptionId)
+    || !validPriceId(input.sourcePriceId) || !validSubscriptionItemId(input.sourceItemId) || !validPriceId(input.priceId)
+    || !validBillingCurrency(input.sourceCurrency) || !validBillingCurrency(input.currency) || input.currency === input.sourceCurrency
+    || ![input.quantity, input.sourceQuantity].every(q => Number.isSafeInteger(q) && q >= 1 && q <= 999_999)
+    || !Number.isSafeInteger(input.anchor) || input.anchor < 1 || input.anchor > 253_402_300_799
+    || typeof input.idempotencyKey !== "string" || input.idempotencyKey.length < 8 || input.idempotencyKey.length > 200 || /[\r\n\0]/.test(input.idempotencyKey)
+    || (setup ? !validReturnPath(input.successPath) || !validReturnPath(input.cancelPath) || !Number.isSafeInteger(input.providerExpiresAt)
+      : !validSessionId(input.setupSessionId))) throw providerFailure(false);
+}
+
+async function preflightCurrencyHandover(stripe: Stripe, input: LooseRecord, livemode: boolean) {
+  const customer: LooseRecord = await stripe.customers.retrieve(input.customerId, { expand: ["invoice_credit_balance"] });
+  if (customer.object !== "customer" || customer.deleted || customer.id !== input.customerId || customer.livemode !== livemode
+    || !Number.isSafeInteger(customer.balance) || !customer.invoice_credit_balance || typeof customer.invoice_credit_balance !== "object"
+    || Array.isArray(customer.invoice_credit_balance) || Object.values(customer.invoice_credit_balance).some(amount => !Number.isSafeInteger(amount))) throw providerFailure(false);
+  if (customer.balance !== 0 || (customer.invoice_credit_balance[input.sourceCurrency] ?? 0) !== 0) {
+    throw Object.assign(new Error("The old-currency customer balance must be resolved before handover."), { code: "TEAM_BILLING_CUSTOMER_BALANCE_NONZERO", retryable: false });
+  }
+  const source: LooseRecord = await stripe.subscriptions.retrieve(input.sourceSubscriptionId);
+  attestManagedSubscription(source, { subscriptionId: input.sourceSubscriptionId, subscriptionItemId: input.sourceItemId,
+    customerId: input.customerId, currency: input.sourceCurrency, mode: livemode ? "live" : "sandbox" }, new Set([input.sourcePriceId]), false);
+  if (!["active", "canceled"].includes(source.status) || source.cancel_at_period_end || source.cancel_at != null
+    || source.schedule != null || source.pending_update != null || source.items.data[0].quantity !== input.sourceQuantity
+    || source.items.data[0].current_period_end !== input.anchor) throw providerFailure(false);
+  const target: LooseRecord = await stripe.prices.retrieve(input.priceId, { expand: ["currency_options"] });
+  if (target.object !== "price" || target.id !== input.priceId || target.livemode !== livemode || target.active !== true
+    || target.recurring?.usage_type !== "licensed" || (target.currency !== input.currency && !target.currency_options?.[input.currency])) throw providerFailure(false);
+  // Stripe only accepts a future anchor within the target's first full period.
+  const start = new Date(); const end = new Date(start); const recurring = target.recurring;
+  if (!Number.isSafeInteger(recurring.interval_count) || recurring.interval_count < 1) throw providerFailure(false);
+  if (["day", "week"].includes(recurring.interval)) end.setUTCDate(end.getUTCDate() + recurring.interval_count * (recurring.interval === "week" ? 7 : 1));
+  else if (["month", "year"].includes(recurring.interval)) {
+    const day = end.getUTCDate(); end.setUTCDate(1); end.setUTCMonth(end.getUTCMonth() + recurring.interval_count * (recurring.interval === "year" ? 12 : 1));
+    const lastDay = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate(); end.setUTCDate(Math.min(day, lastDay));
+  } else throw providerFailure(false);
+  if (input.anchor <= Math.floor(start.getTime() / 1000) || input.anchor > Math.floor(end.getTime() / 1000)) throw providerFailure(false);
+  return source;
+}
+
+function throwCurrencyProviderFailure(error: any): never {
+  if (["TEAM_BILLING_CUSTOMER_BALANCE_NONZERO", "TEAM_BILLING_PROVIDER_REJECTED", "TEAM_BILLING_PROVIDER_UNAVAILABLE"].includes(error?.code)) throw error;
+  throwProviderOperationFailure(error);
 }

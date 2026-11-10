@@ -1,3 +1,4 @@
+import { assertCurrencyHandoverInactive } from "./team-billing-currency-handover.js";
 import { billingCurrencyAmount, billingCurrencyMismatch } from "./team-billing-prices.js";
 // Desired-state controller for managed Team Billing changes. Membership and
 // browser mutations only stage durable intent; provider I/O runs later in a
@@ -39,6 +40,7 @@ export async function requestTeamBillingPlanTransition(
   const result = await inTransaction(database, async (transaction) => {
     await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
     await assertTeamBillingErasureInactive(database, transaction, teamId);
+    await assertCurrencyHandoverInactive(transaction, teamId);
     const sql = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql(
       "SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt], [paymentActionUrl], [paymentActionExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
@@ -93,7 +95,8 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
   let enqueued = false;
   const result = await inTransaction(database, async (transaction) => {
     if (quantityKind === "usage") await lockTeamLifecycle(transaction, teamId, denied);
-    try { await assertTeamBillingErasureInactive(database, transaction, teamId); }
+    try { await assertTeamBillingErasureInactive(database, transaction, teamId);
+    await assertCurrencyHandoverInactive(transaction, teamId); }
     catch { return Object.freeze({ staged: false as const, reason: "erasure-active" as const }); }
     const subscription = await optionalCurrentSubscription(transaction, teamId);
     if (!subscription || !["trialing", "active", "past-due"].includes(subscription.state)) return Object.freeze({ staged: false as const });
@@ -136,6 +139,7 @@ export async function stageAcknowledgedTeamBillingUsageTransitionRepair(database
       || desired.targetProductKey !== productKey
       || database.teamBillingDefinition?.catalogue?.[productKey]?.quantity?.kind !== "usage") return { staged: false };
     await assertTeamBillingErasureInactive(database, transaction, teamId);
+    await assertCurrencyHandoverInactive(transaction, teamId);
     const replacement = await stageDesired(transaction, database, {
       teamId, kind: desired.kind, operationId: desired.operationId, targetProductKey: productKey,
       endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
@@ -185,6 +189,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     const desired = await desiredByIntent(transaction, payload.intentId);
     if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId
       || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
+    await assertCurrencyHandoverInactive(transaction, desired.teamId);
     const subscription = await currentSubscription(transaction, desired.teamId);
     const product = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
     if (!product) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
@@ -396,9 +401,10 @@ export async function repairTeamBillingDesiredState(database: LooseRecord) {
   let queued = 0;
   await inTransaction(database, async (transaction) => {
     const subscriptions = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [teamId], [productKey], [quantity], [providerPriceId], [state] FROM [sporades_team_billing_subscriptions] WHERE [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
+      "SELECT [teamId], [productKey], [quantity], [providerPriceId], [state] FROM [sporades_team_billing_subscriptions] WHERE [replacedBy] IS NULL AND [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]",
     )).all();
     for (const candidate of subscriptions) {
+      try { await assertCurrencyHandoverInactive(transaction, candidate.teamId); } catch { continue; }
       const candidateProduct = database.teamBillingDefinition?.catalogue?.[candidate.productKey];
       if (candidateProduct?.quantity?.kind === "usage") await lockTeamLifecycle(transaction, candidate.teamId, denied);
       const subscription = candidateProduct?.quantity?.kind === "usage"
@@ -589,7 +595,7 @@ async function targetQuantity(database: LooseRecord, transaction: LooseRecord, t
 
 async function currentSubscription(transaction: LooseRecord, teamId: string) {
   const rows = await transaction.prepare(transaction.dialect.sql(
-    "SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] <> 'cancelled' AND [terminalLatch] = 0 ORDER BY [id]",
+    "SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] <> 'cancelled' AND [terminalLatch] = 0 ORDER BY [id]",
   )).all(teamId);
   if (rows.length !== 1 || !rows[0].providerSubscriptionItemId) throw attentionRequired();
   return rows[0];
