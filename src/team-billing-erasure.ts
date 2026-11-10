@@ -92,7 +92,7 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]",
     )).all(state.teamId);
     const checkouts = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
+      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
       "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]",
     )).all(state.teamId);
     const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row: LooseRecord) => row.mode)?.mode
@@ -108,6 +108,7 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       productKey: row.productKey,
       mode: "subscription",
       priceId: row.providerPriceId,
+      ...(row.currency ? { currency: row.currency } : {}),
       quantity: Number(row.quantity),
       ...(row.trialDays == null ? {} : { trialDays: row.trialDays }),
       successPath: database.teamBillingDefinition?.checkout?.successPath,

@@ -41,7 +41,7 @@ test("usage quantity declares an exact meter and bounded optional floor and ceil
 });
 
 
-async function fixture(t, run, { intervals = false, trialDays } = {}) {
+async function fixture(t, run, { intervals = false, regional = false, trialDays } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-billing-usage-"));
   const state = { capturedDb: null, invalidUsage: null, reads: [], beforeUsage: null };
   const capsule = { name: "usage-billing", schema: {
@@ -84,6 +84,11 @@ async function fixture(t, run, { intervals = false, trialDays } = {}) {
     sandbox: { prices: { "month:1": { priceId: "price_venues" }, "year:1": { priceId: "price_venues_year" } } },
     live: { prices: { "month:1": { priceId: "price_live_venues" }, "year:1": { priceId: "price_live_venues_year" } } },
   };
+  if (regional) capsule.teamBilling.catalogue.multi.stripe = Object.fromEntries(
+    Object.entries(capsule.teamBilling.catalogue.multi.stripe).map(([mode, binding]) => [mode,
+      { ...binding, currency: "gbp", unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } },
+    ]),
+  );
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {
     STRIPE_SECRET_KEY: "sk_test_usage", STRIPE_WEBHOOK_SECRET: "whsec_usage",
   }, { name: capsule.name, auth: { providers: { email: true } }, payments: { stripe: {
@@ -97,7 +102,9 @@ async function fixture(t, run, { intervals = false, trialDays } = {}) {
   server.on("upgrade", (request, socket) => hub.accept(request, socket));
   server.listen(0, "127.0.0.1"); await once(server, "listening");
   const fake = await createStripeTeamBillingFake({ catalogue: { products: [
-    { id: "prod_venues", prices: [{ id: "price_venues", recurring: "month" }, ...(intervals ? [{ id: "price_venues_year", recurring: "year" }] : [])] },
+    { id: "prod_venues", prices: [{ id: "price_venues", recurring: "month",
+      ...(regional ? { currency: "gbp", unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } } : {}),
+    }, ...(intervals ? [{ id: "price_venues_year", recurring: "year" }] : [])] },
     { id: "prod_solo", prices: [{ id: "price_solo", recurring: "month" }] },
   ], portalConfigurations: [] }, webhookSecret: "whsec_usage", webhookTarget: `http://127.0.0.1:${server.address().port}/stripe/webhook`, delivery: "manual" });
   database.stripeApiBaseUrl = fake.origin;
@@ -276,9 +283,9 @@ test("an abort during the final usage count rolls back resource and billing inte
   });
 });
 
-test("below-floor verified usage drift stays quarantined and repairs the exact known item", async t => {
+for (const regional of [false, true]) test(`below-floor verified usage drift stays quarantined and repairs the exact known item${regional ? " in USD" : ""}`, async t => {
   await fixture(t, async ({ database, fake, settle, teamId, auth, truth }) => {
-    await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi");
+    await startTeamBillingCheckout(database, auth, teamId, randomUUID(), "multi", undefined, regional ? "usd" : undefined);
     await settle();
     const session = await fake.checkout.complete(fake.state().checkouts[0].id);
     await fake.events.deliver(); await settle();
@@ -290,7 +297,13 @@ test("below-floor verified usage drift stays quarantined and repairs the exact k
     assert.equal(database.adapter.prepare("SELECT [outcome] FROM [sporades_team_billing_observations] WHERE [providerEventId] = ?").get(drift.id).outcome, "quarantined");
     await fake.events.deliver(); await settle();
     assert.equal((await truth()).quantity, 6);
-  });
+    if (regional) {
+      assert.equal((await truth()).state, "active");
+      assert.equal((await truth()).currency, "usd");
+      assert.equal(fake.subscriptions.get(session.subscription).currency, "usd");
+      assert.equal(fake.subscriptions.get(session.subscription).items.data[0].price.currency, "gbp");
+    }
+  }, { regional });
 });
 
 

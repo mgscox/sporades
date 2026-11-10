@@ -34,7 +34,7 @@ const teamId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const actor = { userId: "admin", isAuthenticated: true, isGuest: false, provider: "test" };
 
 test("same-policy Plan transitions require explicit opt-in and retain source authorization", async () => {
-  for (const allowSamePolicy of [undefined, false, true]) {
+  for (const currency of [undefined, "usd"]) for (const allowSamePolicy of [undefined, false, true]) {
     const fixture = openFixture({ productKey: "studio", quantity: 1 });
     try {
       fixture.database.teamBillingDefinition.transitions = { allowSamePolicy };
@@ -42,6 +42,11 @@ test("same-policy Plan transitions require explicit opt-in and retain source aut
         quantity: { kind: "fixed", value: 1 },
         stripe: { sandbox: { priceId: "price_offered" }, live: { priceId: "price_live_offered" } },
       };
+      if (currency) {
+        for (const key of ["studio", "offered"]) Object.assign(fixture.database.teamBillingDefinition.catalogue[key].stripe.sandbox,
+          { currency: "gbp", unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } });
+        fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [currency] = ?, [unitAmount] = 2900").run(currency);
+      }
       const request = () => requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("a"), "offered");
       if (!allowSamePolicy) {
         await assert.rejects(request(), { code: "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" });
@@ -52,6 +57,9 @@ test("same-policy Plan transitions require explicit opt-in and retain source aut
         assert.equal(fixture.providerCalls[0].providerSubscriptionId, "sub_test");
         assert.equal(fixture.providerCalls[0].targetPriceId, "price_offered");
         assert.equal(fixture.lastAuthorityInput.fromProductKey, "studio");
+        assert.equal(fixture.lastAuthorityInput.currency, currency);
+        assert.equal(fixture.operation().currency ?? undefined, currency);
+        assert.equal(fixture.providerCalls[0].currency, currency);
       }
     } finally { fixture.close(); }
   }
@@ -912,9 +920,9 @@ function openFixture(options = {}) {
   sqlite.exec("CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)");
-  sqlite.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
-  sqlite.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
   sqlite.exec("CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL)");
   adapter.prepare("INSERT INTO [sporades_teams] VALUES (?, 'Test Team')").run(teamId);

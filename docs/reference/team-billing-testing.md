@@ -223,3 +223,21 @@ hosted pages, payment authentication, taxes, invoice amounts, real delivery
 schedules, sandbox/live API compatibility, or Hosted Capsule callback TLS.
 Those acceptance steps remain separately authorized human work. See
 [ADR 0058](../adr/0058-team-billing-test-provider-boundary.md).
+
+A fake Price may declare `currency`, `unitAmount`, and `currencyOptions` using the
+same minor-unit contract as Team Billing bindings. For example:
+
+```ts
+{ id: "price_kitchen", recurring: "month", currency: "gbp", unitAmount: 1900,
+  currencyOptions: { usd: { unitAmount: 2900 } } }
+```
+
+The fake accepts Checkout's `currency`, selects its regional amount, and exposes
+`currency` and `amount_total` on the Session. Like the real provider, its Prices keep
+the default currency and amount in the base fields and carry regional amounts in
+`currency_options`; convergence resolves the subscription's charged amount from the
+selected currency. Updates, pending payments, renewals,
+failed invoices and Portal switches preserve it. Unsupported Price currencies
+and incompatible Customer currencies are refused. Omitting currency facts keeps
+existing fixtures unchanged. Fake-backed tests certify the runtime protocol;
+real Stripe regional charging remains a release smoke check.
