@@ -797,6 +797,15 @@ const WEBSOCKET_SCRIPT = [
   // `nosuchquery` is one of them on purpose: subscribing to an unknown query still registers a
   // subscription, since the runtime does not reject the name at subscribe time, so it re-emits its
   // failure frame alongside the good one. That is worth comparing rather than avoiding.
+  //
+  // Opening both before the first mutation is not enough on its own, because `nosuchquery` fails, and
+  // a failed run records no read set, so it re-runs for a write to *any* table. Later steps write
+  // (sign-up, sign-in, upload grants, diagnostic log rows) without starting a refresh of their own,
+  // but a refresh that is still in flight when one of them lands publishes it on completion, and
+  // `nosuchquery` re-emits once more. Whether that happens depends only on how long the refresh
+  // takes, so a loaded runner occasionally saw three `m4` frames. driveWebSocketSurface therefore
+  // waits for each successful mutation's rebroadcasts before sending the next step, which leaves no
+  // refresh in flight when the later writes land.
   { id: "m2", type: "query.subscribe", query: "notes" },
   { id: "m4", type: "query.subscribe", query: "nosuchquery" },
   { id: "m3", type: "mutation.run", mutation: "addNote", args: [{ text: "over the socket", rank: 5 }] },
@@ -820,6 +829,11 @@ const WEBSOCKET_SCRIPT = [
   { id: "m22", type: "query.unsubscribe", subscriptionId: "m2" },
   { id: "m23", type: "nosuch.messagetype" },
 ];
+
+// The steps whose successful `mutation.run` rebroadcasts every open subscription, and the
+// subscriptions open while they run.
+const REBROADCASTING_STEPS = new Set(["m3", "m9"]);
+const REBROADCAST_SUBSCRIPTIONS = ["m2", "m4"];
 
 // Blocks until the socket has produced no new frame for `idleMs`, or `timeoutMs` elapses. The
 // timeout is a backstop against a runtime that never goes quiet, not the normal exit: reaching it
@@ -845,10 +859,18 @@ async function driveWebSocketSurface(baseUrl, context) {
   const socket = await openBundleSocket(baseUrl);
   const replies = [];
   try {
+    let rebroadcasts = 0;
     for (const message of WEBSOCKET_SCRIPT) {
       socket.send(message);
       const reply = await socket.waitFor((candidate) => candidate.id === message.id && !replies.includes(candidate));
       replies.push(reply);
+      if (!REBROADCASTING_STEPS.has(message.id)) continue;
+      // Wait for this mutation's rebroadcasts before the next step writes anything, so no refresh
+      // is in flight to pick those writes up (see WEBSOCKET_SCRIPT).
+      rebroadcasts += 1;
+      const settled = () => REBROADCAST_SUBSCRIPTIONS.every((id) =>
+        socket.received.filter((frame) => frame.id === id && frame.type === "query.result" && !replies.includes(frame)).length >= rebroadcasts);
+      await socket.waitFor(settled);
     }
     // A successful `mutation.run` rebroadcasts every open subscription on a later tick, so the
     // socket keeps producing frames after the last reply has been read. Both open subscriptions
