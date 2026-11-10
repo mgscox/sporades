@@ -4,7 +4,7 @@ import { billingCurrencyAmount, billingCurrencyMismatch } from "./team-billing-p
 // browser mutations only stage durable intent; provider I/O runs later in a
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
-import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
+import { teamBillingIntervalEnd, teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
@@ -59,8 +59,11 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         const operationId = randomUUID();
         const now = nowIso(database);
         const effectiveAt = nowSeconds(database);
+        const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
         const staged = await stageDesired(transaction, database, {
             teamId, kind: "plan-transition", operationId, endTrial: subscription.state === "trialing" && definition.transitions?.endTrial === true, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
+            preserveTrial: subscription.state === "trialing" && definition.transitions?.endTrial !== true,
+            resetBillingCycle: subscription.state !== "trialing" && longerInterval(currentInterval, price.interval, effectiveAt) ? 1 : 0,
         });
         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
             "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')")).run(now, teamId);
@@ -107,7 +110,7 @@ async function stageTeamBillingCountChange(database, teamId, effectiveAt, quanti
             return Object.freeze({ staged: false });
         const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
             teamId, kind: existing.kind, operationId: existing.operationId, targetProductKey: existing.targetProductKey,
-            endTrial: existing.endTrial, targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt, resume: existing.resume,
+            endTrial: existing.endTrial, preserveTrial: existing.preserveTrial, targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt, resume: existing.resume,
         } : {
             teamId, kind: "seat-convergence", operationId: null, targetProductKey: subscription.productKey,
             targetQuantity: quantity, effectiveAt,
@@ -141,7 +144,7 @@ export async function stageAcknowledgedTeamBillingUsageTransitionRepair(database
         await assertCurrencyHandoverInactive(transaction, teamId);
         const replacement = await stageDesired(transaction, database, {
             teamId, kind: desired.kind, operationId: desired.operationId, targetProductKey: productKey,
-            endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
+            endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
         }, true);
         await enqueueIntent(database, transaction, replacement);
         enqueued = true;
@@ -223,10 +226,14 @@ async function performDesired(database, _context, payload, kind) {
                 return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
             const billableQuantity = await targetQuantity(database, transaction, desired.teamId, product);
             assertUsageMaximum(product, billableQuantity);
-            if (billableQuantity !== Number(desired.targetQuantity)) {
+            // Resolve an attempted interval or trial change with its original tuple first.
+            // Verified evidence then stages seats against the applied period.
+            if (billableQuantity !== Number(desired.targetQuantity)
+                && !((desired.resetBillingCycle === 1 || desired.endTrial === 1 || desired.preserveTrial === 1) && desired.providerAttemptedAt)) {
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
-                    endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database), resume: desired.resume,
+                    endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database), resume: desired.resume,
+                    resetBillingCycle: subscription.state !== "trialing" && longerInterval(teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.interval, price.interval, nowSeconds(database)) ? 1 : 0,
                 });
                 await enqueueIntent(database, transaction, replacement);
                 return { superseded: true, dispatch: true };
@@ -255,7 +262,7 @@ async function performDesired(database, _context, payload, kind) {
         const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
         if (!claimed)
             throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
-        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?")).run(nowIso(database), desired.intentId);
+        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [providerAttemptedAt] = COALESCE([providerAttemptedAt], ?), [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?")).run(nowIso(database), nowIso(database), desired.intentId);
         return {
             desired: { ...desired },
             provider: {
@@ -274,8 +281,10 @@ async function performDesired(database, _context, payload, kind) {
                 prorationDate: Number(desired.effectiveAt),
                 idempotencyKey: desired.idempotencyKey,
                 operationKind: desired.kind,
+                ...(desired.resetBillingCycle === 1 ? { resetBillingCycle: true } : {}),
                 resume: desired.resume === 1,
                 ...(desired.endTrial === 1 ? { endTrial: true } : {}),
+                ...(desired.preserveTrial === 1 ? { preserveTrial: true } : {}),
             },
         };
     });
@@ -376,7 +385,7 @@ export async function settleVerifiedTeamBillingTarget(database, accepted) {
                 // A new drift must make a new provider write, rather than replay an acknowledged Stripe key.
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind: desired.kind, operationId: desired.operationId,
-                    targetProductKey: desired.targetProductKey, endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
+                    targetProductKey: desired.targetProductKey, endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
                 }, true);
                 await enqueueIntent(database, transaction, replacement);
                 enqueued = true;
@@ -501,11 +510,11 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     const binding = modeBinding(database, database.teamBillingDefinition.catalogue[input.targetProductKey]);
     const targetPriceId = input.targetPriceId ?? (input.kind === "seat-convergence" && binding.prices
         ? (await currentSubscription(transaction, input.teamId)).providerPriceId : null);
-    input = { ...input, targetPriceId, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0 };
+    input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0, preserveTrial: input.preserveTrial === true || input.preserveTrial === 1 ? 1 : 0 };
     const existing = await desiredForTeam(transaction, input.teamId);
     const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
-        && (existing.endTrial ?? 0) === input.endTrial
-        && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId
+        && (existing.preserveTrial ?? 0) === input.preserveTrial && (existing.endTrial ?? 0) === input.endTrial && (existing.targetPriceId ?? null) === input.targetPriceId
+        && (Number(existing.targetQuantity) === input.targetQuantity || ((existing.resetBillingCycle === 1 || existing.endTrial === 1 || existing.preserveTrial === 1) && existing.providerAttemptedAt))
         && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
     if (unchanged) {
         const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string"
@@ -520,11 +529,11 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
     const now = nowIso(database);
     if (existing) {
-        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [endTrial] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now, input.teamId);
+        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [endTrial] = ?, [preserveTrial] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAttemptedAt] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now, now, input.teamId);
     }
     else {
-        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [endTrial], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now);
+        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [resetBillingCycle], [endTrial], [preserveTrial], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now, now);
     }
     await ensureLane(transaction, input.teamId, database);
     return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -729,4 +738,11 @@ function conflict() { return coded("The Team Billing request conflicts with an e
 function transitionNotRequired() { return coded("This Plan transition does not require managed quantity policy work.", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED"); }
 function attentionRequired() { return coded("Team Billing provider state requires attention.", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS"); }
 function retryable(code) { return coded("Team Billing provider work should be retried.", code, true); }
+function longerInterval(source, target, at) {
+    if (!source || !target)
+        return false;
+    const [sourceUnit, sourceCount] = source.split(":");
+    const [targetUnit, targetCount] = target.split(":");
+    return teamBillingIntervalEnd(at, targetUnit, Number(targetCount)) > teamBillingIntervalEnd(at, sourceUnit, Number(sourceCount));
+}
 //# sourceMappingURL=team-billing-management.js.map

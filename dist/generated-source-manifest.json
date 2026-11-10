@@ -140,6 +140,7 @@
       "src/team-billing-import.ts",
       "src/team-billing-management.ts",
       "src/team-billing-payment-action.ts",
+      "src/team-billing-portal-policy.ts",
       "src/team-billing-price-evidence.ts",
       "src/team-billing-prices.ts",
       "src/team-billing-quantity.ts",
@@ -171,7 +172,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "6673a525b03d34e564ee6d911dc3d606fa0188bc4a36972bc82dc64b0164e74f"
+    "digest": "6b6f7b0a2f9e74d90e3e4263264c3c1fc337b7f41659ce30b5c537d5c87c7deb"
   },
   "outputs": {
     "files": [
@@ -701,6 +702,10 @@
       "dist/team-billing-payment-action.d.ts.map",
       "dist/team-billing-payment-action.js",
       "dist/team-billing-payment-action.js.map",
+      "dist/team-billing-portal-policy.d.ts",
+      "dist/team-billing-portal-policy.d.ts.map",
+      "dist/team-billing-portal-policy.js",
+      "dist/team-billing-portal-policy.js.map",
       "dist/team-billing-price-evidence.d.ts",
       "dist/team-billing-price-evidence.d.ts.map",
       "dist/team-billing-price-evidence.js",
@@ -759,6 +764,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "4b31b452cb14626fd8cbb90aa82276fc0a07357507c90ba0e2b4456246d5a387"
+    "digest": "8c48426f66bc5f959fa09ed910643803cddb4be2b9313c56c3c3af73e74e6daf"
   }
 }

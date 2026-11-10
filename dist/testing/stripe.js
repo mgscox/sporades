@@ -1,3 +1,4 @@
+import { teamBillingIntervalEnd, teamBillingPeriodAt } from "../team-billing-subscription-semantics.js";
 import { normalizeBillingCurrency, billingCurrencyAmount } from "../team-billing-prices.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -45,9 +46,12 @@ function validateCatalogue(catalogue) {
         products.set(product.id, new Set());
         for (const price of product.prices) {
             requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring)
+                && Number.isSafeInteger(price.unitAmount ?? 1000) && (price.unitAmount ?? 1000) >= 0
                 && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1
                 && (price.intervalCount ?? 1) <= ({ day: 1095, week: 156, month: 36, year: 3 })[price.recurring]);
-            normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
+            if (price.currency !== undefined || price.currencyOptions !== undefined) {
+                normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
+            }
             prices.add(price.id);
             products.get(product.id).add(price.id);
         }
@@ -175,23 +179,14 @@ export async function createStripeTeamBillingFake(options) {
         const selected = currency ?? entry.currency;
         requireValue(!selected || billingCurrencyAmount(entry, selected) !== undefined, "Price does not support the subscription currency.");
         return { id: entry.id, object: "price", active: true, livemode: false, product: product.id,
+            unit_amount: entry.unitAmount ?? 1000, currency: entry.currency ?? "usd",
             ...(entry.currency ? { currency: entry.currency, unit_amount: entry.unitAmount,
                 ...(entry.currencyOptions ? { currency_options: Object.fromEntries(Object.entries(entry.currencyOptions).map(([code, option]) => [code, { unit_amount: option.unitAmount }])) } : {}),
                 billing_scheme: "per_unit", type: "recurring" } : {}),
             recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" } };
     }
     function periodEnd(start, priceValue) {
-        const { interval, interval_count: count } = priceValue.recurring;
-        if (interval === "day" || interval === "week")
-            return start + count * 86400 * (interval === "week" ? 7 : 1);
-        const date = new Date(start * 1000);
-        // Calendar periods, clamped to the last day of the target month (including leap years).
-        const day = date.getUTCDate();
-        date.setUTCDate(1);
-        date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
-        const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-        date.setUTCDate(Math.min(day, lastDay));
-        return Math.floor(date.getTime() / 1000);
+        return teamBillingIntervalEnd(start, priceValue.recurring.interval, priceValue.recurring.interval_count);
     }
     async function send(event, fault = {}) {
         requireValue(!stopped, "Fake is closed.");
@@ -245,6 +240,7 @@ export async function createStripeTeamBillingFake(options) {
     async function complete(sessionId, input = {}) {
         const session = get(sessions, sessionId);
         requireValue(session.status === "open", "Checkout is not open.");
+        requireValue(input.billingMode === undefined || ["classic", "flexible"].includes(input.billingMode));
         requireValue(!input.customerId || /^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId));
         requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
         const customerId = input.customerId ?? session.customer ?? id("cus");
@@ -264,7 +260,7 @@ export async function createStripeTeamBillingFake(options) {
         const trialEnd = trialDays ? now + trialDays * 86400 : null;
         const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
             ...(session.currency ? { currency: session.currency } : {}),
-            status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
+            status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, billing_mode: { type: input.billingMode ?? "flexible" }, billing_cycle_anchor: now, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
             metadata: copy(session.subscription_data.metadata),
             items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
                         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
@@ -311,31 +307,45 @@ export async function createStripeTeamBillingFake(options) {
         subscription.items.data[0].quantity = integer(quantity);
         return subscriptionEvent(subscription);
     }
-    function applyPrice(subscription, targetPrice) {
+    function priceAmount(value, currency) {
+        return value.currency === currency ? value.unit_amount : value.currency_options[currency].unit_amount;
+    }
+    function applyPrice(subscription, targetPrice, quantity, reset = false, invoiceNow = false, endTrialNow = false) {
         const item = subscription.items.data[0];
-        if (subscription.status !== "trialing" && (item.price.recurring.interval !== targetPrice.recurring.interval
-            || item.price.recurring.interval_count !== targetPrice.recurring.interval_count)) {
+        const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval
+            || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
+        const resetPeriod = endTrialNow || subscription.status !== "trialing" && (reset || subscription.billing_mode.type === "classic" && changedInterval);
+        if (resetPeriod && (invoiceNow || endTrialNow || subscription.billing_mode.type === "classic")) {
+            const currency = subscription.currency ?? targetPrice.currency;
+            const amount = priceAmount(targetPrice, currency) * quantity;
+            const credit = subscription.status === "trialing" || now < subscription.billing_cycle_anchor ? 0 : -Math.round(priceAmount(item.price, currency) * item.quantity
+                * Math.max(0, item.current_period_end - now) / (item.current_period_end - item.current_period_start));
+            const invoice = { id: id("in"), object: "invoice", livemode: false, customer: subscription.customer,
+                billing_reason: "subscription_update", paid: true,
+                parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } }, subscription: subscription.id, created: now,
+                status: "paid", currency, amount_paid: Math.max(0, amount + credit),
+                lines: { object: "list", data: [
+                        { price: targetPrice.id, amount, proration: false, quantity, period: { start: now, end: periodEnd(now, targetPrice) } },
+                        { price: item.price.id, amount: credit, proration: true },
+                    ] } };
+            invoices.set(invoice.id, invoice);
+            subscription.latest_invoice = invoice.id;
+        }
+        if (resetPeriod) {
+            subscription.billing_cycle_anchor = now;
             item.current_period_start = now;
             item.current_period_end = periodEnd(now, targetPrice);
         }
         item.price = copy(targetPrice);
-    }
-    function endTrial(subscription) {
-        const item = subscription.items.data[0];
-        subscription.status = "active";
-        subscription.trial_end = now;
-        item.current_period_start = now;
-        item.current_period_end = periodEnd(now, item.price);
-        const invoice = { id: idForInvoice(), object: "invoice", livemode: false, customer: subscription.customer,
-            ...(subscription.currency ? { currency: subscription.currency } : {}),
-            billing_reason: "subscription_update", status: "paid", paid: true,
-            parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } } };
-        invoices.set(invoice.id, invoice);
-        subscription.latest_invoice = invoice.id;
+        item.quantity = quantity;
+        if (endTrialNow) {
+            subscription.status = "active";
+            subscription.trial_end = now;
+        }
     }
     async function switchPrice(subscriptionId, priceId) {
         const subscription = liveSubscription(subscriptionId);
-        applyPrice(subscription, price(priceId, subscription.currency));
+        applyPrice(subscription, price(priceId, subscription.currency), subscription.items.data[0].quantity);
         return subscriptionEvent(subscription);
     }
     async function setCancellation(subscriptionId, cancel) {
@@ -352,6 +362,9 @@ export async function createStripeTeamBillingFake(options) {
                 payment_method_update: { enabled: true }, invoice_history: { enabled: true },
                 subscription_cancel: { enabled: true, mode: "at_period_end" },
                 subscription_update: { enabled: true, default_allowed_updates: ["price"], trial_update_behavior: entry.trialUpdateBehavior ?? "continue_trial",
+                    proration_behavior: entry.prorationBehavior ?? "create_prorations",
+                    billing_cycle_anchor: entry.billingCycleAnchor ?? "unchanged",
+                    schedule_at_period_end: { conditions: (entry.scheduleAtPeriodEnd ?? []).map(type => ({ type })) },
                     products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } })) },
             } };
     }
@@ -461,7 +474,7 @@ export async function createStripeTeamBillingFake(options) {
                 requireValue([...setupIntents.values()].some(i => i.customer === p.customer && i.status === "succeeded" && i.payment_method === p.default_payment_method));
                 const subscriptionId = id("sub");
                 const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: p.customer, currency: p.currency,
-                    status: "active", trial_start: null, trial_end: null, billing_cycle_anchor: anchor, default_payment_method: p.default_payment_method,
+                    status: "active", trial_start: null, trial_end: null, billing_mode: { type: "flexible" }, billing_cycle_anchor: anchor, default_payment_method: p.default_payment_method,
                     cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, metadata: copy(p.metadata),
                     items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
                                 quantity: integer(p.items[0].quantity), price: itemPrice, current_period_start: now, current_period_end: anchor }] } };
@@ -473,8 +486,9 @@ export async function createStripeTeamBillingFake(options) {
                 exactKeys(p, []);
                 return copy(get(subscriptions, resourceId));
             case "subscriptions.update": {
-                exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["cancel_at_period_end", "expand", "trial_end"]);
+                exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "cancel_at_period_end", "expand", "trial_end"]);
                 requireValue(p.trial_end === undefined || p.trial_end === "now");
+                requireValue(p.billing_cycle_anchor === undefined || p.billing_cycle_anchor === "now");
                 exactKeys(p.items, ["0"]);
                 exactKeys(p.items[0], ["id", "price", "quantity"]);
                 if (p.expand !== undefined) {
@@ -483,7 +497,7 @@ export async function createStripeTeamBillingFake(options) {
                 }
                 const subscription = liveSubscription(resourceId);
                 const item = subscription.items.data[0];
-                requireValue(p.items[0].id === item.id && p.proration_behavior === "create_prorations" && p.payment_behavior === "pending_if_incomplete");
+                requireValue(p.items[0].id === item.id && ["create_prorations", "always_invoice"].includes(p.proration_behavior) && p.payment_behavior === "pending_if_incomplete");
                 if (p.cancel_at_period_end !== undefined) {
                     // Only clearing a scheduled cancellation is modelled, matching managed resume-and-switch.
                     requireValue(p.cancel_at_period_end === "false", "Only cancel_at_period_end=false is supported.");
@@ -495,6 +509,8 @@ export async function createStripeTeamBillingFake(options) {
                 const quantity = integer(p.items[0].quantity);
                 if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
                     subscription.pending_update = { expires_at: now + 3600,
+                        billing_cycle_anchor: p.billing_cycle_anchor === "now" ? now : null,
+                        proration_behavior: p.proration_behavior,
                         ...(p.trial_end === "now" ? { trial_end: now } : {}),
                         subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
                     subscription.latest_invoice = { id: idForInvoice(), object: "invoice", livemode: false,
@@ -502,11 +518,8 @@ export async function createStripeTeamBillingFake(options) {
                             ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id("in")}?s=em` };
                 }
                 else {
-                    applyPrice(subscription, targetPrice);
-                    item.quantity = quantity;
                     subscription.latest_invoice = null;
-                    if (p.trial_end === "now")
-                        endTrial(subscription);
+                    applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice", p.trial_end === "now");
                     subscription.pending_update = null;
                 }
                 return subscriptionEvent(subscription);
@@ -618,11 +631,8 @@ export async function createStripeTeamBillingFake(options) {
                 const pending = subscription.pending_update;
                 requireValue(pending && pending.expires_at > now, "No payable pending update.");
                 const requested = pending.subscription_items[0];
-                applyPrice(subscription, requested.price);
-                subscription.items.data[0].quantity = requested.quantity;
                 subscription.latest_invoice = null;
-                if (pending.trial_end != null)
-                    endTrial(subscription);
+                applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice", pending.trial_end != null);
                 subscription.pending_update = null;
                 if (subscription.status !== "trialing")
                     subscription.status = "active";
@@ -633,8 +643,13 @@ export async function createStripeTeamBillingFake(options) {
                 const subscription = liveSubscription(id);
                 const item = subscription.items.data[0];
                 requireValue(!subscription.cancel_at_period_end, "Subscription is scheduled for cancellation.");
-                item.current_period_start = item.current_period_end;
-                item.current_period_end = periodEnd(item.current_period_start, item.price);
+                const start = item.current_period_end;
+                if (subscription.status === "trialing")
+                    subscription.billing_cycle_anchor = start;
+                const period = teamBillingPeriodAt(subscription.billing_cycle_anchor, item.price.recurring.interval, item.price.recurring.interval_count, start);
+                requireValue(period, "Invalid recurring period.");
+                item.current_period_start = start;
+                item.current_period_end = period.end;
                 subscription.status = "active";
                 return subscriptionEvent(subscription);
             },
@@ -679,9 +694,10 @@ export async function createStripeTeamBillingFake(options) {
                 for (const sub of subscriptions.values())
                     if (sub.status === "active" && sub.billing_cycle_anchor && sub.items.data[0].current_period_end <= now) {
                         const anchor = sub.items.data[0].current_period_end;
-                        const { entry } = catalogueEntry(sub.items.data[0].price.id);
-                        const amount = billingCurrencyAmount(entry, sub.currency) * sub.items.data[0].quantity;
-                        const invoice = { id: idForInvoice(), object: "invoice", customer: sub.customer, currency: sub.currency, status: "paid", amount_paid: amount,
+                        const item = sub.items.data[0];
+                        const currency = sub.currency ?? item.price.currency;
+                        const amount = priceAmount(item.price, currency) * item.quantity;
+                        const invoice = { id: idForInvoice(), object: "invoice", customer: sub.customer, currency, status: "paid", amount_paid: amount,
                             parent: { type: "subscription_details", subscription_details: { subscription: sub.id } }, period_start: anchor };
                         invoices.set(invoice.id, invoice);
                         sub.latest_invoice = invoice.id;
@@ -724,7 +740,7 @@ export async function createStripeTeamBillingFake(options) {
         },
         requests: () => copy(requests),
         state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
-            invoices: [...invoices.values()], checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
+            checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices: [...invoices.values()], events: eventLog }),
         reset() {
             setupIntents.clear();
             sessions.clear();

@@ -93104,6 +93104,18 @@ async function removeFileVersionBestEffort(database, fileId, version3) {
 // src/team-billing-currency-handover.ts
 import { randomUUID as randomUUID7 } from "node:crypto";
 
+// src/team-billing-portal-policy.ts
+function normalizeTeamBillingPortalPolicy(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Team Billing Portal policy.");
+  const prorationBehavior = value.prorationBehavior === void 0 ? "create_prorations" : value.prorationBehavior;
+  const billingCycleAnchor = value.billingCycleAnchor === void 0 ? "unchanged" : value.billingCycleAnchor;
+  const scheduleAtPeriodEnd = value.scheduleAtPeriodEnd === void 0 ? [] : value.scheduleAtPeriodEnd;
+  if (!["create_prorations", "always_invoice", "none"].includes(prorationBehavior) || !["now", "unchanged"].includes(billingCycleAnchor) || !Array.isArray(scheduleAtPeriodEnd) || new Set(scheduleAtPeriodEnd).size !== scheduleAtPeriodEnd.length || !scheduleAtPeriodEnd.every((type) => ["decreasing_item_amount", "shortening_interval"].includes(type))) {
+    throw new Error("Invalid Team Billing Portal policy.");
+  }
+  return Object.freeze({ prorationBehavior, billingCycleAnchor, scheduleAtPeriodEnd: Object.freeze([...scheduleAtPeriodEnd].sort()) });
+}
+
 // src/team-billing-prices.ts
 function validBillingCurrency(value) {
   return typeof value === "string" && /^[a-z]{3}$/.test(value);
@@ -93203,6 +93215,27 @@ function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
   if (state === "trialing") return Object.freeze({ kind: "trialing", rank: 15, terminalLatch: 0 });
   if (state !== "active") return null;
   return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
+}
+function teamBillingIntervalEnd(start, interval, count) {
+  if (interval === "day" || interval === "week") return start + count * 86400 * (interval === "week" ? 7 : 1);
+  const date = new Date(start * 1e3);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return Math.floor(date.getTime() / 1e3);
+}
+function teamBillingPeriodAt(anchor, interval, count, at2) {
+  if (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(at2) || at2 < anchor || !Number.isSafeInteger(count) || count < 1 || !["day", "week", "month", "year"].includes(interval)) return null;
+  const startDate = new Date(anchor * 1e3);
+  const atDate = new Date(at2 * 1e3);
+  let cycle = interval === "day" || interval === "week" ? Math.floor((at2 - anchor) / (count * 86400 * (interval === "week" ? 7 : 1))) : Math.floor(((atDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 + atDate.getUTCMonth() - startDate.getUTCMonth()) / (count * (interval === "year" ? 12 : 1)));
+  if (!Number.isSafeInteger(cycle)) return null;
+  if (teamBillingIntervalEnd(anchor, interval, count * cycle) > at2) cycle--;
+  const start = teamBillingIntervalEnd(anchor, interval, count * cycle);
+  const end = teamBillingIntervalEnd(anchor, interval, count * (cycle + 1));
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= at2 && at2 < end ? { start, end } : null;
 }
 function teamBillingTransitionRefusal(state, cancelling, hasSchedule) {
   if (cancelling) return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";
@@ -127803,6 +127836,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     const operationId = randomUUID4();
     const now3 = nowIso(database);
     const effectiveAt = nowSeconds(database);
+    const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
     const staged = await stageDesired(transaction, database, {
       teamId,
       kind: "plan-transition",
@@ -127812,7 +127846,9 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
       targetPriceId: price.interval ? price.priceId : null,
       targetQuantity: quantity,
       effectiveAt,
-      resume: resume === true ? 1 : 0
+      resume: resume === true ? 1 : 0,
+      preserveTrial: subscription.state === "trialing" && definition.transitions?.endTrial !== true,
+      resetBillingCycle: subscription.state !== "trialing" && longerInterval(currentInterval, price.interval, effectiveAt) ? 1 : 0
     });
     await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
@@ -127855,6 +127891,7 @@ async function stageTeamBillingCountChange(database, teamId, effectiveAt, quanti
       operationId: existing.operationId,
       targetProductKey: existing.targetProductKey,
       endTrial: existing.endTrial,
+      preserveTrial: existing.preserveTrial,
       targetPriceId: existing.targetPriceId,
       targetQuantity: Number(existing.targetQuantity),
       effectiveAt,
@@ -127894,6 +127931,7 @@ async function stageAcknowledgedTeamBillingUsageTransitionRepair(database, teamI
       operationId: desired.operationId,
       targetProductKey: productKey,
       endTrial: desired.endTrial,
+      preserveTrial: desired.preserveTrial,
       targetPriceId: desired.targetPriceId,
       targetQuantity: Number(desired.targetQuantity),
       effectiveAt: nowSeconds(database),
@@ -127963,17 +128001,23 @@ async function performDesired(database, _context, payload, kind) {
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
       const billableQuantity = await targetQuantity(database, transaction, desired.teamId, product);
       assertUsageMaximum(product, billableQuantity);
-      if (billableQuantity !== Number(desired.targetQuantity)) {
+      if (billableQuantity !== Number(desired.targetQuantity) && !((desired.resetBillingCycle === 1 || desired.endTrial === 1 || desired.preserveTrial === 1) && desired.providerAttemptedAt)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId,
           kind,
           operationId: desired.operationId,
           targetProductKey: desired.targetProductKey,
           endTrial: desired.endTrial,
+          preserveTrial: desired.preserveTrial,
           targetPriceId: desired.targetPriceId,
           targetQuantity: billableQuantity,
           effectiveAt: nowSeconds(database),
-          resume: desired.resume
+          resume: desired.resume,
+          resetBillingCycle: subscription.state !== "trialing" && longerInterval(
+            teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.interval,
+            price.interval,
+            nowSeconds(database)
+          ) ? 1 : 0
         });
         await enqueueIntent(database, transaction, replacement);
         return { superseded: true, dispatch: true };
@@ -128004,8 +128048,8 @@ async function performDesired(database, _context, payload, kind) {
     const claimed = await claimLane(transaction, desired.teamId, claimToken, database);
     if (!claimed) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
-    )).run(nowIso(database), desired.intentId);
+      "UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [providerAttemptedAt] = COALESCE([providerAttemptedAt], ?), [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?"
+    )).run(nowIso(database), nowIso(database), desired.intentId);
     return {
       desired: { ...desired },
       provider: {
@@ -128024,8 +128068,10 @@ async function performDesired(database, _context, payload, kind) {
         prorationDate: Number(desired.effectiveAt),
         idempotencyKey: desired.idempotencyKey,
         operationKind: desired.kind,
+        ...desired.resetBillingCycle === 1 ? { resetBillingCycle: true } : {},
         resume: desired.resume === 1,
-        ...desired.endTrial === 1 ? { endTrial: true } : {}
+        ...desired.endTrial === 1 ? { endTrial: true } : {},
+        ...desired.preserveTrial === 1 ? { preserveTrial: true } : {}
       }
     };
   });
@@ -128139,6 +128185,7 @@ async function settleVerifiedTeamBillingTarget(database, accepted) {
           operationId: desired.operationId,
           targetProductKey: desired.targetProductKey,
           endTrial: desired.endTrial,
+          preserveTrial: desired.preserveTrial,
           targetPriceId: desired.targetPriceId,
           targetQuantity: Number(desired.targetQuantity),
           effectiveAt: nowSeconds(database),
@@ -128265,9 +128312,9 @@ async function settleExhaustedTeamBillingManagementJob(database, payload, safeFa
 async function stageDesired(transaction, database, input, replaceIntent = false) {
   const binding = modeBinding(database, database.teamBillingDefinition.catalogue[input.targetProductKey]);
   const targetPriceId = input.targetPriceId ?? (input.kind === "seat-convergence" && binding.prices ? (await currentSubscription(transaction, input.teamId)).providerPriceId : null);
-  input = { ...input, targetPriceId, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0 };
+  input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0, preserveTrial: input.preserveTrial === true || input.preserveTrial === 1 ? 1 : 0 };
   const existing = await desiredForTeam(transaction, input.teamId);
-  const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && (existing.endTrial ?? 0) === input.endTrial && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
+  const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && (existing.preserveTrial ?? 0) === input.preserveTrial && (existing.endTrial ?? 0) === input.endTrial && (existing.targetPriceId ?? null) === input.targetPriceId && (Number(existing.targetQuantity) === input.targetQuantity || (existing.resetBillingCycle === 1 || existing.endTrial === 1 || existing.preserveTrial === 1) && existing.providerAttemptedAt) && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
   if (unchanged) {
     const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
     const enqueue2 = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
@@ -128286,12 +128333,12 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
   const now3 = nowIso(database);
   if (existing) {
     await transaction.prepare(transaction.dialect.sql(
-      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [endTrial] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
-    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now3, now3, input.teamId);
+      "UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [endTrial] = ?, [preserveTrial] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAttemptedAt] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?"
+    )).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now3, now3, input.teamId);
   } else {
     await transaction.prepare(transaction.dialect.sql(
-      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [endTrial], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)"
-    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now3, now3);
+      "INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [resetBillingCycle], [endTrial], [preserveTrial], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)"
+    )).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now3, now3);
   }
   await ensureLane(transaction, input.teamId, database);
   return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -128505,6 +128552,12 @@ function attentionRequired() {
 function retryable(code2) {
   return coded("Team Billing provider work should be retried.", code2, true);
 }
+function longerInterval(source, target, at2) {
+  if (!source || !target) return false;
+  const [sourceUnit, sourceCount] = source.split(":");
+  const [targetUnit, targetCount] = target.split(":");
+  return teamBillingIntervalEnd(at2, targetUnit, Number(targetCount)) > teamBillingIntervalEnd(at2, sourceUnit, Number(sourceCount));
+}
 
 // src/team-billing-convergence.ts
 var SUPPORTED = /* @__PURE__ */ new Set([
@@ -128698,7 +128751,7 @@ async function applySubscription(database, event, mode) {
   await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
   if (!existing) {
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
       randomUUID5(),
       teamId,
@@ -128706,6 +128759,7 @@ async function applySubscription(database, event, mode) {
       subscriptionId,
       normalized.priceId,
       normalized.interval,
+      normalized.billingMode,
       normalized.itemId,
       normalized.productKey,
       normalized.quantity,
@@ -128726,10 +128780,11 @@ async function applySubscription(database, event, mode) {
     );
   } else {
     await tx.prepare(tx.dialect.sql(
-      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?"
+      "UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [billingMode] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, [cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?"
     )).run(
       normalized.priceId,
       normalized.interval,
+      normalized.billingMode,
       normalized.itemId,
       normalized.productKey,
       normalized.quantity,
@@ -128771,6 +128826,8 @@ async function applySubscription(database, event, mode) {
   return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 function normalizeSubscription(definition, object2, operation2, mode, eventType, teamId, desiredTeamQuantity, existing = false) {
+  const billingMode = object2.billing_mode?.type ?? null;
+  if (object2.billing_mode !== void 0 && !["classic", "flexible"].includes(billingMode)) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   const items = object2.items?.data;
   if (!isRecord3(object2.items) || object2.items.object !== "list" || object2.items.has_more !== false || !Array.isArray(items) || items.length !== 1 || !isRecord3(items[0])) throw new Quarantine("provider-state-ambiguous", teamId, 50, object2.id);
   const item = items[0];
@@ -128838,6 +128895,7 @@ function normalizeSubscription(definition, object2, operation2, mode, eventType,
   return {
     productKey,
     priceId,
+    billingMode,
     currency,
     unitAmount,
     interval: declaredPrice?.interval ?? null,
@@ -129017,15 +129075,18 @@ function createTeamBillingTables(adapter) {
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_erasure_object_tombstones] ([objectKey] TEXT PRIMARY KEY, [kind] TEXT NOT NULL, [terminalState] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)"
     )),
     ...["currency", "mode", "quantity", "continuationUrl", "continuationExpiresAt", "attemptedAt", "providerExpiresAt", "terminalObservedAt", "providerCustomerId", "providerSubscriptionId", "providerPriceId", "configurationId", "returnPath", "paymentActionUrl", "paymentActionExpiresAt"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", name2, name2 === "quantity" || name2 === "providerExpiresAt" ? "INTEGER" : "TEXT")),
-    ...["currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
+    ...["billingMode", "currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
     ...["unitAmount", "lastEventRank", "terminalLatch", "hasSchedule"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "resetBillingCycle", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "providerAttemptedAt", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "resume", "INTEGER"),
-    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "endTrial", "INTEGER")
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "endTrial", "INTEGER"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "preserveTrial", "INTEGER")
   ]);
 }
 function normalizeTeamBillingDefinition(value) {
@@ -129063,26 +129124,32 @@ function normalizeTeamBillingDefinition(value) {
   return Object.freeze({ catalogue: Object.freeze(catalogue), authorize: value.authorize, ...value.usage === void 0 ? {} : { usage: value.usage }, checkout, portal, transitions });
 }
 function normalizePortalDefinition(value, catalogue) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["returnPath", "continuationTtlSeconds", "prorationBehavior", "billingCycleAnchor", "scheduleAtPeriodEnd"].includes(key))) throw invalidDeclaration();
   const returnPath = canonicalReturnPath(value.returnPath);
   const continuationTtlSeconds = value.continuationTtlSeconds ?? CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS;
   if (!returnPath || !Number.isInteger(continuationTtlSeconds) || continuationTtlSeconds < 60 || continuationTtlSeconds > CHECKOUT_CONTINUATION_TTL_MAX_SECONDS) throw invalidDeclaration();
   const configurationPolicies = /* @__PURE__ */ new Map();
   const configurationModes = /* @__PURE__ */ new Map();
   for (const product of Object.values(catalogue)) {
-    const policy = teamBillingQuantityPolicyFingerprint(product.quantity);
+    const policy2 = teamBillingQuantityPolicyFingerprint(product.quantity);
     for (const mode of ["sandbox", "live"]) {
       const binding = product.stripe[mode];
       if (!binding.productId || !binding.portalConfigurationId) throw invalidDeclaration();
       const existingPolicy = configurationPolicies.get(`${mode}:${binding.portalConfigurationId}`);
-      if (existingPolicy && existingPolicy !== policy) throw invalidDeclaration();
-      configurationPolicies.set(`${mode}:${binding.portalConfigurationId}`, policy);
+      if (existingPolicy && existingPolicy !== policy2) throw invalidDeclaration();
+      configurationPolicies.set(`${mode}:${binding.portalConfigurationId}`, policy2);
       const existingMode = configurationModes.get(binding.portalConfigurationId);
       if (existingMode && existingMode !== mode) throw invalidDeclaration();
       configurationModes.set(binding.portalConfigurationId, mode);
     }
   }
-  return Object.freeze({ returnPath, continuationTtlSeconds });
+  let policy;
+  try {
+    policy = normalizeTeamBillingPortalPolicy(value);
+  } catch {
+    throw invalidDeclaration();
+  }
+  return Object.freeze({ returnPath, continuationTtlSeconds, ...policy });
 }
 function normalizeCheckoutDefinition(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some((key) => !["successPath", "cancelPath", "continuationTtlSeconds"].includes(key))) throw invalidDeclaration();
@@ -129432,6 +129499,7 @@ async function performTeamBillingPortal(database, context2, payload, attempt = 1
         configurationId: desired.configurationId,
         mode: desired.mode,
         expectedProducts: desired.expectedProducts,
+        expectedPolicy: desired.expectedPolicy,
         endTrial: database.teamBillingDefinition.transitions?.endTrial === true
       };
     });
@@ -129800,7 +129868,8 @@ async function portalDesiredState(database, transaction, teamId) {
     customerId: customer.providerCustomerId,
     configurationId: binding.portalConfigurationId,
     returnPath: database.teamBillingDefinition.portal.returnPath,
-    expectedProducts
+    expectedProducts,
+    expectedPolicy: normalizeTeamBillingPortalPolicy(database.teamBillingDefinition.portal)
   };
 }
 async function readPortalOperation(transaction, operationId) {
@@ -150195,8 +150264,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         prorationDate: input.prorationDate,
         idempotencyKey: input.idempotencyKey,
         operationKind: input.operationKind,
+        ...input.resetBillingCycle === true ? { resetBillingCycle: true } : {},
         ...input.resume === true ? { resume: true } : {},
-        ...input.endTrial === true ? { endTrial: true } : {}
+        ...input.endTrial === true ? { endTrial: true } : {},
+        ...input.preserveTrial === true ? { preserveTrial: true } : {}
       }));
     },
     quiesceTeamBillingProvider: async (context2, input) => {
@@ -161529,8 +161600,10 @@ function validateCatalogue(catalogue) {
     requireValue(/^prod_[A-Za-z0-9_]+$/.test(product.id) && !products.has(product.id) && Array.isArray(product.prices) && product.prices.length);
     products.set(product.id, /* @__PURE__ */ new Set());
     for (const price of product.prices) {
-      requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring) && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1 && (price.intervalCount ?? 1) <= { day: 1095, week: 156, month: 36, year: 3 }[price.recurring]);
-      normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
+      requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring) && Number.isSafeInteger(price.unitAmount ?? 1e3) && (price.unitAmount ?? 1e3) >= 0 && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1 && (price.intervalCount ?? 1) <= { day: 1095, week: 156, month: 36, year: 3 }[price.recurring]);
+      if (price.currency !== void 0 || price.currencyOptions !== void 0) {
+        normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
+      }
       prices.add(price.id);
       products.get(product.id).add(price.id);
     }
@@ -161653,6 +161726,8 @@ async function createStripeTeamBillingFake(options) {
       active: true,
       livemode: false,
       product: product.id,
+      unit_amount: entry.unitAmount ?? 1e3,
+      currency: entry.currency ?? "usd",
       ...entry.currency ? {
         currency: entry.currency,
         unit_amount: entry.unitAmount,
@@ -161666,15 +161741,7 @@ async function createStripeTeamBillingFake(options) {
     };
   }
   function periodEnd(start, priceValue) {
-    const { interval, interval_count: count } = priceValue.recurring;
-    if (interval === "day" || interval === "week") return start + count * 86400 * (interval === "week" ? 7 : 1);
-    const date = new Date(start * 1e3);
-    const day = date.getUTCDate();
-    date.setUTCDate(1);
-    date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
-    const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-    date.setUTCDate(Math.min(day, lastDay));
-    return Math.floor(date.getTime() / 1e3);
+    return teamBillingIntervalEnd(start, priceValue.recurring.interval, priceValue.recurring.interval_count);
   }
   async function send2(event, fault = {}) {
     requireValue(!stopped2, "Fake is closed.");
@@ -161733,6 +161800,7 @@ async function createStripeTeamBillingFake(options) {
   async function complete(sessionId, input = {}) {
     const session = get(sessions, sessionId);
     requireValue(session.status === "open", "Checkout is not open.");
+    requireValue(input.billingMode === void 0 || ["classic", "flexible"].includes(input.billingMode));
     requireValue(!input.customerId || /^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId));
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id2("cus");
@@ -161758,6 +161826,8 @@ async function createStripeTeamBillingFake(options) {
       status: trialDays ? "trialing" : "active",
       trial_start: trialDays ? now3 : null,
       trial_end: trialEnd,
+      billing_mode: { type: input.billingMode ?? "flexible" },
+      billing_cycle_anchor: now3,
       cancel_at_period_end: false,
       cancel_at: null,
       schedule: null,
@@ -161815,37 +161885,53 @@ async function createStripeTeamBillingFake(options) {
     subscription.items.data[0].quantity = integer(quantity);
     return subscriptionEvent(subscription);
   }
-  function applyPrice(subscription, targetPrice) {
+  function priceAmount(value, currency) {
+    return value.currency === currency ? value.unit_amount : value.currency_options[currency].unit_amount;
+  }
+  function applyPrice(subscription, targetPrice, quantity, reset2 = false, invoiceNow = false, endTrialNow = false) {
     const item = subscription.items.data[0];
-    if (subscription.status !== "trialing" && (item.price.recurring.interval !== targetPrice.recurring.interval || item.price.recurring.interval_count !== targetPrice.recurring.interval_count)) {
+    const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
+    const resetPeriod = endTrialNow || subscription.status !== "trialing" && (reset2 || subscription.billing_mode.type === "classic" && changedInterval);
+    if (resetPeriod && (invoiceNow || endTrialNow || subscription.billing_mode.type === "classic")) {
+      const currency = subscription.currency ?? targetPrice.currency;
+      const amount = priceAmount(targetPrice, currency) * quantity;
+      const credit = subscription.status === "trialing" || now3 < subscription.billing_cycle_anchor ? 0 : -Math.round(priceAmount(item.price, currency) * item.quantity * Math.max(0, item.current_period_end - now3) / (item.current_period_end - item.current_period_start));
+      const invoice = {
+        id: id2("in"),
+        object: "invoice",
+        livemode: false,
+        customer: subscription.customer,
+        billing_reason: "subscription_update",
+        paid: true,
+        parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } },
+        subscription: subscription.id,
+        created: now3,
+        status: "paid",
+        currency,
+        amount_paid: Math.max(0, amount + credit),
+        lines: { object: "list", data: [
+          { price: targetPrice.id, amount, proration: false, quantity, period: { start: now3, end: periodEnd(now3, targetPrice) } },
+          { price: item.price.id, amount: credit, proration: true }
+        ] }
+      };
+      invoices.set(invoice.id, invoice);
+      subscription.latest_invoice = invoice.id;
+    }
+    if (resetPeriod) {
+      subscription.billing_cycle_anchor = now3;
       item.current_period_start = now3;
       item.current_period_end = periodEnd(now3, targetPrice);
     }
     item.price = copy(targetPrice);
-  }
-  function endTrial(subscription) {
-    const item = subscription.items.data[0];
-    subscription.status = "active";
-    subscription.trial_end = now3;
-    item.current_period_start = now3;
-    item.current_period_end = periodEnd(now3, item.price);
-    const invoice = {
-      id: idForInvoice(),
-      object: "invoice",
-      livemode: false,
-      customer: subscription.customer,
-      ...subscription.currency ? { currency: subscription.currency } : {},
-      billing_reason: "subscription_update",
-      status: "paid",
-      paid: true,
-      parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } }
-    };
-    invoices.set(invoice.id, invoice);
-    subscription.latest_invoice = invoice.id;
+    item.quantity = quantity;
+    if (endTrialNow) {
+      subscription.status = "active";
+      subscription.trial_end = now3;
+    }
   }
   async function switchPrice(subscriptionId, priceId) {
     const subscription = liveSubscription(subscriptionId);
-    applyPrice(subscription, price(priceId, subscription.currency));
+    applyPrice(subscription, price(priceId, subscription.currency), subscription.items.data[0].quantity);
     return subscriptionEvent(subscription);
   }
   async function setCancellation(subscriptionId, cancel) {
@@ -161865,6 +161951,9 @@ async function createStripeTeamBillingFake(options) {
         enabled: true,
         default_allowed_updates: ["price"],
         trial_update_behavior: entry.trialUpdateBehavior ?? "continue_trial",
+        proration_behavior: entry.prorationBehavior ?? "create_prorations",
+        billing_cycle_anchor: entry.billingCycleAnchor ?? "unchanged",
+        schedule_at_period_end: { conditions: (entry.scheduleAtPeriodEnd ?? []).map((type) => ({ type })) },
         products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } }))
       }
     } };
@@ -162002,6 +162091,7 @@ async function createStripeTeamBillingFake(options) {
           status: "active",
           trial_start: null,
           trial_end: null,
+          billing_mode: { type: "flexible" },
           billing_cycle_anchor: anchor,
           default_payment_method: p2.default_payment_method,
           cancel_at_period_end: false,
@@ -162027,8 +162117,9 @@ async function createStripeTeamBillingFake(options) {
         exactKeys2(p2, []);
         return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
-        exactKeys2(p2, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["cancel_at_period_end", "expand", "trial_end"]);
+        exactKeys2(p2, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "cancel_at_period_end", "expand", "trial_end"]);
         requireValue(p2.trial_end === void 0 || p2.trial_end === "now");
+        requireValue(p2.billing_cycle_anchor === void 0 || p2.billing_cycle_anchor === "now");
         exactKeys2(p2.items, ["0"]);
         exactKeys2(p2.items[0], ["id", "price", "quantity"]);
         if (p2.expand !== void 0) {
@@ -162037,7 +162128,7 @@ async function createStripeTeamBillingFake(options) {
         }
         const subscription = liveSubscription(resourceId);
         const item = subscription.items.data[0];
-        requireValue(p2.items[0].id === item.id && p2.proration_behavior === "create_prorations" && p2.payment_behavior === "pending_if_incomplete");
+        requireValue(p2.items[0].id === item.id && ["create_prorations", "always_invoice"].includes(p2.proration_behavior) && p2.payment_behavior === "pending_if_incomplete");
         if (p2.cancel_at_period_end !== void 0) {
           requireValue(p2.cancel_at_period_end === "false", "Only cancel_at_period_end=false is supported.");
           subscription.cancel_at_period_end = false;
@@ -162049,6 +162140,8 @@ async function createStripeTeamBillingFake(options) {
         if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
           subscription.pending_update = {
             expires_at: now3 + 3600,
+            billing_cycle_anchor: p2.billing_cycle_anchor === "now" ? now3 : null,
+            proration_behavior: p2.proration_behavior,
             ...p2.trial_end === "now" ? { trial_end: now3 } : {},
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }]
           };
@@ -162059,10 +162152,8 @@ async function createStripeTeamBillingFake(options) {
             hosted_invoice_url: fault.status === "paymentActionRequiredOffHost" ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id2("in")}?s=em`
           };
         } else {
-          applyPrice(subscription, targetPrice);
-          item.quantity = quantity;
           subscription.latest_invoice = null;
-          if (p2.trial_end === "now") endTrial(subscription);
+          applyPrice(subscription, targetPrice, quantity, p2.billing_cycle_anchor === "now", p2.proration_behavior === "always_invoice", p2.trial_end === "now");
           subscription.pending_update = null;
         }
         return subscriptionEvent(subscription);
@@ -162180,10 +162271,8 @@ async function createStripeTeamBillingFake(options) {
         const pending = subscription.pending_update;
         requireValue(pending && pending.expires_at > now3, "No payable pending update.");
         const requested = pending.subscription_items[0];
-        applyPrice(subscription, requested.price);
-        subscription.items.data[0].quantity = requested.quantity;
         subscription.latest_invoice = null;
-        if (pending.trial_end != null) endTrial(subscription);
+        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice", pending.trial_end != null);
         subscription.pending_update = null;
         if (subscription.status !== "trialing") subscription.status = "active";
         await emit(PENDING_UPDATE_APPLIED, subscription);
@@ -162193,8 +162282,12 @@ async function createStripeTeamBillingFake(options) {
         const subscription = liveSubscription(id3);
         const item = subscription.items.data[0];
         requireValue(!subscription.cancel_at_period_end, "Subscription is scheduled for cancellation.");
-        item.current_period_start = item.current_period_end;
-        item.current_period_end = periodEnd(item.current_period_start, item.price);
+        const start = item.current_period_end;
+        if (subscription.status === "trialing") subscription.billing_cycle_anchor = start;
+        const period = teamBillingPeriodAt(subscription.billing_cycle_anchor, item.price.recurring.interval, item.price.recurring.interval_count, start);
+        requireValue(period, "Invalid recurring period.");
+        item.current_period_start = start;
+        item.current_period_end = period.end;
         subscription.status = "active";
         return subscriptionEvent(subscription);
       },
@@ -162247,13 +162340,14 @@ async function createStripeTeamBillingFake(options) {
       for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now3) await fake.subscriptions.renew(sub.id);
       for (const sub of subscriptions.values()) if (sub.status === "active" && sub.billing_cycle_anchor && sub.items.data[0].current_period_end <= now3) {
         const anchor = sub.items.data[0].current_period_end;
-        const { entry } = catalogueEntry(sub.items.data[0].price.id);
-        const amount = billingCurrencyAmount(entry, sub.currency) * sub.items.data[0].quantity;
+        const item = sub.items.data[0];
+        const currency = sub.currency ?? item.price.currency;
+        const amount = priceAmount(item.price, currency) * item.quantity;
         const invoice = {
           id: idForInvoice(),
           object: "invoice",
           customer: sub.customer,
-          currency: sub.currency,
+          currency,
           status: "paid",
           amount_paid: amount,
           parent: { type: "subscription_details", subscription_details: { subscription: sub.id } },
@@ -162307,9 +162401,9 @@ async function createStripeTeamBillingFake(options) {
       now: now3,
       customers: [...customers.values()],
       subscriptions: [...subscriptions.values()],
-      invoices: [...invoices.values()],
       checkouts: [...sessions.values()],
       portalSessions: [...portalSessions.values()],
+      invoices: [...invoices.values()],
       events: eventLog
     }),
     reset() {

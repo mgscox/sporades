@@ -15,6 +15,9 @@ export declare function normalizeTeamBillingDefinition(value: any): Readonly<{
         continuationTtlSeconds: any;
     }> | null;
     portal: Readonly<{
+        prorationBehavior: string;
+        billingCycleAnchor: string;
+        scheduleAtPeriodEnd: readonly string[];
         returnPath: string;
         continuationTtlSeconds: any;
     }> | null;

@@ -213,12 +213,12 @@ async function applySubscription(database, event, mode) {
     }
     await bindCustomer(tx, teamId, mode, customerId, event.occurredAt);
     if (!existing) {
-        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount);
+        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [currency], [unitAmount]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(randomUUID(), teamId, mode, subscriptionId, normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount);
     }
     else {
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
-            "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?")).run(normalized.priceId, normalized.interval, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount, subscriptionId);
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [providerPriceId] = ?, [interval] = ?, [billingMode] = ?, [providerSubscriptionItemId] = ?, [productKey] = ?, [quantity] = ?, [state] = ?, " +
+            "[cancelAtPeriodEnd] = ?, [currentPeriodStart] = ?, [currentPeriodEnd] = ?, [trialEndsAt] = COALESCE(?, [trialEndsAt]), [observedAt] = ?, [updatedAt] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = ?, [lastEventRank] = ?, [terminalLatch] = ?, [hasSchedule] = ?, [currency] = ?, [unitAmount] = ? WHERE [providerSubscriptionId] = ?")).run(normalized.priceId, normalized.interval, normalized.billingMode, normalized.itemId, normalized.productKey, normalized.quantity, normalized.state, normalized.cancelAtPeriodEnd, normalized.periodStart, normalized.periodEnd, normalized.trialEndsAt, event.occurredAt, event.occurredAt, event.occurredAt, normalized.kind, normalized.rank, normalized.terminalLatch, normalized.hasSchedule, normalized.currency, normalized.unitAmount, subscriptionId);
     }
     if (operation) {
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [providerCustomerId] = ?, [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ?")).run(customerId, subscriptionId, event.occurredAt, operation.id);
@@ -234,6 +234,9 @@ async function applySubscription(database, event, mode) {
     return { teamId, objectId: subscriptionId, rank: normalized.rank };
 }
 function normalizeSubscription(definition, object, operation, mode, eventType, teamId, desiredTeamQuantity, existing = false) {
+    const billingMode = object.billing_mode?.type ?? null;
+    if (object.billing_mode !== undefined && !["classic", "flexible"].includes(billingMode))
+        throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
     const items = object.items?.data;
     if (!isRecord(object.items) || object.items.object !== "list" || object.items.has_more !== false
         || !Array.isArray(items) || items.length !== 1 || !isRecord(items[0]))
@@ -335,7 +338,7 @@ function normalizeSubscription(definition, object, operation, mode, eventType, t
         : teamBillingSubscriptionSemantics(eventType, state, cancel);
     if (!semantics)
         throw new Quarantine("provider-state-ambiguous", teamId, 50, object.id);
-    return { productKey, priceId, currency, unitAmount, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
+    return { productKey, priceId, billingMode, currency, unitAmount, interval: declaredPrice?.interval ?? null, itemId: item.id, quantity: item.quantity, periodStart, periodEnd, trialEndsAt, state,
         cancelAtPeriodEnd: cancel ? 1 : 0, hasSchedule: object.schedule == null ? 0 : 1, kind: semantics.kind, rank: semantics.rank, terminalLatch: semantics.terminalLatch };
 }
 async function applyInvoiceFailure(database, event, mode) {

@@ -861,8 +861,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 prorationDate: input.prorationDate,
                 idempotencyKey: input.idempotencyKey,
                 operationKind: input.operationKind,
+                ...(input.resetBillingCycle === true ? { resetBillingCycle: true } : {}),
                 ...(input.resume === true ? { resume: true } : {}),
                 ...(input.endTrial === true ? { endTrial: true } : {}),
+                ...(input.preserveTrial === true ? { preserveTrial: true } : {}),
             }));
         },
         quiesceTeamBillingProvider: async (context, input) => {

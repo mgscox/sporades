@@ -1,0 +1,1 @@
+{"version":3,"file":"team-billing-portal-policy.d.ts","sourceRoot":"","sources":["../src/team-billing-portal-policy.ts"],"names":[],"mappings":"AAAA,KAAK,MAAM,GAAG;IAAE,iBAAiB,CAAC,EAAE,MAAM,CAAC;IAAC,kBAAkB,CAAC,EAAE,MAAM,CAAC;IAAC,mBAAmB,CAAC,EAAE,MAAM,EAAE,CAAA;CAAE,CAAC;AAE1G,mGAAmG;AACnG,wBAAgB,gCAAgC,CAAC,KAAK,GAAE,MAAW;;;;GAYlE"}
