@@ -135,6 +135,7 @@
       "src/stripe-team-billing-provider.ts",
       "src/stripe-webhook-runtime.ts",
       "src/team-billing-convergence.ts",
+      "src/team-billing-currency-handover.ts",
       "src/team-billing-erasure.ts",
       "src/team-billing-import.ts",
       "src/team-billing-management.ts",
@@ -170,7 +171,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "e1cbe1ac0dd33be7a91c4c2e49ff7d372c9e4d01f2e857268371a9a44f92be67"
+    "digest": "6673a525b03d34e564ee6d911dc3d606fa0188bc4a36972bc82dc64b0164e74f"
   },
   "outputs": {
     "files": [
@@ -680,6 +681,10 @@
       "dist/team-billing-convergence.d.ts.map",
       "dist/team-billing-convergence.js",
       "dist/team-billing-convergence.js.map",
+      "dist/team-billing-currency-handover.d.ts",
+      "dist/team-billing-currency-handover.d.ts.map",
+      "dist/team-billing-currency-handover.js",
+      "dist/team-billing-currency-handover.js.map",
       "dist/team-billing-erasure.d.ts",
       "dist/team-billing-erasure.d.ts.map",
       "dist/team-billing-erasure.js",
@@ -754,6 +759,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "2b4fe9bc54c4f752bbb55d7645f7fae6b770b34227616012b175921c1993c2b5"
+    "digest": "4b31b452cb14626fd8cbb90aa82276fc0a07357507c90ba0e2b4456246d5a387"
   }
 }

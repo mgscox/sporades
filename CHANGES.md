@@ -34,6 +34,11 @@ Changes since v0.9.47.
 
 ## Unreleased
 
+- Add Team Billing currency handover through setup Checkout, non-prorated
+  cancellation and an anchored replacement Subscription. A durable paid-through
+  latch survives restart; old-currency balances refuse safely (#371). Public
+  types and the Stripe fake include the new operation and currency rules.
+
 - Team Billing plan switches during trials preserve the trial by default. Server-only
   `transitions.endTrial` can end it immediately; Portal configuration attestation
   requires matching trial behavior. Fake tests cover preservation and invoicing;

@@ -362,8 +362,8 @@ test("endpoint and event parity fails when the real provider or convergence adds
   ]);
   const calls = new Set([...provider.matchAll(/await stripe\.([\w.]+)\(/g)].map((entry) => entry[1]));
   const routes = new Set([...fake.matchAll(/\["(?:POST|GET|DELETE)", .*?, "([\w.]+)"\]/g)].map((entry) => entry[1]));
-  assert.equal(calls.size, 9);
-  assert.deepEqual([...routes].filter((entry) => entry !== "customers.retrieve").sort(), [...calls].sort());
+  assert.equal(calls.size, 12);
+  assert.deepEqual([...routes].sort(), [...calls].sort());
   const supported = convergence.match(/const SUPPORTED = new Set\(\[([\s\S]*?)\]\)/)[1];
   const events = fake.match(/const EVENTS = \[([\s\S]*?)\]/)[1];
   assert.deepEqual([...supported.matchAll(/"([\w.]+)"/g)].map((entry) => entry[1]).sort(), [...events.matchAll(/"([\w.]+)"/g)].map((entry) => entry[1]).sort());
@@ -759,6 +759,11 @@ for (const currency of [undefined, "gbp", "usd"]) for (const billingMode of ["cl
   assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, attempts,
     'recovery of an exact applied reset must not depend on retained provider idempotency keys');
   assert.equal(f.fake.state().invoices.length, 1, "lost acknowledgements resolve the applied reset without charging twice");
+  await f.fake.clock.advance(updated.items.data[0].current_period_end - f.fake.state().now);
+  const renewalInvoice = f.fake.state().invoices.at(-1);
+  assert.equal(f.fake.state().invoices.length, 2);
+  assert.equal(renewalInvoice.currency, currency ?? "usd");
+  assert.equal(renewalInvoice.amount_paid, currency === "usd" ? 60000 : 50000, "renewals use the same default or regional amount as the reset");
 });
 
 for (const billingMode of ["classic", "flexible"]) test(`resumed reset recovery refuses a newly scheduled cancellation (${billingMode})`, async t => {
@@ -825,13 +830,14 @@ for (const billingMode of ["classic", "flexible"]) test(`quarterly renewals reta
   await f.provider.updateManagedSubscription(update);
   for (const [start, end] of [["2027-04-30", "2027-07-31"], ["2027-07-31", "2027-10-31"]]) {
     await f.fake.clock.advance(seconds(start) - f.fake.state().now);
-    const renewed = await f.fake.subscriptions.renew(subscription.id);
+    const renewed = f.fake.subscriptions.get(subscription.id);
     assert.equal(renewed.items.data[0].current_period_start, seconds(start));
     assert.equal(renewed.items.data[0].current_period_end, seconds(end));
     assert.equal(renewed.billing_cycle_anchor, seconds("2027-01-31"));
     const writes = f.fake.requests().filter(r => r.operation === "subscriptions.update").length;
+    const invoices = f.fake.state().invoices.length;
     await f.provider.updateManagedSubscription(update);
     assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, writes);
-    assert.equal(f.fake.state().invoices.length, 1);
+    assert.equal(f.fake.state().invoices.length, invoices, "reset recovery must not charge again after an automatic renewal");
   }
 });

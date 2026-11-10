@@ -309,6 +309,7 @@ const MIGRATED_RUNTIME_MODULES = [
   // one still rejects a parse that has lost either half of this tiny module.
   { file: "team-billing-quantity.js", atLeast: 1, sentinel: "billableTeamMemberQuantity" },
   { file: "team-billing-convergence.js", atLeast: 15, sentinel: "winsRatchet" },
+  { file: "team-billing-currency-handover.js", atLeast: 10, sentinel: "reconcileExpiredHandover" },
   { file: "team-billing-erasure.js", atLeast: 12, sentinel: "validateEvidence" },
   { file: "team-billing-management.js", atLeast: 35, sentinel: "scheduleAfterOwnedTransaction" },
   // Purpose-specific Stripe Team Checkout transport validates the complete

@@ -6,6 +6,23 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
         sessionId: any;
         url: any;
     }>>;
+    createCurrencySetup(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        sessionId: string;
+        url: string | null;
+    }>>;
+    replaceCurrencySubscription(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        subscriptionId: string;
+    }>>;
+    reconcileCurrencyHandover(input: LooseRecord): Promise<Readonly<{
+        subscriptionId?: any;
+        closed: false;
+        sourceUncancelled?: undefined;
+    } | {
+        closed: true;
+        sourceUncancelled: boolean;
+    }>>;
     retrievePortalConfiguration(input: LooseRecord): Promise<Readonly<{
         ok: true;
     }>>;

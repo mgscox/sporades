@@ -65,8 +65,8 @@ export async function performTeamBillingErasure(database, context, payload) {
             throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
         const customer = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(state.teamId);
         const subscriptions = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]")).all(state.teamId);
-        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
-            "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]")).all(state.teamId);
+        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
+            "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] IN ('checkout', 'currency-handover') ORDER BY [providerObjectId], [id]")).all(state.teamId);
         const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode
             ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
         if (!["sandbox", "live"].includes(mode)
@@ -79,14 +79,14 @@ export async function performTeamBillingErasure(database, context, payload) {
             operationId: row.id,
             teamId: state.teamId,
             productKey: row.productKey,
-            mode: "subscription",
+            mode: row.kind === "currency-handover" ? "setup" : "subscription",
             priceId: row.providerPriceId,
             ...(row.currency ? { currency: row.currency } : {}),
             quantity: Number(row.quantity),
             ...(row.trialDays == null ? {} : { trialDays: row.trialDays }),
             successPath: database.teamBillingDefinition?.checkout?.successPath,
             cancelPath: database.teamBillingDefinition?.checkout?.cancelPath,
-            idempotencyKey: row.idempotencyKey,
+            idempotencyKey: row.kind === "currency-handover" ? `${row.idempotencyKey}:setup` : row.idempotencyKey,
             businessReference: row.id,
             providerExpiresAt: Number(row.providerExpiresAt),
             ...(customer ? { customerId: customer.providerCustomerId } : {}),
@@ -136,6 +136,7 @@ export async function performTeamBillingErasure(database, context, payload) {
             }
             for (const table of [
                 "sporades_team_billing_observations",
+                "sporades_team_billing_handovers",
                 "sporades_team_billing_subscriptions",
                 "sporades_team_billing_customers",
                 "sporades_team_billing_desired_state",

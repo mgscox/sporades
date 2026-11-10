@@ -405,6 +405,14 @@ export type TeamBillingCheckoutResult =
   | { state: "completed" | "expired" | "superseded"; teamId: string; requestId: string; productKey: string }
   | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "unavailable" };
 
+/** Currency changes replace the Subscription after a verified setup-mode Checkout. */
+export type TeamBillingCurrencyHandoverRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; currency: string };
+export type TeamBillingCurrencyHandoverResult =
+  | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
+  | { state: "ready"; teamId: string; requestId: string; productKey: string; url: string; expiresAt: string }
+  | { state: "completed" | "expired"; teamId: string; requestId: string; productKey: string }
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "customer-balance-nonzero" | "unavailable" };
+
 export type TeamBillingPortalRequest = { teamId: string; requestId: string };
 export type TeamBillingPortalResult =
   | { state: "pending"; teamId: string; requestId: string; requestedAt: string }
@@ -430,6 +438,7 @@ export type TeamBillingErasureResult =
 export type TeamBillingApi = {
   get(teamId: string): Promise<SporadesResult<TeamBillingProjection>>;
   startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
+  startCurrencyHandover(input: TeamBillingCurrencyHandoverRequest): Promise<SporadesResult<TeamBillingCurrencyHandoverResult>>;
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
   requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
   /** Proves provider quiescence before the app performs its separate local Team deletion transaction. */

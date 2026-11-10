@@ -1,3 +1,4 @@
+import { TEAM_BILLING_CURRENCY_HANDOVER_JOB } from "./team-billing-currency-handover.js";
 // The Capsule runtime's jobs and schedules domain: the Job Queue's storage, cursors, retry
 // normalization and inspection, and the Schedule machinery — cron parsing, timezone resolution,
 // occurrence calculation, the payload-factory concurrency lanes and the runtime clock both depend
@@ -873,6 +874,7 @@ export function runtimeOwnedJobHandlers(runtime) {
         { name: TEAM_BILLING_PORTAL_EXPIRY_JOB, handler: runtime.expireTeamBillingPortal },
         { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
         { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
+        { name: TEAM_BILLING_CURRENCY_HANDOVER_JOB, handler: runtime.performTeamBillingCurrencyHandover },
         { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
         {
             name: STRIPE_EVENT_JOB,

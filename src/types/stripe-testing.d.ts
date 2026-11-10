@@ -7,8 +7,8 @@ export type StripeFakeCatalogue = {
 export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"
   | "billingPortal.configurations.retrieve" | "billingPortal.sessions.create"
-  | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
-  | "customers.retrieve";
+  | "subscriptions.create" | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
+  | "customers.retrieve" | "prices.retrieve";
 export type StripeFakeFault = {
   operation: StripeFakeOperation;
   /** `paymentActionRequiredOffHost` models a hostile hosted-invoice URL outside `invoice.stripe.com`. */
@@ -69,8 +69,8 @@ export type StripeTeamBillingFake = {
     renew(id: string): Promise<StripeFakeObject>;
     get(id: string): StripeFakeObject;
   };
-  customers: { subscriptions(id: string): StripeFakeObject[] };
-  /** Advances due trials to active, or cancels them when scheduled; emits Subscription evidence. */
+  customers: { subscriptions(id: string): StripeFakeObject[]; setBalance(id: string, currency: string, amount: number): void };
+  /** Advances due trials, scheduled cancellations and paid renewals; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {
     pending(): StripeFakeEvent[];

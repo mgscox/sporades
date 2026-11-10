@@ -818,7 +818,7 @@ export type TeamBillingProductDeclaration = {
     live: TeamBillingStripeBinding;
   };
 };
-export type TeamBillingOperation = "read" | "checkout" | "portal" | "plan-transition" | "erasure";
+export type TeamBillingOperation = "read" | "checkout" | "portal" | "plan-transition" | "currency-handover" | "erasure";
 export type TeamBillingAuthorityInput = {
   teamId: string;
   teamRole: "admin" | "member";
@@ -829,6 +829,8 @@ export type TeamBillingAuthorityInput = {
   /** Verified source of a plan-transition, resolved under the Team lifecycle lock. */
   fromProductKey?: string;
   fromInterval?: TeamBillingInterval;
+  /** Verified source currency for a currency handover; currency is the requested target. */
+  fromCurrency?: string;
 };
 export type TeamBillingAuthorityDecision = { allow: boolean };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */

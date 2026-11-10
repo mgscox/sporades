@@ -502,8 +502,70 @@ convergence and Portal Price switches also retain the subscription currency;
 configure Portal choices to support the currencies you offer.
 
 Sporades conservatively retains one currency for a Team's bound Customer even
-after cancellation. A later Checkout in another currency is refused. A new
-billing agreement requires an explicit Customer migration outside this API.
+after cancellation. A later Checkout in another currency is refused. Use the explicit currency handover below to replace that agreement.
+
+### Change a Team's billing currency
+
+```ts
+const handover = await teamBilling.startCurrencyHandover({
+  teamId, requestId: crypto.randomUUID(), productKey: "agency",
+  interval: "month:1", currency: "eur",
+});
+```
+
+This separate durable operation requires a configured Checkout and one verified,
+active, non-cancelling Subscription without a schedule or pending provider update.
+The target Price must declare the requested currency. A current linked Team admin
+must pass `authorize` for `operation: "currency-handover"` both at admission and
+before each provider attempt. Policy receives target `productKey`, `interval`,
+`currency` and verified source `fromProductKey`, `fromInterval`, `fromCurrency`.
+The Capsule owns consent copy, including the new amount and currency. Accepting
+a handover supersedes an abandoned failed managed-plan intent, so restart cannot
+apply its old target to the replacement.
+
+Poll with the same exact request until `ready`, then navigate to its validated,
+expiring Stripe-hosted setup Checkout URL. Setup collects a payment method for the
+existing Customer and charges nothing. Browser return alone does nothing. After
+verified setup completion, Sporades persists a paid-through entitlement latch,
+cancels the old Subscription with `prorate: false` and `invoice_now: false`, and
+creates the replacement with that payment method, the old period end as
+`billing_cycle_anchor`, and `proration_behavior: "none"`. The initial period is
+free; the first new-currency charge is due at the anchor. Stripe requires the
+anchor to fall within the target's first billing period; an incompatible interval
+is refused before cancellation. Trials require an ordinary plan transition first.
+See [Stripe's currency rules](https://docs.stripe.com/invoicing/multi-currency-customers)
+and [billing anchors](https://docs.stripe.com/billing/subscriptions/billing-cycle).
+
+A non-zero old-currency Customer balance refuses the operation before setup and
+is checked again before cancellation. The provider-free result is
+`{ state: "failed", reason: "customer-balance-nonzero", ... }`
+(internal safe code `TEAM_BILLING_CUSTOMER_BALANCE_NONZERO`). Resolve that balance
+explicitly before starting a new request. Sporades never converts or forfeits it.
+
+`get(teamId)` keeps exposing the old active product throughout setup and the
+cancel/create gap. Only verified replacement Subscription evidence moves the
+entitlement to the new currency; provider acknowledgement does not. Durable
+provider idempotency and startup convergence recover uncertain cancellation or
+creation, including lost replies. Retries are bounded. If replacement fails,
+the latch expires at the old paid period end even if its cancellation webhook
+is missing; the app may then offer ordinary Checkout after terminal evidence.
+The latch never extends paid access. Ordinary Checkout, Portal and managed plan
+writes are fenced while a handover is active. An uncertain dispatched replacement
+remains fenced after retry exhaustion. At the paid period end, a serialized
+provider discovery closes the fence only when no active replacement exists;
+otherwise verified Subscription evidence must resolve it. Restart retries this
+safe-close discovery. A fresh request cannot create a second subscription. Provider-safe erasure fences the
+handover and discovers/cancels a replacement even after a lost create reply.
+
+The operation returns `pending`, `ready`, `completed`, `expired`, or `failed`;
+failed reasons are `authority-changed`, `customer-balance-nonzero`, and
+`unavailable`. Reusing a request for a different tuple returns
+`TEAM_BILLING_REQUEST_CONFLICT`. A second concurrent handover returns
+`TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE`. The fake covers setup, balances,
+no overlapping active currencies, non-prorated cancellation, anchored charging,
+webhook order and restart recovery. Real Stripe acceptance remains a separate
+sandbox/test-clock check. Existing tax configuration remains operator-owned;
+this operation does not enable Stripe Tax or add tax registrations.
 
 For offline activation validation, use the server-only Stripe export:
 
