@@ -25,8 +25,10 @@ const ENDPOINTS: Array<[string, RegExp, StripeFakeOperation]> = [
 const EVENTS = [
   "checkout.session.completed", "checkout.session.expired", "customer.subscription.created",
   "customer.subscription.updated", "customer.subscription.deleted", "invoice.payment_failed",
+  "customer.subscription.pending_update_applied", "customer.subscription.pending_update_expired",
 ];
-const [CHECKOUT_COMPLETED, CHECKOUT_EXPIRED, SUBSCRIPTION_CREATED, SUBSCRIPTION_UPDATED, SUBSCRIPTION_DELETED, INVOICE_FAILED] = EVENTS;
+const [CHECKOUT_COMPLETED, CHECKOUT_EXPIRED, SUBSCRIPTION_CREATED, SUBSCRIPTION_UPDATED, SUBSCRIPTION_DELETED, INVOICE_FAILED,
+  PENDING_UPDATE_APPLIED, PENDING_UPDATE_EXPIRED] = EVENTS;
 const copy = <T>(value: T): T => structuredClone(value);
 function fail(message = "Unsupported Stripe fake request.", status = 400, code = "sporades_fake_unsupported", type = "invalid_request_error"): never {
   throw Object.assign(new Error(message), { status, code, type });
@@ -222,7 +224,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const trialEnd = trialDays ? now + trialDays * 86400 : null;
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
       ...(session.currency ? { currency: session.currency } : {}),
-      status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null,
+      status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
@@ -251,7 +253,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       subscription.trial_end = end;
     }
     subscription.status = status;
-    if (["canceled", "incomplete_expired"].includes(status)) { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; }
+    if (["canceled", "incomplete_expired"].includes(status)) { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; subscription.latest_invoice = null; }
     return subscriptionEvent(subscription);
   }
   async function setQuantity(subscriptionId: string, quantity: number) {
@@ -342,19 +344,29 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       case "customers.retrieve": exactKeys(p, []); return copy(get(customers, resourceId));
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
-        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["trial_end"]);
+        exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["cancel_at_period_end", "expand", "trial_end"]);
         requireValue(p.trial_end === undefined || p.trial_end === "now");
         exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["id", "price", "quantity"]);
+        if (p.expand !== undefined) { exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "latest_invoice"); }
         const subscription = liveSubscription(resourceId); const item = subscription.items.data[0];
         requireValue(p.items[0].id === item.id && p.proration_behavior === "create_prorations" && p.payment_behavior === "pending_if_incomplete");
+        if (p.cancel_at_period_end !== undefined) {
+          // Only clearing a scheduled cancellation is modelled, matching managed resume-and-switch.
+          requireValue(p.cancel_at_period_end === "false", "Only cancel_at_period_end=false is supported.");
+          subscription.cancel_at_period_end = false; subscription.cancel_at = null;
+        }
         integer(p.proration_date, 253_402_300_799);
         const targetPrice = price(p.items[0].price, subscription.currency); const quantity = integer(p.items[0].quantity);
-        if (fault?.status === "paymentActionRequired") {
+        if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
           subscription.pending_update = { expires_at: now + 3600,
             ...(p.trial_end === "now" ? { trial_end: now } : {}),
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
+          subscription.latest_invoice = { id: idForInvoice(), object: "invoice", livemode: false,
+            hosted_invoice_url: fault.status === "paymentActionRequiredOffHost"
+              ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id("in")}?s=em` };
         } else {
           applyPrice(subscription, targetPrice); item.quantity = quantity;
+          subscription.latest_invoice = null;
           if (p.trial_end === "now") endTrial(subscription);
           subscription.pending_update = null;
         }
@@ -440,10 +452,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const requested = pending.subscription_items[0];
         applyPrice(subscription, requested.price);
         subscription.items.data[0].quantity = requested.quantity;
+        subscription.latest_invoice = null;
         if (pending.trial_end != null) endTrial(subscription);
         subscription.pending_update = null;
         if (subscription.status !== "trialing") subscription.status = "active";
-        return subscriptionEvent(subscription);
+        await emit(PENDING_UPDATE_APPLIED, subscription);
+        return copy(subscription);
       },
       async renew(id) {
         const subscription = liveSubscription(id); const item = subscription.items.data[0];
@@ -475,7 +489,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       for (const sub of subscriptions.values()) if (!["canceled", "incomplete_expired"].includes(sub.status) && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
       for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now) await fake.subscriptions.renew(sub.id);
       for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now) {
-        sub.pending_update = null; await subscriptionEvent(sub);
+        sub.pending_update = null; sub.latest_invoice = null;
+        await emit(PENDING_UPDATE_EXPIRED, sub);
       }
     } },
     events: {
@@ -492,9 +507,9 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       inject(fault) {
         requireValue(ENDPOINTS.some((entry) => entry[2] === fault.operation));
         requireValue(typeof fault.status === "number" ? Number.isInteger(fault.status) && fault.status >= 400 && fault.status <= 599
-          : ["timeout", "paymentActionRequired", "completeDuringExpire"].includes(fault.status));
+          : ["timeout", "paymentActionRequired", "paymentActionRequiredOffHost", "completeDuringExpire"].includes(fault.status));
         requireValue(fault.when === undefined || ["before", "after"].includes(fault.when));
-        if (fault.status === "paymentActionRequired") requireValue(fault.operation === "subscriptions.update");
+        if (fault.status === "paymentActionRequired" || fault.status === "paymentActionRequiredOffHost") requireValue(fault.operation === "subscriptions.update");
         if (fault.status === "completeDuringExpire") requireValue(fault.operation === "checkout.sessions.expire");
         faults.push({ ...copy(fault), count: integer(fault.count ?? 1) });
       },
