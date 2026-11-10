@@ -95,6 +95,9 @@ import {
 } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import {
+  TEAM_BILLING_PLAN_PREVIEW_JOB,
+  previewTeamBillingPlanTransition,
+  performTeamBillingPlanPreview,
   TEAM_BILLING_PLAN_TRANSITION_JOB,
   TEAM_BILLING_SEAT_CONVERGENCE_JOB,
   performTeamBillingPlanTransition,
@@ -864,6 +867,8 @@ export async function openDevDatabase(
       performTeamBillingPortal(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingPortal: (context: LooseRecord, payload: LooseRecord) =>
       expireTeamBillingPortal(database, context, payload),
+    performTeamBillingPlanPreview: (context: LooseRecord, payload: LooseRecord) =>
+      performTeamBillingPlanPreview(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     performTeamBillingPlanTransition: async (context: LooseRecord, payload: LooseRecord) => {
       try { return await performTeamBillingPlanTransition(database, context, payload); }
       catch (error) {
@@ -964,6 +969,8 @@ export async function openDevDatabase(
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1_000 }, true),
     enqueueTeamBillingPortalExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
+    enqueueTeamBillingPlanPreviewJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_PREVIEW_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 1_000 }, true),
     enqueueTeamBillingPlanTransitionJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5_000 }, true, availableAt, availableAt !== undefined),
     enqueueTeamBillingSeatConvergenceJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
@@ -1010,6 +1017,7 @@ export async function openDevDatabase(
         prorationDate: input.prorationDate,
         idempotencyKey: input.idempotencyKey,
         operationKind: input.operationKind,
+        ...(input.quote ? { quote: input.quote } : {}),
         ...(input.resetBillingCycle === true ? { resetBillingCycle: true } : {}),
         ...(input.resume === true ? { resume: true } : {}),
         ...(input.endTrial === true ? { endTrial: true } : {}),
@@ -6279,13 +6287,15 @@ export function createWebSocketHub(
       return;
     }
 
-    if (message.type === "teamBilling.requestPlanTransition") {
+    if (["teamBilling.requestPlanTransition", "teamBilling.previewPlanTransition"].includes(message.type)) {
       try {
         const input = message.input;
-        const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.resume, input?.currency);
-        sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
+        const data = message.type === "teamBilling.previewPlanTransition"
+          ? await previewTeamBillingPlanTransition(database, client.session.auth, input)
+          : await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.resume, input?.currency, input?.quoteId);
+        sendJson(client, { id: message.id ?? null, type: `${message.type}.result`, data, error: null });
       } catch (error: any) {
-        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
+        const code = ["TEAM_BILLING_QUOTE_INVALID", "TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS",
           "TEAM_BILLING_SUBSCRIPTION_CANCELLING", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE", "TEAM_BILLING_UNKNOWN_SCHEDULE", "TEAM_BILLING_CURRENCY_MISMATCH"].includes(error?.code)
           ? error.code : "TEAM_BILLING_DENIED";
         sendJson(client, {

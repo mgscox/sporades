@@ -61,6 +61,22 @@ function updateInput(subscription, item, overrides = {}) {
 const erasure = (overrides = {}) => ({ mode: "sandbox", checkoutSessionIds: [], subscriptionIds: [], idempotencyKey: "fake-quiescence-key", ...overrides });
 const unavailable = (error) => error.code === "TEAM_BILLING_PROVIDER_UNAVAILABLE" && error.retryable;
 
+test("a quoted payment-action retry recovers the original invoice capability", async t => {
+  const f = await fixture(t);
+  const { subscription, item } = await paid(f);
+  const update = updateInput(subscription, item, { resetBillingCycle: true });
+  update.quote = await f.provider.previewManagedSubscription(update);
+  f.fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired" });
+  const first = await f.provider.updateManagedSubscription(update);
+  assert.equal(first.outcome, "payment-action-required");
+  assert.ok(first.paymentAction.url.startsWith("https://invoice.stripe.com/"));
+  const events = f.fake.state().events.length;
+  assert.deepEqual(await f.provider.updateManagedSubscription(update), first,
+    "a lost response must recover the same pending payment rather than invalidate its quote");
+  assert.equal(f.fake.state().events.length, events);
+  assert.equal(f.fake.state().invoices.length, 0);
+});
+
 test("the real provider attests Checkout, Portal, plans, seats and provider-safe erasure against the shipped export", async (t) => {
   const f = await fixture(t, { pageSize: 1 }); const { fake, provider, stripe } = f;
   assert.deepEqual(await provider.retrievePortalConfiguration(portalConfigInput), { ok: true });
@@ -362,7 +378,7 @@ test("endpoint and event parity fails when the real provider or convergence adds
   ]);
   const calls = new Set([...provider.matchAll(/await stripe\.([\w.]+)\(/g)].map((entry) => entry[1]));
   const routes = new Set([...fake.matchAll(/\["(?:POST|GET|DELETE)", .*?, "([\w.]+)"\]/g)].map((entry) => entry[1]));
-  assert.equal(calls.size, 12);
+  assert.equal(calls.size, 13);
   assert.deepEqual([...routes].sort(), [...calls].sort());
   const supported = convergence.match(/const SUPPORTED = new Set\(\[([\s\S]*?)\]\)/)[1];
   const events = fake.match(/const EVENTS = \[([\s\S]*?)\]/)[1];
@@ -734,7 +750,7 @@ for (const currency of [undefined, "gbp", "usd"]) for (const billingMode of ["cl
   ] } });
   const { subscription, item } = await paid(f, { billingMode }, currency ? { currency } : {});
   await f.fake.clock.advance(86400);
-  const update = updateInput(subscription, item, { resetBillingCycle: true, ...(currency ? { currency } : {}) });
+  const update = updateInput(subscription, item, { resetBillingCycle: true, prorationDate: f.fake.state().now, ...(currency ? { currency } : {}) });
   f.fake.faults.inject({ operation: "subscriptions.update", status: 503, when: "after" });
   await assert.rejects(f.provider.updateManagedSubscription(update), unavailable);
   const updated = f.fake.subscriptions.get(subscription.id);

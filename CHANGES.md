@@ -61,6 +61,11 @@ Changes since v0.9.47.
 
 ## Unreleased
 
+- Add provider-free Team Billing `previewPlanTransition` quotes. Durable previews
+  bind confirmation to the same proration date and refuse expired, foreign or
+  changed quotes safely. Public types and the Stripe fake include preview support
+  (#367).
+
 - Add Team Billing currency handover through setup Checkout, non-prorated
   cancellation and an anchored replacement Subscription. A durable paid-through
   latch survives restart; old-currency balances refuse safely (#371). Public

@@ -172,6 +172,7 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       for (const table of [
         "sporades_team_billing_observations",
         "sporades_team_billing_handovers",
+        "sporades_team_billing_quotes",
         "sporades_team_billing_subscriptions",
         "sporades_team_billing_customers",
         "sporades_team_billing_desired_state",

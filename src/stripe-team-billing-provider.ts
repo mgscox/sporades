@@ -1,5 +1,6 @@
 import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
-import { teamBillingPeriodAt } from "./team-billing-subscription-semantics.js";
+import { teamBillingIntervalEnd, teamBillingPeriodAt } from "./team-billing-subscription-semantics.js";
+import { createHash } from "node:crypto";
 import { validBillingCurrency } from "./team-billing-prices.js";
 import Stripe from "stripe";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
@@ -175,6 +176,22 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       }
       return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
     },
+    async previewManagedSubscription(input: LooseRecord) {
+      validateManagedSubscriptionInput(input, config.livemode);
+      throwIfAborted(options.signal);
+      try {
+        const current = await stripe.subscriptions.retrieve(input.subscriptionId);
+        attestManagedSubscription(current, input, new Set([input.sourcePriceId]), false);
+        const refusal = teamBillingTransitionRefusal(current.status, current.cancel_at_period_end || current.cancel_at != null, current.schedule != null);
+        if (refusal || current.pending_update != null) throw quoteInvalid();
+        const quote = await previewManagedInvoice(stripe, current, input, config.apiVersion);
+        throwIfAborted(options.signal);
+        return quote;
+      } catch (error: any) {
+        if (error?.code === "TEAM_BILLING_QUOTE_INVALID") throw error;
+        throwProviderOperationFailure(error);
+      }
+    },
     async updateManagedSubscription(input: LooseRecord) {
       validateManagedSubscriptionInput(input, config.livemode);
       throwIfAborted(options.signal);
@@ -223,7 +240,26 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         });
       }
       let updated: LooseRecord = current;
-      if (!appliedReset) {
+      const appliedQuotedTarget = input.quote && !input.resetBillingCycle && current.pending_update == null
+        && item.price.id !== input.sourcePriceId && item.price.id === input.targetPriceId && item.quantity === input.targetQuantity;
+      if (!appliedReset && !appliedQuotedTarget) {
+        if (input.quote) {
+          const pending = current.pending_update;
+          if (pending != null) {
+            if (!Array.isArray(pending.subscription_items) || pending.subscription_items.length !== 1) throw quoteInvalid();
+            attestManagedItem(pending.subscription_items[0], input, new Set([input.targetPriceId]), true);
+          }
+          // Recover a lost pending-payment response through the original idempotent POST.
+          const source = pending == null ? current : { ...current, pending_update: null };
+          if (input.quote.sourceFingerprint !== subscriptionQuoteFingerprint(source)) throw quoteInvalid();
+          if (pending == null) {
+            let fresh: LooseRecord;
+            try { fresh = await previewManagedInvoice(stripe, current, input, config.apiVersion); }
+            catch (error: any) { throwProviderOperationFailure(error); }
+            if (["currency", "amountDueNow", "nextInvoiceAmount", "creditCarriedForward"].some(key => input.quote[key] !== fresh[key])) throw quoteInvalid();
+          }
+          throwIfAborted(options.signal);
+        }
         try {
           updated = await stripe.subscriptions.update(input.subscriptionId, {
             items: [{
@@ -437,7 +473,7 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "resetBillingCycle", "endTrial", "preserveTrial"].includes(key)).sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "resetBillingCycle", "endTrial", "preserveTrial", "quote"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
@@ -449,6 +485,10 @@ function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean)
     || (input.resume !== undefined && typeof input.resume !== "boolean")
     || (input.currency !== undefined && !validBillingCurrency(input.currency))
     || (input.endTrial !== undefined && (typeof input.endTrial !== "boolean" || input.operationKind !== "plan-transition"))
+    || (input.quote !== undefined && (!input.quote || input.operationKind !== "plan-transition"
+      || !/^[a-f0-9]{64}$/.test(input.quote.sourceFingerprint)
+      || !validBillingCurrency(input.quote.currency)
+      || ![input.quote.amountDueNow, input.quote.nextInvoiceAmount, input.quote.creditCarriedForward].every(amount => Number.isSafeInteger(amount) && amount >= 0)))
     || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
     || !validSubscriptionItemId(input.subscriptionItemId)
     || !validPriceId(input.sourcePriceId) || !validPriceId(input.targetPriceId)
@@ -705,6 +745,73 @@ function providerFailure(retryable: boolean) {
   error.code = retryable ? "TEAM_BILLING_PROVIDER_UNAVAILABLE" : "TEAM_BILLING_PROVIDER_REJECTED";
   error.retryable = retryable;
   return error;
+}
+
+function quoteInvalid() {
+  return Object.assign(new Error("Team Billing quote is unavailable. Request a fresh preview."), { code: "TEAM_BILLING_QUOTE_INVALID", retryable: false });
+}
+
+function subscriptionQuoteFingerprint(subscription: LooseRecord) {
+  const item = subscription.items.data[0];
+  return createHash("sha256").update(JSON.stringify([
+    subscription.id, subscription.customer, subscription.currency, subscription.status, subscription.billing_mode,
+    subscription.billing_cycle_anchor, subscription.trial_end, subscription.cancel_at_period_end, subscription.cancel_at,
+    subscription.schedule, item.id, item.price, item.quantity, item.current_period_start, item.current_period_end,
+    subscription.discounts, subscription.default_tax_rates, subscription.automatic_tax, subscription.pending_update,
+  ])).digest("hex");
+}
+
+async function previewManagedInvoice(stripe: Stripe, current: LooseRecord, input: LooseRecord, apiVersion: string) {
+  const target = await stripe.prices.retrieve(input.targetPriceId, { expand: ["currency_options"] });
+  if (target.object !== "price" || target.id !== input.targetPriceId || target.livemode !== current.livemode
+    || target.active !== true || target.recurring?.usage_type !== "licensed"
+    || (input.targetProductId && target.product !== input.targetProductId)) throw providerFailure(false);
+  const items = [{ id: input.subscriptionItemId, price: input.targetPriceId, quantity: input.targetQuantity }];
+  const invoice = await stripe.invoices.createPreview({
+    customer: input.customerId, subscription: input.subscriptionId,
+    subscription_details: {
+      items, proration_date: input.prorationDate,
+      proration_behavior: input.resetBillingCycle ? "always_invoice" : "create_prorations",
+      ...(input.resetBillingCycle ? { billing_cycle_anchor: billingCycleAnchorNow(apiVersion) } : {}),
+      ...(input.endTrial ? { trial_end: "now" as const } : {}),
+    },
+  });
+  validatePreviewInvoice(invoice, current, input);
+  const source = current.items.data[0];
+  const changedInterval = target.recurring.interval !== source.price.recurring.interval
+    || target.recurring.interval_count !== source.price.recurring.interval_count;
+  const amountInCurrency = (price: LooseRecord) => price.currency === invoice.currency ? price.unit_amount : price.currency_options?.[invoice.currency]?.unit_amount;
+  const freeToPaid = amountInCurrency(source.price) === 0 && amountInCurrency(target) > 0;
+  const immediate = input.endTrial === true || current.status !== "trialing"
+    && (freeToPaid || input.resetBillingCycle === true || current.billing_mode?.type === "classic" && changedInterval);
+  const balance = invoice.ending_balance ?? invoice.total + invoice.starting_balance;
+  if (!Number.isSafeInteger(balance)) throw providerFailure(false);
+  let nextInvoiceAmount = invoice.amount_due;
+  if (immediate) {
+    const recurring = await stripe.invoices.createPreview({
+      customer: input.customerId, subscription: input.subscriptionId, preview_mode: "recurring",
+      subscription_details: { items },
+    });
+    validatePreviewInvoice(recurring, current, input);
+    if (recurring.currency !== invoice.currency) throw providerFailure(false);
+    nextInvoiceAmount = Math.max(0, recurring.total + Math.min(0, balance));
+    if (!Number.isSafeInteger(nextInvoiceAmount)) throw providerFailure(false);
+  }
+  const nextAt = immediate ? teamBillingIntervalEnd(input.prorationDate, target.recurring.interval, target.recurring.interval_count)
+    : current.status === "trialing" ? current.trial_end : source.current_period_end;
+  if (!Number.isSafeInteger(nextAt) || nextAt < 1 || nextAt > 253_402_300_799) throw providerFailure(false);
+  return Object.freeze({ currency: invoice.currency, amountDueNow: immediate ? invoice.amount_due : 0,
+    nextInvoiceAmount, nextInvoiceAt: new Date(nextAt * 1_000).toISOString(), creditCarriedForward: Math.max(0, -balance),
+    sourceFingerprint: subscriptionQuoteFingerprint(current) });
+}
+
+function validatePreviewInvoice(invoice: LooseRecord, current: LooseRecord, input: LooseRecord) {
+  if (invoice.object !== "invoice" || invoice.livemode !== current.livemode || invoice.customer !== input.customerId
+    || invoice.parent?.subscription_details?.subscription !== input.subscriptionId || !validBillingCurrency(invoice.currency)
+    || (current.currency && invoice.currency !== current.currency)
+    || !Number.isSafeInteger(invoice.amount_due) || invoice.amount_due < 0
+    || !Number.isSafeInteger(invoice.total) || !Number.isSafeInteger(invoice.starting_balance)
+    || (invoice.ending_balance !== null && !Number.isSafeInteger(invoice.ending_balance))) throw providerFailure(false);
 }
 
 // Stripe changed this parameter's wire shape in endive; the app may still pin dahlia.

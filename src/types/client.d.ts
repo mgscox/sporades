@@ -421,13 +421,21 @@ export type TeamBillingPortalResult =
   | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
 
 /** `resume: true` clears a scheduled cancellation in the same provider update. */
-export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; resume?: boolean; currency?: string };
+export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; resume?: boolean; currency?: string; quoteId?: string };
+/** Names only a catalogue target; timing, quantity and proration are server-owned. */
+export type TeamBillingPlanPreviewRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
+export type TeamBillingPlanPreviewResult =
+  | { state: "pending" | "expired" | "failed"; teamId: string; requestId: string; productKey: string }
+  | { state: "ready"; teamId: string; requestId: string; productKey: string; quoteId: string; timing: "now"; currency: string;
+      /** Non-negative integer minor units, never floating point currency amounts. */
+      amountDueNow: number; nextInvoiceAmount: number; creditCarriedForward: number;
+      nextInvoiceAt: string; expiresAt: string };
 /** A validated, expiring Stripe hosted-invoice capability for `payment-action-required` recovery. */
 export type TeamBillingPaymentAction = { url: string; expiresAt: string };
 export type TeamBillingPlanTransitionResult =
   | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
-  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "payment-action-required" | "currency-mismatch" | "provider-state-ambiguous" | "unavailable"; paymentAction?: TeamBillingPaymentAction };
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "quote-invalid" | "authority-changed" | "payment-action-required" | "currency-mismatch" | "provider-state-ambiguous" | "unavailable"; paymentAction?: TeamBillingPaymentAction };
 
 export type TeamBillingErasureRequest = { teamId: string; requestId: string };
 export type TeamBillingErasureResult =
@@ -440,6 +448,7 @@ export type TeamBillingApi = {
   startCheckout(input: TeamBillingCheckoutRequest): Promise<SporadesResult<TeamBillingCheckoutResult>>;
   startCurrencyHandover(input: TeamBillingCurrencyHandoverRequest): Promise<SporadesResult<TeamBillingCurrencyHandoverResult>>;
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
+  previewPlanTransition(input: TeamBillingPlanPreviewRequest): Promise<SporadesResult<TeamBillingPlanPreviewResult>>;
   requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
   /** Proves provider quiescence before the app performs its separate local Team deletion transaction. */
   prepareErasure(input: TeamBillingErasureRequest): Promise<SporadesResult<TeamBillingErasureResult>>;

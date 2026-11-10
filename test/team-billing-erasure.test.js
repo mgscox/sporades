@@ -31,6 +31,8 @@ const auth = { userId: "erasure-admin", isAuthenticated: true, isGuest: false, p
 test("provider-quiesced erasure returns only local deletion authorization and leaves a provider-free tombstone", async () => {
   const fixture = openFixture();
   try {
+    fixture.sqlite.prepare("INSERT INTO [sporades_team_billing_quotes] ([operationId], [teamId], [snapshot], [expiresAt]) VALUES ('preview-operation', ?, ?, ?)")
+      .run(teamId, JSON.stringify({ providerSubscriptionId: "sub_erasure" }), "2026-08-24T10:05:00.000Z");
     const pending = await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId);
     assert.deepEqual(pending, { state: "pending", teamId, requestId, requestedAt: "2026-08-24T10:00:00.000Z" });
     assert.equal(fixture.providerCalls.length, 0, "admission never performs provider I/O");
@@ -56,6 +58,7 @@ test("provider-quiesced erasure returns only local deletion authorization and le
     assert.equal(fixture.count("sporades_team_billing_customers"), 0);
     assert.equal(fixture.count("sporades_team_billing_subscriptions"), 0);
     assert.equal(fixture.count("sporades_team_billing_operations"), 0);
+    assert.equal(fixture.count("sporades_team_billing_quotes"), 0);
     assert.equal(fixture.count("sporades_team_billing_erasure_state"), 0);
     const tombstone = fixture.sqlite.prepare("SELECT * FROM [sporades_team_billing_erasure_tombstones]").get();
     assert.deepEqual(Object.keys(tombstone).sort(), ["createdAt", "erasureKey", "evidenceDigest", "providerQuiescedAt"]);
@@ -628,6 +631,7 @@ function openFixture() {
     "CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [replacedBy] TEXT NULL, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)",
     "CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [providerExpiresAt] INTEGER NULL, [attemptedAt] TEXT NULL, [trialDays] INTEGER NULL, [providerCustomerId] TEXT NULL, [providerSubscriptionId] TEXT NULL, UNIQUE ([teamId], [requestId]))",
     "CREATE TABLE [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL)",
+    "CREATE TABLE [sporades_team_billing_quotes] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [snapshot] TEXT NOT NULL, [result] TEXT NULL, [expiresAt] TEXT NOT NULL, [consumedBy] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_handovers] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [sourceSubscriptionId] TEXT NOT NULL, [sourceSnapshot] TEXT NOT NULL, [anchor] TEXT NOT NULL, [phase] TEXT NOT NULL, [setupSessionId] TEXT NULL, [latchUntil] TEXT NULL, [cancelDispatched] INTEGER NOT NULL DEFAULT 0, [attemptToken] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)",

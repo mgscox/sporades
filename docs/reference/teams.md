@@ -943,6 +943,66 @@ the same operation as done and `customer.subscription.pending_update_expired`
 settles it as refused.
 Retries preserve the exact provider tuple and idempotency key.
 
+### Preview a Plan change before confirmation
+
+```ts
+const previewRequest = {
+  teamId, requestId: crypto.randomUUID(), productKey: "agency", interval: "year:1",
+} as const;
+const preview = await teamBilling.previewPlanTransition(previewRequest);
+// Poll the same exact request while pending. The Capsule renders the amounts.
+if (preview.data?.state === "ready") {
+  const quote = preview.data;
+  // Show quote.amountDueNow, quote.nextInvoiceAmount, quote.nextInvoiceAt,
+  // quote.currency, quote.creditCarriedForward and quote.expiresAt.
+  // Once the user confirms, use a NEW requestId for the transition:
+  await teamBilling.requestPlanTransition({
+    ...previewRequest, requestId: crypto.randomUUID(), quoteId: quote.quoteId,
+  });
+}
+```
+
+`previewPlanTransition` is a durable short operation with `pending`, `ready`,
+`expired`, and `failed` states. A Job calls Stripe `invoices.createPreview`;
+polling only reads durable state. A preview never changes the Subscription or
+entitlement. Both admission and provider dispatch require a current linked Team
+administrator approved as Billing Holder by the Capsule's existing
+`authorize` policy for `operation: "plan-transition"`. Reading a ready quote
+rechecks that authority. Other members receive opaque `TEAM_BILLING_DENIED`.
+
+The ready result has an opaque `quoteId`, `timing: "now"`, `currency`,
+`amountDueNow`, `nextInvoiceAmount`, `nextInvoiceAt`, `creditCarriedForward`, and
+`expiresAt`. All three amounts are non-negative safe integers in minor units;
+dates are UTC ISO strings. `amountDueNow` is zero for changes whose prorations
+go onto the next invoice. For an immediate invoice, `nextInvoiceAmount` describes
+the following recurring invoice. Credit carried forward is reported separately.
+`nextInvoiceAt` is a preview-time estimate: a period reset anchors at confirmation,
+so delayed confirmation can move its renewal date while retaining the quoted proration.
+The browser names only the catalogue target and optional interval. Sporades
+selects quantity, timing, trial handling, and proration using the same rules as
+the transition; browser-supplied timing or provider parameters are refused.
+
+Quotes expire five minutes after admission and are bound to the exact actor,
+Team, verified Subscription snapshot, target Price, billable quantity and policy.
+`quoteId` is optional on `requestPlanTransition` for existing callers. When
+supplied, it binds the original `proration_date`, is consumed atomically with
+the desired intent and Job, and cannot be reused for another transition request.
+Replaying the accepted transition request remains idempotent after quote expiry.
+Expired, foreign, consumed, retargeted or stale quotes return the same safe
+`TEAM_BILLING_QUOTE_INVALID` code. Request a fresh preview before confirming
+again. Quotes do not support `resume: true`; cancellation must first be resolved.
+
+Before the first write the Job checks the bound local state again. A provider
+read and fresh preview also refuse changed source facts or amounts rather than
+silently charging a different quote; the operation then fails with
+`reason: "quote-invalid"`. Quoted quantities stay fixed during retries; verified
+evidence can stage ordinary seat convergence afterwards. The per-Team provider
+lane also serializes preview work against provider writes. The fake proves
+preview/confirmation parity, including delayed confirmation, next-invoice
+prorations, credit, expiry and authority revocation. Real Stripe acceptance
+remains a separate sandbox/test-clock check. Existing tax configuration and
+registrations remain operator-owned; preview does not enable Stripe Tax.
+
 For an active `team-members` Plan, a committed Join, removal, or leave stages
 seat convergence after the membership transaction. Staging or provider outage
 cannot roll that membership change back. New counts supersede stale queued or

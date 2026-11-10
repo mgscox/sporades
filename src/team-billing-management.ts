@@ -12,10 +12,193 @@ import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantity
 
 type LooseRecord = Record<string, any>;
 
+export const TEAM_BILLING_PLAN_PREVIEW_JOB = "_sporades.team-billing-plan-preview";
+const QUOTE_TTL_MS = 5 * 60 * 1_000;
 export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 const CLAIM_TTL_MS = 5 * 60 * 1_000;
 const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Preview is an ordinary durable short Job; polling never performs provider I/O. */
+export async function previewTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, input: any) {
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).some(key => !["teamId", "requestId", "productKey", "interval"].includes(key))
+    || !TEAM_ID_PATTERN.test(input.teamId) || !TEAM_ID_PATTERN.test(input.requestId)
+    || typeof input.productKey !== "string") throw denied();
+  const { teamId, requestId, productKey, interval } = input;
+  const product = database.teamBillingDefinition?.catalogue?.[productKey];
+  const price = product && teamBillingPrice(modeBinding(database, product), interval);
+  if (!price) throw denied();
+  let enqueued = false;
+  const result = await inTransaction(database, async transaction => {
+    await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
+    await assertTeamBillingErasureInactive(database, transaction, teamId);
+    await assertCurrencyHandoverInactive(transaction, teamId);
+    const repeated = await transaction.prepare(transaction.dialect.sql(
+      "SELECT * FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+    )).get(teamId, requestId);
+    if (repeated) {
+      if (repeated.kind !== "plan-preview" || repeated.actorUserId !== auth.userId || repeated.productKey !== productKey
+        || repeated.providerPriceId !== price.priceId) throw conflict();
+      const quote = await readQuote(transaction, repeated.id);
+      if (!quote || quote.expiresAt <= nowIso(database)) return Object.freeze({ state: "expired", teamId, requestId, productKey });
+      if (repeated.status === "ready") {
+        const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, false, undefined, JSON.parse(quote.snapshot).effectiveAt);
+        if (quote.consumedBy || quote.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
+        return Object.freeze({ state: "ready", teamId, requestId, productKey, quoteId: repeated.id,
+          timing: "now", ...publicQuote(JSON.parse(quote.result)), expiresAt: quote.expiresAt });
+      }
+      return Object.freeze({ state: repeated.status === "failed" ? "failed" : "pending", teamId, requestId, productKey });
+    }
+    const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, false);
+    const operationId = randomUUID();
+    const now = nowIso(database);
+    const expiresAt = new Date(database.clock.now().getTime() + QUOTE_TTL_MS).toISOString();
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [idempotencyKey], [createdAt], [updatedAt], [providerPriceId]) " +
+      "VALUES (?, ?, ?, ?, 'plan-preview', ?, 'queued', ?, ?, ?, ?)",
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, price.priceId);
+    await transaction.prepare(transaction.dialect.sql(
+      "INSERT INTO [sporades_team_billing_quotes] ([operationId], [teamId], [snapshot], [expiresAt]) VALUES (?, ?, ?, ?)",
+    )).run(operationId, teamId, JSON.stringify(resolved), expiresAt);
+    await database.enqueueTeamBillingPlanPreviewJob(transaction, { operationId }, `team-billing-preview:${operationId}`);
+    enqueued = true;
+    return Object.freeze({ state: "pending", teamId, requestId, productKey });
+  });
+  if (enqueued) scheduleAfterOwnedTransaction(database);
+  return result;
+}
+
+export async function performTeamBillingPlanPreview(database: LooseRecord, context: LooseRecord, payload: any, attempt = 1) {
+  if (!payload || Object.keys(payload).join() !== "operationId" || !TEAM_ID_PATTERN.test(payload.operationId)) throw denied();
+  const token = randomUUID();
+  let teamId: string | undefined;
+  let laneClaimed = false;
+  try {
+    const input = await inTransaction(database, async transaction => {
+      const operation = await transaction.prepare(transaction.dialect.sql(
+        "SELECT * FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-preview'",
+      )).get(payload.operationId);
+      if (!operation || !["queued", "running", "retrying"].includes(operation.status)) return null;
+      teamId = operation.teamId;
+      const auth = await database.readTeamBillingActorAuth(transaction, operation.actorUserId);
+      const quote = await readQuote(transaction, operation.id);
+      const snapshot = quote && JSON.parse(quote.snapshot);
+      const product = database.teamBillingDefinition?.catalogue?.[operation.productKey];
+      const price = product && teamBillingPriceById(modeBinding(database, product), operation.providerPriceId);
+      if (!snapshot || !price || quote.expiresAt <= nowIso(database)) throw invalidQuote();
+      await admitPlanTransition(database, transaction, auth, operation.teamId, operation.productKey, price.interval);
+      const resolved = await resolvePlanTarget(database, transaction, operation.teamId, operation.productKey, price, false, undefined, snapshot.effectiveAt);
+      if (quote.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
+      const customer = await transaction.prepare(transaction.dialect.sql(
+        "SELECT [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ? AND [mode] = ?",
+      )).get(teamId, snapshot.subscription.mode);
+      if (!customer) throw attentionRequired();
+      if (!await claimLane(transaction, operation.teamId, token, database)) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [updatedAt] = ? WHERE [id] = ?",
+      )).run(nowIso(database), operation.id);
+      return {
+        mode: snapshot.subscription.mode, customerId: customer.providerCustomerId,
+        subscriptionId: snapshot.subscription.providerSubscriptionId, subscriptionItemId: snapshot.subscription.providerSubscriptionItemId,
+        sourcePriceId: snapshot.subscription.providerPriceId, targetPriceId: price.priceId,
+        targetProductId: modeBinding(database, product).productId, targetQuantity: snapshot.quantity,
+        ...(snapshot.subscription.currency ? { currency: snapshot.subscription.currency } : {}),
+        prorationDate: snapshot.effectiveAt, resetBillingCycle: snapshot.resetBillingCycle === 1,
+        endTrial: snapshot.endTrial, preserveTrial: snapshot.preserveTrial,
+        operationKind: "plan-transition", idempotencyKey: operation.idempotencyKey,
+      };
+    });
+    if (!input) return { superseded: true };
+    laneClaimed = true;
+    const provider = database.createStripeTeamBillingProvider({
+      enabled: true, config: database.paymentsConfig.stripe, env: database.serverEnv, signal: context?.signal,
+      ...(database.stripeApiBaseUrl ? { apiBaseUrl: database.stripeApiBaseUrl } : {}),
+    });
+    const result = await provider.previewManagedSubscription(input);
+    // Only the bounded normalized quote is retained, never an Invoice object.
+    if (!validQuote(result)) throw coded("Team Billing quote unavailable.", "TEAM_BILLING_PROVIDER_REJECTED");
+    await inTransaction(database, async transaction => {
+      if (!await releaseLane(transaction, teamId!, token, database)) throw invalidQuote();
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_quotes] SET [result] = ? WHERE [operationId] = ?",
+      )).run(JSON.stringify(result), payload.operationId);
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'",
+      )).run(nowIso(database), payload.operationId);
+    });
+    return { ready: true };
+  } catch (error: any) {
+    const retry = (error?.retryable === true || error?.name === "AbortError" || error?.code === "ABORT_ERR") && attempt < 3;
+    await inTransaction(database, async transaction => {
+      if (teamId && laneClaimed && !await releaseLane(transaction, teamId, token, database)) return;
+      await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = 'PREVIEW_UNAVAILABLE', [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')",
+      )).run(retry ? "retrying" : "failed", nowIso(database), payload.operationId);
+    });
+    error.retryable = retry;
+    throw error;
+  }
+}
+
+async function resolvePlanTarget(database: LooseRecord, transaction: LooseRecord, teamId: string, productKey: string, price: LooseRecord,
+  resume = false, currency?: string, effectiveAt = nowSeconds(database)) {
+  await assertTeamBillingErasureInactive(database, transaction, teamId);
+  await assertCurrencyHandoverInactive(transaction, teamId);
+  const subscription = await currentSubscription(transaction, teamId);
+  const refusal = transitionRefusal(subscription, resume);
+  if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
+  const definition = database.teamBillingDefinition;
+  const currentProduct = definition.catalogue[subscription.productKey];
+  const targetProduct = definition.catalogue[productKey];
+  assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+  if ((currency !== undefined && currency !== subscription.currency)
+    || ((price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency)
+      && billingCurrencyAmount(price, subscription.currency) === undefined)) throw billingCurrencyMismatch();
+  if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
+  const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
+  assertUsageMaximum(targetProduct, quantity);
+  const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
+  return { subscription, quantity, effectiveAt, currentProduct, targetProduct,
+    endTrial: subscription.state === "trialing" && definition.transitions?.endTrial === true,
+    preserveTrial: subscription.state === "trialing" && definition.transitions?.endTrial !== true,
+    resetBillingCycle: subscription.state !== "trialing" && longerInterval(currentInterval, price.interval, effectiveAt) ? 1 : 0 };
+}
+
+async function readQuote(transaction: LooseRecord, quoteId: string) {
+  return transaction.prepare(transaction.dialect.sql("SELECT * FROM [sporades_team_billing_quotes] WHERE [operationId] = ?")).get(quoteId);
+}
+
+async function quoteForConfirmation(database: LooseRecord, transaction: LooseRecord, auth: LooseRecord, teamId: string,
+  productKey: string, price: LooseRecord, resume: any, quoteId: any) {
+  if (typeof quoteId !== "string" || !TEAM_ID_PATTERN.test(quoteId) || resume === true) throw invalidQuote();
+  const operation = await transaction.prepare(transaction.dialect.sql(
+    "SELECT * FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'plan-preview'",
+  )).get(quoteId);
+  const quote = operation && await readQuote(transaction, quoteId);
+  if (!quote || operation.teamId !== teamId || operation.actorUserId !== auth.userId || operation.productKey !== productKey
+    || operation.providerPriceId !== price.priceId || operation.status !== "ready" || quote.consumedBy
+    || quote.expiresAt <= nowIso(database) || !validQuote(JSON.parse(quote.result))) throw invalidQuote();
+  const desired = await desiredForTeam(transaction, teamId);
+  if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) throw invalidQuote();
+  return quote;
+}
+
+function publicQuote(quote: LooseRecord) {
+  return { currency: quote.currency, amountDueNow: quote.amountDueNow, nextInvoiceAmount: quote.nextInvoiceAmount,
+    nextInvoiceAt: quote.nextInvoiceAt, creditCarriedForward: quote.creditCarriedForward };
+}
+
+function validQuote(quote: any) {
+  return quote && typeof quote === "object" && !Array.isArray(quote)
+    && Object.keys(quote).sort().join() === "amountDueNow,creditCarriedForward,currency,nextInvoiceAmount,nextInvoiceAt,sourceFingerprint"
+    && /^[a-z]{3}$/.test(quote.currency) && /^[a-f0-9]{64}$/.test(quote.sourceFingerprint)
+    && [quote.amountDueNow, quote.nextInvoiceAmount, quote.creditCarriedForward].every(amount => Number.isSafeInteger(amount) && amount >= 0)
+    && typeof quote.nextInvoiceAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(quote.nextInvoiceAt)
+    && Number.isFinite(Date.parse(quote.nextInvoiceAt));
+}
+
+function invalidQuote() { return coded("Team Billing quote is unavailable. Request a fresh preview.", "TEAM_BILLING_QUOTE_INVALID"); }
 
 export async function requestTeamBillingPlanTransition(
   database: LooseRecord,
@@ -26,6 +209,7 @@ export async function requestTeamBillingPlanTransition(
   interval?: any,
   resume?: any,
   currency?: any,
+  quoteId?: any,
 ) {
   // Callers that predate the `resume` parameter pass the selected currency positionally.
   if (typeof resume === "string") { currency = resume; resume = undefined; }
@@ -42,43 +226,38 @@ export async function requestTeamBillingPlanTransition(
     await assertCurrencyHandoverInactive(transaction, teamId);
     const sql = transaction.dialect.sql;
     const repeated = await transaction.prepare(sql(
-      "SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt], [paymentActionUrl], [paymentActionExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+      "SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt], [paymentActionUrl], [paymentActionExpiresAt], [quoteId], [actorUserId] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
     )).get(teamId, requestId);
     if (repeated) {
+      if ((repeated.quoteId ?? undefined) !== quoteId || (quoteId !== undefined && repeated.actorUserId !== auth.userId)) throw invalidQuote();
       if (currency !== undefined && currency !== repeated.currency) throw billingCurrencyMismatch();
       if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey || (repeated.providerPriceId ?? null) !== (price.interval ? price.priceId : null)) throw conflict();
       return planOperationResult(database, teamId, requestId, productKey, repeated);
     }
-    const subscription = await currentSubscription(transaction, teamId);
-    const refusal = transitionRefusal(subscription, resume === true);
-    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
-    const currentProduct = definition.catalogue[subscription.productKey];
-    const targetProduct = definition.catalogue[productKey];
-    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
-    if ((currency !== undefined && currency !== subscription.currency)
-      || ((price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency)
-        && billingCurrencyAmount(price, subscription.currency) === undefined)) throw billingCurrencyMismatch();
-    if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
-    const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
-    assertUsageMaximum(targetProduct, quantity);
+    const quote = quoteId === undefined ? null : await quoteForConfirmation(database, transaction, auth, teamId, productKey, price, resume, quoteId);
+    const effectiveAt = quote ? JSON.parse(quote.snapshot).effectiveAt : nowSeconds(database);
+    const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, resume === true, currency, effectiveAt);
+    const { subscription, quantity, endTrial, preserveTrial, resetBillingCycle } = resolved;
+    if (quote && quote.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
     const operationId = randomUUID();
     const now = nowIso(database);
-    const effectiveAt = nowSeconds(database);
-    const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
     const staged = await stageDesired(transaction, database, {
-      teamId, kind: "plan-transition", operationId, endTrial: subscription.state === "trialing" && definition.transitions?.endTrial === true, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
-      preserveTrial: subscription.state === "trialing" && definition.transitions?.endTrial !== true,
-      resetBillingCycle: subscription.state !== "trialing" && longerInterval(currentInterval, price.interval, effectiveAt) ? 1 : 0,
-    });
+      teamId, kind: "plan-transition", operationId, endTrial, preserveTrial, resetBillingCycle,
+      targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null,
+      targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
+    }, quote !== null);
+    if (quote) await transaction.prepare(sql(
+      "UPDATE [sporades_team_billing_quotes] SET [consumedBy] = ? WHERE [operationId] = ? AND [consumedBy] IS NULL",
+    )).run(operationId, quoteId);
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
       "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')",
     )).run(now, teamId);
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] " +
-      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [currency]) " +
-      "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
-    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity, price.interval ? price.priceId : null, subscription.currency ?? null);
+      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [currency], [quoteId]) " +
+      "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+    )).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity, price.interval ? price.priceId : null, subscription.currency ?? null, quoteId ?? null);
     await enqueueIntent(database, transaction, staged);
     enqueued = true;
     return Object.freeze({ state: "pending" as const, teamId, requestId, productKey, requestedAt: now });
@@ -191,8 +370,13 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     const desired = await desiredByIntent(transaction, payload.intentId);
     if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId
       || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
+    await lockTeamLifecycle(transaction, desired.teamId, denied);
     await assertCurrencyHandoverInactive(transaction, desired.teamId);
     const subscription = await currentSubscription(transaction, desired.teamId);
+    const quoteId = desired.operationId && (await transaction.prepare(transaction.dialect.sql(
+      "SELECT [quoteId] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+    )).get(desired.operationId))?.quoteId;
+    const quote = quoteId ? await readQuote(transaction, quoteId) : null;
     const product = database.teamBillingDefinition?.catalogue?.[desired.targetProductKey];
     if (!product) return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
     try {
@@ -221,9 +405,15 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
       if (!admission) return attention(transaction, database, desired, "AUTHORITY_CHANGED", true);
       const billableQuantity = await targetQuantity(database, transaction, desired.teamId, product);
       assertUsageMaximum(product, billableQuantity);
+      if (quoteId && (!quote || quote.consumedBy !== desired.operationId
+        || (!desired.providerAttemptedAt && (quote.expiresAt <= nowIso(database)
+          || quote.snapshot !== JSON.stringify(await resolvePlanTarget(database, transaction, desired.teamId, desired.targetProductKey,
+            price, false, undefined, Number(desired.effectiveAt))))))) {
+        return attention(transaction, database, desired, "TEAM_BILLING_QUOTE_INVALID");
+      }
       // Resolve an attempted interval or trial change with its original tuple first.
       // Verified evidence then stages seats against the applied period.
-      if (billableQuantity !== Number(desired.targetQuantity)
+      if (!quote && billableQuantity !== Number(desired.targetQuantity)
         && !((desired.resetBillingCycle === 1 || desired.endTrial === 1 || desired.preserveTrial === 1) && desired.providerAttemptedAt)) {
         const replacement = await stageDesired(transaction, database, {
           teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
@@ -278,6 +468,7 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
         prorationDate: Number(desired.effectiveAt),
         idempotencyKey: desired.idempotencyKey,
         operationKind: desired.kind,
+        ...(quote ? { quote: JSON.parse(quote.result) } : {}),
         ...(desired.resetBillingCycle === 1 ? { resetBillingCycle: true } : {}),
         resume: desired.resume === 1,
         ...(desired.endTrial === 1 ? { endTrial: true } : {}),
@@ -768,7 +959,8 @@ function planOperationResult(database: LooseRecord, teamId: string, requestId: s
     return Object.freeze({ state: operation.status, teamId, requestId, productKey });
   }
   if (operation.status === "failed") {
-    const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed"
+    const reason = operation.safeFailureCode === "TEAM_BILLING_QUOTE_INVALID" ? "quote-invalid"
+      : operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed"
       : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required"
         : operation.safeFailureCode === "CURRENCY_MISMATCH" ? "currency-mismatch"
         : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)

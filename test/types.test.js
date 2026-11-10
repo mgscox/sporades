@@ -1217,6 +1217,7 @@ teamBilling.startCurrencyHandover({ teamId: "00000000-0000-4000-8000-00000000000
 // @ts-expect-error A currency handover requires an explicit target currency.
 teamBilling.startCurrencyHandover({ teamId: "team", requestId: "request", productKey: "agency" });
 teamBilling.requestPlanTransition({
+  quoteId: "opaque-quote-id",
   interval: "month:1",
   currency: "usd",
   teamId: "00000000-0000-4000-8000-000000000000",
@@ -1226,6 +1227,24 @@ teamBilling.requestPlanTransition({
   if (result.data?.state === "pending") result.data.requestedAt.toUpperCase();
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
+teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", productKey: "agency", interval: "year:1" }).then(result => {
+  if (result.data?.state === "ready") {
+    result.data.quoteId.toUpperCase();
+    result.data.amountDueNow.toFixed();
+    result.data.nextInvoiceAmount.toFixed();
+    result.data.creditCarriedForward.toFixed();
+    result.data.currency.toUpperCase();
+    result.data.nextInvoiceAt.toUpperCase();
+    result.data.expiresAt.toUpperCase();
+    result.data.timing satisfies "now";
+    // @ts-expect-error Provider identities never appear in a browser quote.
+    result.data.subscriptionId;
+  }
+});
+// @ts-expect-error Browser preview inputs cannot select proration timing.
+teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", productKey: "agency", prorationDate: 1 });
+// @ts-expect-error Browser preview inputs cannot select a charge policy.
+teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", productKey: "agency", timing: "now" });
 teamBilling.prepareErasure({
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "44444444-4444-4444-8444-444444444444",
