@@ -20,9 +20,14 @@ test("a retry waits beyond the former polling window for the durable staging win
     const [winner, retry] = await Promise.all([stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" })]);
     assert.equal(retry.multipart.files[0].leaseId, winner.multipart.files[0].leaseId); assert.equal(writes, 1);
     const stored = await database.adapter.prepare("SELECT [key], [payload] FROM [sporades_file_ingress]").get(); const row = JSON.parse(stored.payload);
+    // Count, not clock: an expired or terminal-failed row must reject without a
+    // single poll sleep, so load on the QA lane can never flake this assertion.
+    const pollDelays = [];
+    database.__ingressPollDelay = (milliseconds) => { pollDelays.push(milliseconds); return Promise.resolve(); };
     for (const replacement of [{ ...row, state: "staging", expiresAt: "2000-01-01T00:00:00.000Z" }, { ...row, state: "failed", retryable: false }]) {
       await database.adapter.prepare("UPDATE [sporades_file_ingress] SET [payload] = ? WHERE [key] = ?").run(JSON.stringify(replacement), stored.key);
-      const started = Date.now(); await assert.rejects(stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), { code: "INGRESS_STAGING_INCOMPLETE" }); assert.ok(Date.now() - started < 500);
+      await assert.rejects(stageMultipartIngress(database, endpoint, request(), { headers }, { userId: "actor" }), { code: "INGRESS_STAGING_INCOMPLETE" });
+      assert.equal(pollDelays.length, 0);
     }
     await database.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
