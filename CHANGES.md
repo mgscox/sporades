@@ -72,7 +72,9 @@ Changes since v0.9.47.
   Seat and usage quantity writes route through `subscriptionSchedules.update`
   while a runtime-owned schedule is attached; foreign schedules block managed
   work with `TEAM_BILLING_UNKNOWN_SCHEDULE`; erasure releases every attached
-  schedule before cancelling its Subscription. The Stripe fake models the
+  schedule before cancelling its Subscription. A trialling Subscription never
+  rides a schedule: `timing: "period-end"` falls back to an immediate switch
+  that keeps the trial, as documented. The Stripe fake models the
   schedule subset with phase transition on `clock.advance`.
 
 - Team Billing plan switches during trials preserve the trial by default. Server-only

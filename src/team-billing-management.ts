@@ -62,10 +62,11 @@ export async function requestTeamBillingPlanTransition(
     if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
     const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
     assertUsageMaximum(targetProduct, quantity);
-    // A period-end change rides a Subscription Schedule; trial and anchor
-    // manipulation stay on the immediate path.
-    if (admission.timing === "period-end" && subscription.state === "trialing") throw denied();
-    const timing = admission.timing === "period-end" ? "period-end" as const : "now" as const;
+    // A period-end change rides a Subscription Schedule, but a trial never
+    // does: it falls back to the immediate path, which preserves or ends the
+    // trial according to the declared policy.
+    const timing = admission.timing === "period-end" && subscription.state !== "trialing"
+      ? "period-end" as const : "now" as const;
     const operationId = randomUUID();
     const now = nowIso(database);
     const effectiveAt = nowSeconds(database);
@@ -73,7 +74,7 @@ export async function requestTeamBillingPlanTransition(
     // Latest-wins: a new period-end request rewrites the already-attached
     // runtime-owned schedule instead of refusing it as foreign.
     const previous = await desiredForTeam(transaction, teamId);
-    const ownedScheduleId = previous?.kind === "plan-transition" && previous.status === "scheduled"
+    const ownedScheduleId = timing === "period-end" && previous?.kind === "plan-transition" && previous.status === "scheduled"
       && previous.timing === "period-end" && previous.releaseSchedule !== 1
       && (subscription.hasSchedule !== 1 || subscription.providerScheduleId === previous.providerScheduleId)
       ? previous.providerScheduleId : null;

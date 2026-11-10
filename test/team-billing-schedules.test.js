@@ -86,6 +86,63 @@ test('cancelling without a scheduled change refuses, and a foreign schedule bloc
   assert.equal(read.productKey, 'basic');
 });
 
+test('a period-end request during a trial falls back to an immediate switch, never a schedule', async t => {
+  const f = await fixture(t, { ...SCHEDULE_TEST, trialDays: 14 });
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  const before = fake.subscriptions.get(subscriptionId);
+  assert.equal(before.status, 'trialing');
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1')).state, 'pending');
+  await f.drain();
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.create').length, 0, 'a trial never rides a schedule');
+  assert.equal(fake.state().schedules.length, 0);
+  const updated = fake.subscriptions.get(subscriptionId);
+  assert.equal(updated.status, 'trialing');
+  assert.equal(updated.trial_end, before.trial_end, 'the documented fallback preserves the trial');
+  assert.equal(updated.items.data[0].price.id, 'price_offered_month', 'the switch applies immediately');
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptions.update').length, 1);
+  const desired = database.adapter.prepare("SELECT [timing], [providerScheduleId] FROM [sporades_team_billing_desired_state]").get();
+  assert.equal(desired.timing, null, 'the fallback is staged as immediate timing');
+  assert.equal(desired.providerScheduleId, null);
+  await f.deliver();
+  const read = await f.read();
+  assert.equal(read.state, 'trialing');
+  assert.equal(read.productKey, 'offered');
+});
+
+test('only the owning Team admin can release a scheduled change', async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  const now = new Date().toISOString();
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'plain-member', 'member', ?)").run(teamId, now);
+  const otherTeamId = randomUUID();
+  database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Other', ?, 'other-admin')").run(otherTeamId, now);
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'other-admin', 'admin', ?)").run(otherTeamId, now);
+  const plainMember = { ...actor, userId: 'plain-member' };
+  const otherAdmin = { ...actor, userId: 'other-admin' };
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, plainMember, teamId, randomUUID()), { code: 'TEAM_BILLING_DENIED' });
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, otherAdmin, teamId, randomUUID()), { code: 'TEAM_BILLING_DENIED' });
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, plainMember, otherTeamId, randomUUID()), { code: 'TEAM_BILLING_DENIED' });
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.release').length, 0, 'refused callers never reach the provider');
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, fake.state().schedules.at(-1).id);
+  await cancelScheduledTeamBillingPlanTransition(database, actor, teamId, randomUUID());
+  await f.drain();
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.release').length, 1);
+});
+
+test('a foreign schedule is never released by the scheduled-change command', async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  await fake.subscriptions.setSchedule(subscriptionId, 'sub_sched_foreign_dashboard');
+  await f.deliver();
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, actor, teamId, randomUUID()), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.release').length, 0, 'a Dashboard-owned schedule is out of reach');
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, 'sub_sched_foreign_dashboard');
+});
+
 test('a later period-end request replaces the pending phase of the same schedule', async t => {
   const f = await fixture(t, SCHEDULE_TEST);
   const { database, actor, teamId, fake, subscriptionId } = f;
@@ -157,7 +214,7 @@ async function fixture(t, options = SCHEDULE_TEST) {
   const teamId = randomUUID();
   const offered = new Set(['basic', 'offered']);
   const catalogue = Object.fromEntries(['basic', 'offered'].map(key => [key, {
-    quantity: options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
+    quantity: options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }, ...(options.trialDays ? { trialDays: options.trialDays } : {}), stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
       productId: `prod_${mode === 'live' ? 'live_' : ''}${key}`, portalConfigurationId: `bpc_${mode}_${key}`,
       prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month` }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year` } },
     }])),
@@ -207,6 +264,6 @@ async function fixture(t, options = SCHEDULE_TEST) {
   await startTeamBillingCheckout(database, actor, teamId, randomUUID(), 'basic', 'month:1'); await drain();
   const completed = await fake.checkout.complete(fake.state().checkouts[0].id);
   await deliver();
-  assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, 'active');
+  assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, options.trialDays ? 'trialing' : 'active');
   return { database, actor, teamId, fake, drain, deliver, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };
 }
