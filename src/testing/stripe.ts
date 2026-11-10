@@ -1,4 +1,4 @@
-import { teamBillingIntervalEnd } from "../team-billing-subscription-semantics.js";
+import { teamBillingIntervalEnd, teamBillingPeriodAt } from "../team-billing-subscription-semantics.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type {
@@ -434,7 +434,11 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       async renew(id) {
         const subscription = liveSubscription(id); const item = subscription.items.data[0];
         requireValue(!subscription.cancel_at_period_end, "Subscription is scheduled for cancellation.");
-        item.current_period_start = item.current_period_end; item.current_period_end = periodEnd(item.current_period_start, item.price);
+        const start = item.current_period_end;
+        if (subscription.status === "trialing") subscription.billing_cycle_anchor = start;
+        const period = teamBillingPeriodAt(subscription.billing_cycle_anchor, item.price.recurring.interval, item.price.recurring.interval_count, start);
+        requireValue(period, "Invalid recurring period.");
+        item.current_period_start = start; item.current_period_end = period.end;
         subscription.status = "active"; return subscriptionEvent(subscription);
       },
       async failPayment(id) {

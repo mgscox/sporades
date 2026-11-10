@@ -781,3 +781,25 @@ test("pending flexible annual upgrades charge and reset only after successful pa
   assert.equal(applied.billing_cycle_anchor, f.fake.state().now);
   assert.equal(f.fake.state().invoices[0].lines.data[0].amount, 5000);
 });
+
+for (const billingMode of ["classic", "flexible"]) test(`quarterly renewals retain the January 31 anchor after April clamping (${billingMode})`, async t => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  t.mock.method(Date, "now", () => seconds("2027-01-31") * 1000);
+  const f = await fixture(t, { catalogue: { ...catalogue, products: [
+    ...catalogue.products, { id: "prod_quarter", prices: [{ id: "price_quarter", recurring: "month", intervalCount: 3 }] },
+  ] } });
+  const { subscription, item } = await paid(f, { billingMode });
+  const update = updateInput(subscription, item, { targetPriceId: "price_quarter", targetProductId: "prod_quarter", resetBillingCycle: true, prorationDate: f.fake.state().now });
+  await f.provider.updateManagedSubscription(update);
+  for (const [start, end] of [["2027-04-30", "2027-07-31"], ["2027-07-31", "2027-10-31"]]) {
+    await f.fake.clock.advance(seconds(start) - f.fake.state().now);
+    const renewed = await f.fake.subscriptions.renew(subscription.id);
+    assert.equal(renewed.items.data[0].current_period_start, seconds(start));
+    assert.equal(renewed.items.data[0].current_period_end, seconds(end));
+    assert.equal(renewed.billing_cycle_anchor, seconds("2027-01-31"));
+    const writes = f.fake.requests().filter(r => r.operation === "subscriptions.update").length;
+    await f.provider.updateManagedSubscription(update);
+    assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, writes);
+    assert.equal(f.fake.state().invoices.length, 1);
+  }
+});

@@ -93,7 +93,9 @@ Price's `recurring` unit (`day`, `week`, `month`, or `year`) and optional
 `intervalCount` (default `1`), then include all offered Price IDs in the reviewed
 Portal configuration. For example, one Product's `prices` can be
 `[{ id: "price_month", recurring: "month" }, { id: "price_year", recurring: "year" }]`.
-Calendar periods clamp month/year renewals to the last valid day. An applied
+Calendar periods clamp month/year renewals to the last valid day while retaining
+the original anchor day for later renewals (January 31 → April 30 → July 31 for a
+quarterly Price). Natural trial conversion anchors the paid period at the trial end. An applied
 interval change resets the period only in classic mode. Checkout completion
 accepts `{ billingMode: "classic" | "flexible" }` per subscription, defaulting to
 `flexible`. Flexible interval changes preserve the anchor unless the update

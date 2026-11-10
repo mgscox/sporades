@@ -47,6 +47,24 @@ export function teamBillingIntervalEnd(start: number, interval: string, count: n
   date.setUTCDate(Math.min(day, lastDay)); return Math.floor(date.getTime() / 1000);
 }
 
+/** Full recurring period containing an instant, always measured from the original anchor. */
+export function teamBillingPeriodAt(anchor: number, interval: string, count: number, at: number) {
+  if (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(at) || at < anchor
+    || !Number.isSafeInteger(count) || count < 1 || !["day", "week", "month", "year"].includes(interval)) return null;
+  const startDate = new Date(anchor * 1000);
+  const atDate = new Date(at * 1000);
+  let cycle = interval === "day" || interval === "week"
+    ? Math.floor((at - anchor) / (count * 86400 * (interval === "week" ? 7 : 1)))
+    : Math.floor(((atDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12
+      + atDate.getUTCMonth() - startDate.getUTCMonth()) / (count * (interval === "year" ? 12 : 1)));
+  if (!Number.isSafeInteger(cycle)) return null;
+  // The calendar month may have arrived before its anchored day/time.
+  if (teamBillingIntervalEnd(anchor, interval, count * cycle) > at) cycle--;
+  const start = teamBillingIntervalEnd(anchor, interval, count * cycle);
+  const end = teamBillingIntervalEnd(anchor, interval, count * (cycle + 1));
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= at && at < end ? { start, end } : null;
+}
+
 /** Provider-free refusals shared by durable admission and the final provider read. */
 export function teamBillingTransitionRefusal(state: string, cancelling: boolean, hasSchedule: boolean): string | null {
   if (cancelling) return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";

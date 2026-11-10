@@ -760,7 +760,8 @@ and idempotent retries. Once a reset has been attempted, quantity changes wait
 for verified Subscription evidence before a seat-only follow-up preserves the
 applied period. Recovery retrieves the provider Subscription and avoids another
 reset POST when the exact target, reset anchor and full recurring period are
-already applied. Before the first attempt,
+already applied. Renewal boundaries are measured from the original anchor,
+including its day across short-month and leap-year clamping. Before the first attempt,
 the target still refreshes to the latest
 accepted-member count. Other changes retain `create_prorations`. A continuing trial preserves its trial
 period without an anchor reset; `transitions.endTrial` starts and invoices the

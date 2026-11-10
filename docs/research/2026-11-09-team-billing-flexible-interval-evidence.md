@@ -13,7 +13,11 @@ Reset intent survives restart repair and seat changes while callbacks are delaye
 A lost response is resolved by retrieving the exact applied target without another
 reset POST, including after a day has passed. Verified annual evidence stages any
 remaining seats without moving the annual anchor or period. Pending payment leaves
-the original applied tuple unchanged.
+the original applied tuple unchanged. Recovery validates full recurring periods
+against the original billing anchor, preserving its day after short-month and
+leap-year renewals. January 31 quarterly upgrades therefore acknowledge the
+renewed April 30–July 31 period without another reset POST. Management repair
+and fake renewal regressions cover this case and ordinary renewals in both modes.
 
 Sources checked on 2026-11-09:
 

@@ -1,5 +1,5 @@
 import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
-import { teamBillingIntervalEnd } from "./team-billing-subscription-semantics.js";
+import { teamBillingPeriodAt } from "./team-billing-subscription-semantics.js";
 import Stripe from "stripe";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 
@@ -116,14 +116,13 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       // An applied reset needs no second POST, even after provider keys expire.
       const item = current.items.data[0];
       const recurring = item.price.recurring;
+      const period = teamBillingPeriodAt(current.billing_cycle_anchor, recurring.interval, recurring.interval_count, item.current_period_start);
       const appliedReset = input.resetBillingCycle === true && current.pending_update == null
         && ["active", "trialing", "incomplete", "past_due", "unpaid"].includes(current.status)
         && item.price.id === input.targetPriceId && item.quantity === input.targetQuantity
         && Number.isSafeInteger(current.billing_cycle_anchor) && current.billing_cycle_anchor >= input.prorationDate
         && Number.isSafeInteger(item.current_period_start) && item.current_period_start >= current.billing_cycle_anchor
-        && ["day", "week", "month", "year"].includes(recurring.interval)
-        && Number.isSafeInteger(recurring.interval_count) && recurring.interval_count > 0
-        && item.current_period_end === teamBillingIntervalEnd(item.current_period_start, recurring.interval, recurring.interval_count);
+        && period?.start === item.current_period_start && period?.end === item.current_period_end;
       let updated: LooseRecord = current;
       if (!appliedReset) {
         try {

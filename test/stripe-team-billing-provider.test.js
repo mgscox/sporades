@@ -754,3 +754,45 @@ function readBody(request) {
     request.on("error", reject);
   });
 }
+
+for (const [interval, count, anchor, start, end] of [
+  ["month", 1, "2027-01-31", "2027-02-28", "2027-03-31"],
+  ["month", 3, "2027-01-31", "2027-04-30", "2027-07-31"],
+  ["month", 3, "2027-01-31", "2027-07-31", "2027-10-31"],
+  ["year", 1, "2024-02-29", "2027-02-28", "2028-02-29"],
+  ["week", 2, "2027-01-31", "2027-02-14", "2027-02-28"],
+  ["day", 3, "2027-01-31", "2027-02-03", "2027-02-06"],
+]) test(`reset recovery accepts the anchored ${interval}:${count} period ${start}–${end} without a POST`, async () => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  const current = validManagedSubscription();
+  current.billing_cycle_anchor = seconds(anchor);
+  Object.assign(current.items.data[0], { current_period_start: seconds(start), current_period_end: seconds(end) });
+  Object.assign(current.items.data[0].price.recurring, { interval, interval_count: count });
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    assert.deepEqual(await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, prorationDate: seconds(anchor) }), { ok: true, outcome: "acknowledged" });
+  });
+  assert.equal(writes, 0);
+});
+
+for (const [start, end] of [["2027-04-29", "2027-07-31"], ["2027-04-30", "2027-07-30"], ["2027-05-31", "2027-08-31"]])
+test(`reset recovery does not acknowledge an unaligned or partial quarterly period ${start}–${end}`, async () => {
+  const seconds = date => Date.parse(`${date}T12:00:00Z`) / 1000;
+  const current = validManagedSubscription();
+  current.billing_cycle_anchor = seconds("2027-01-31");
+  Object.assign(current.items.data[0], { current_period_start: seconds(start), current_period_end: seconds(end) });
+  Object.assign(current.items.data[0].price.recurring, { interval: "month", interval_count: 3 });
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, prorationDate: seconds("2027-01-31") });
+  });
+  assert.equal(writes, 1);
+});
