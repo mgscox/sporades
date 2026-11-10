@@ -17,9 +17,11 @@ const ENDPOINTS: Array<[string, RegExp, StripeFakeOperation]> = [
   ["GET", /^\/v1\/billing_portal\/configurations\/([^/]+)$/, "billingPortal.configurations.retrieve"],
   ["POST", /^\/v1\/billing_portal\/sessions$/, "billingPortal.sessions.create"],
   ["GET", /^\/v1\/subscriptions$/, "subscriptions.list"],
+  ["POST", /^\/v1\/subscriptions$/, "subscriptions.create"],
   ["GET", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.retrieve"],
   ["POST", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.update"],
   ["DELETE", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.cancel"],
+  ["GET", /^\/v1\/prices\/([^/]+)$/, "prices.retrieve"],
   ["GET", /^\/v1\/customers\/([^/]+)$/, "customers.retrieve"],
 ];
 const EVENTS = [
@@ -128,6 +130,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const catalogue = copy(options.catalogue);
   const sessions = new Map<string, Obj>(); const customers = new Map<string, Obj>(); const subscriptions = new Map<string, Obj>();
   const portalSessions = new Map<string, Obj>();
+  const setupIntents = new Map<string, Obj>();
   const invoices = new Map<string, Obj>();
   const eventLog: StripeFakeEvent[] = []; const delivered = new Set<string>(); const deliveryLog: StripeFakeDelivery[] = [];
   const requests: StripeFakeRequest[] = []; const faults: StripeFakeFault[] = [];
@@ -155,7 +158,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const { product, entry } = catalogueEntry(priceId);
     const selected = currency ?? entry.currency;
     requireValue(!selected || billingCurrencyAmount(entry, selected) !== undefined, "Price does not support the subscription currency.");
-    return { id: entry.id, object: "price", livemode: false, product: product.id,
+    return { id: entry.id, object: "price", active: true, livemode: false, product: product.id,
       ...(entry.currency ? { currency: entry.currency, unit_amount: entry.unitAmount,
         ...(entry.currencyOptions ? { currency_options: Object.fromEntries(
           Object.entries(entry.currencyOptions).map(([code, option]) => [code, { unit_amount: option.unitAmount }])) } : {}),
@@ -215,8 +218,15 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     requireValue(!input.customerId || /^cus_[A-Za-z0-9_]{1,120}$/.test(input.customerId));
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id("cus");
-    if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
-    requireValue(![...subscriptions.values()].some(sub => sub.customer === customerId && sub.currency !== session.currency), "Customer currency cannot change.");
+    if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {}, balance: 0, invoice_credit_balance: {} });
+    if (session.mode === "setup") {
+      const intent = { id: id("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: id("pm") };
+      setupIntents.set(intent.id, intent);
+      Object.assign(session, { status: "complete", payment_status: "no_payment_required", setup_intent: intent.id });
+      await emit(CHECKOUT_COMPLETED, session);
+      return copy(session);
+    }
+    assertCustomerCurrency(customerId, session.currency);
     const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id, session.currency);
     const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
     const trialEnd = trialDays ? now + trialDays * 86400 : null;
@@ -300,9 +310,23 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         products: entry.products.map((product) => ({ ...copy(product), adjustable_quantity: { enabled: false } })) },
     } };
   }
+  function assertCustomerCurrency(customerId: string, currency: string) {
+    requireValue(![...subscriptions.values()].some(sub => sub.customer === customerId
+      && !["canceled", "incomplete_expired"].includes(sub.status) && sub.currency !== currency), "Customer cannot have two active currencies.");
+  }
   async function operate(operation: StripeFakeOperation, resourceId: string, p: Obj, fault?: StripeFakeFault): Promise<Obj> {
     switch (operation) {
       case "checkout.sessions.create": {
+        if (p.mode === "setup") {
+          exactKeys(p, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"]);
+          get(customers, p.customer); exactKeys(p.metadata, ["sporades_team_billing_operation"]);
+          requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation);
+          const sessionId = id("cs_test");
+          const session = { ...copy(p), id: sessionId, object: "checkout.session", status: "open", livemode: false,
+            expires_at: integer(p.expires_at, 253_402_300_799), subscription: null, setup_intent: null,
+            url: `https://checkout.stripe.com/c/pay/${sessionId}` };
+          sessions.set(sessionId, session); return copy(session);
+        }
         exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
         requireValue(p.mode === "subscription"); exactKeys(p.line_items, ["0"]); exactKeys(p.line_items[0], ["price", "quantity"]);
         exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
@@ -324,7 +348,15 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
           line_items: { object: "list", has_more: false, data: [{ price: itemPrice, quantity: integer(p.line_items[0].quantity) }] } };
         sessions.set(sessionId, session); return copy(session);
       }
-      case "checkout.sessions.retrieve": exactKeys(p, []); return copy(get(sessions, resourceId));
+      case "checkout.sessions.retrieve": {
+        exactKeys(p, [], ["expand"]);
+        const session = copy(get(sessions, resourceId));
+        if (p.expand) {
+          exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "setup_intent");
+          if (session.setup_intent) session.setup_intent = copy(get(setupIntents, session.setup_intent));
+        }
+        return session;
+      }
       case "checkout.sessions.expire":
         exactKeys(p, []);
         if (fault?.status === "completeDuringExpire" && get(sessions, resourceId).status === "open") await complete(resourceId);
@@ -339,7 +371,32 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
           url: `https://billing.stripe.com/p/session/${portalId}` };
         portalSessions.set(portalId, session); return copy(session);
       }
-      case "customers.retrieve": exactKeys(p, []); return copy(get(customers, resourceId));
+      case "prices.retrieve":
+        exactKeys(p, [], ["expand"]);
+        if (p.expand) { exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "currency_options"); }
+        return price(resourceId);
+      case "customers.retrieve":
+        exactKeys(p, [], ["expand"]);
+        if (p.expand) { exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "invoice_credit_balance"); }
+        return copy(get(customers, resourceId));
+      case "subscriptions.create": {
+        exactKeys(p, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"]);
+        const customer = get(customers, p.customer);
+        assertCustomerCurrency(customer.id, p.currency);
+        exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["price", "quantity"]);
+        exactKeys(p.metadata, ["sporades_team_billing_operation"]);
+        const itemPrice = price(p.items[0].price, p.currency);
+        const anchor = integer(p.billing_cycle_anchor, 253_402_300_799);
+        requireValue(anchor > now && anchor <= periodEnd(now, itemPrice) && p.proration_behavior === "none");
+        requireValue([...setupIntents.values()].some(i => i.customer === p.customer && i.status === "succeeded" && i.payment_method === p.default_payment_method));
+        const subscriptionId = id("sub");
+        const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: p.customer, currency: p.currency,
+          status: "active", trial_start: null, trial_end: null, billing_cycle_anchor: anchor, default_payment_method: p.default_payment_method,
+          cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, metadata: copy(p.metadata),
+          items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
+            quantity: integer(p.items[0].quantity), price: itemPrice, current_period_start: now, current_period_end: anchor }] } };
+        subscriptions.set(subscriptionId, subscription); await emit(SUBSCRIPTION_CREATED, subscription); return copy(subscription);
+      }
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
         exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["trial_end"]);
@@ -369,7 +426,10 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const limit = Math.min(integer(p.limit, 100), pageSize); const data = all.slice(cursor + 1, cursor + 1 + limit);
         return { object: "list", data: copy(data), has_more: cursor + 1 + data.length < all.length, url: "/v1/subscriptions" };
       }
-      case "subscriptions.cancel": exactKeys(p, []); return setStatus(resourceId, "canceled");
+      case "subscriptions.cancel":
+        exactKeys(p, [], ["prorate", "invoice_now"]);
+        requireValue((p.prorate === undefined || p.prorate === "false") && (p.invoice_now === undefined || p.invoice_now === "false"));
+        return setStatus(resourceId, "canceled");
     }
   }
   const apiServer = createServer(serialized(async (request, response) => {
@@ -380,7 +440,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       if (!/^sk_test_[A-Za-z0-9_]+$/.test(token)) fail("Only sk_test_ keys are accepted.", 401, "invalid_api_key", "authentication_error");
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       const route = ENDPOINTS.find(([method, pattern]) => request.method === method && pattern.test(url.pathname));
-      const parameters = parseForm(request.method === "GET" ? url.searchParams : new URLSearchParams(await readBody(request)));
+      const parameters = parseForm(["GET", "DELETE"].includes(request.method ?? "") ? url.searchParams : new URLSearchParams(await readBody(request)));
       const keyHeader = request.headers["idempotency-key"];
       const key = typeof keyHeader === "string" ? keyHeader : null;
       const entry: StripeFakeRequest = { method: request.method ?? "", path: url.pathname, operation: route?.[2] ?? "unsupported",
@@ -389,7 +449,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       requireValue(route);
       requireValue(!request.headers["stripe-version"] || request.headers["stripe-version"] === API_VERSION, "Unsupported Stripe API version.");
       const operation = route[2]; const resourceId = url.pathname.match(route[1])?.[1] ?? "";
-      const fingerprint = JSON.stringify([request.method, url.pathname, [...(request.method === "GET" ? url.searchParams : new URLSearchParams(flatten(parameters)))].sort(([a], [b]) => a.localeCompare(b))]);
+      const fingerprint = JSON.stringify([request.method, url.pathname, [...(["GET", "DELETE"].includes(request.method ?? "") ? url.searchParams : new URLSearchParams(flatten(parameters)))].sort(([a], [b]) => a.localeCompare(b))]);
       const cacheKey = request.method === "POST" && key ? JSON.stringify([bearer, key]) : null;
       const prior = cacheKey ? idempotency.get(cacheKey) : undefined;
       if (prior) {
@@ -468,12 +528,27 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         return copy(invoice);
       },
     },
-    customers: { subscriptions: (id) => { get(customers, id); return copy([...subscriptions.values()].filter((item) => item.customer === id)); } },
+    customers: {
+      subscriptions: (id) => { get(customers, id); return copy([...subscriptions.values()].filter((item) => item.customer === id)); },
+      setBalance(id, currency, amount) {
+        requireValue(/^[a-z]{3}$/.test(currency) && Number.isSafeInteger(amount));
+        get(customers, id).invoice_credit_balance[currency] = amount;
+      },
+    },
     clock: { async advance(seconds) {
       requireValue(Number.isSafeInteger(seconds) && seconds >= 0 && now + seconds <= 253_402_300_799); now += seconds;
       for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now) await expire(session.id);
       for (const sub of subscriptions.values()) if (!["canceled", "incomplete_expired"].includes(sub.status) && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
       for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now) await fake.subscriptions.renew(sub.id);
+      for (const sub of subscriptions.values()) if (sub.status === "active" && sub.billing_cycle_anchor && sub.items.data[0].current_period_end <= now) {
+        const anchor = sub.items.data[0].current_period_end;
+        const { entry } = catalogueEntry(sub.items.data[0].price.id);
+        const amount = billingCurrencyAmount(entry, sub.currency)! * sub.items.data[0].quantity;
+        const invoice = { id: idForInvoice(), object: "invoice", customer: sub.customer, currency: sub.currency, status: "paid", amount_paid: amount,
+          parent: { type: "subscription_details", subscription_details: { subscription: sub.id } }, period_start: anchor };
+        invoices.set(invoice.id, invoice); sub.latest_invoice = invoice.id;
+        await fake.subscriptions.renew(sub.id);
+      }
       for (const sub of subscriptions.values()) if (sub.pending_update && sub.pending_update.expires_at <= now) {
         sub.pending_update = null; await subscriptionEvent(sub);
       }
@@ -504,7 +579,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
       invoices: [...invoices.values()], checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], events: eventLog }),
     reset() {
-      sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); invoices.clear(); idempotency.clear(); lastCreated.clear();
+      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); invoices.clear(); idempotency.clear(); lastCreated.clear();
       eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };
@@ -517,7 +592,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     "subscriptions.setStatus": fake.subscriptions.setStatus, "subscriptions.setQuantity": fake.subscriptions.setQuantity,
     "subscriptions.completePayment": fake.subscriptions.completePayment,
     "subscriptions.failPayment": fake.subscriptions.failPayment, "subscriptions.renew": fake.subscriptions.renew, "subscriptions.get": fake.subscriptions.get,
-    "customers.subscriptions": fake.customers.subscriptions, "clock.advance": fake.clock.advance,
+    "customers.setBalance": fake.customers.setBalance, "customers.subscriptions": fake.customers.subscriptions, "clock.advance": fake.clock.advance,
     "events.pending": fake.events.pending, "events.deliver": fake.events.deliver, "events.deliverInOrder": fake.events.deliverInOrder,
     "events.redeliver": fake.events.redeliver, "events.emit": fake.events.emit, "events.deliveries": fake.events.deliveries,
     "faults.inject": fake.faults.inject, "faults.clear": fake.faults.clear, requests: fake.requests, state: fake.state, reset: fake.reset,

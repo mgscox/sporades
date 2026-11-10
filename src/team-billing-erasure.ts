@@ -92,8 +92,8 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]",
     )).all(state.teamId);
     const checkouts = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
-      "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]",
+      "SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
+      "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] IN ('checkout', 'currency-handover') ORDER BY [providerObjectId], [id]",
     )).all(state.teamId);
     const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row: LooseRecord) => row.mode)?.mode
       ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
@@ -106,14 +106,14 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       operationId: row.id,
       teamId: state.teamId,
       productKey: row.productKey,
-      mode: "subscription",
+      mode: row.kind === "currency-handover" ? "setup" : "subscription",
       priceId: row.providerPriceId,
       ...(row.currency ? { currency: row.currency } : {}),
       quantity: Number(row.quantity),
       ...(row.trialDays == null ? {} : { trialDays: row.trialDays }),
       successPath: database.teamBillingDefinition?.checkout?.successPath,
       cancelPath: database.teamBillingDefinition?.checkout?.cancelPath,
-      idempotencyKey: row.idempotencyKey,
+      idempotencyKey: row.kind === "currency-handover" ? `${row.idempotencyKey}:setup` : row.idempotencyKey,
       businessReference: row.id,
       providerExpiresAt: Number(row.providerExpiresAt),
       ...(customer ? { customerId: customer.providerCustomerId } : {}),
@@ -171,6 +171,7 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
       }
       for (const table of [
         "sporades_team_billing_observations",
+        "sporades_team_billing_handovers",
         "sporades_team_billing_subscriptions",
         "sporades_team_billing_customers",
         "sporades_team_billing_desired_state",

@@ -359,8 +359,8 @@ test("endpoint and event parity fails when the real provider or convergence adds
   ]);
   const calls = new Set([...provider.matchAll(/await stripe\.([\w.]+)\(/g)].map((entry) => entry[1]));
   const routes = new Set([...fake.matchAll(/\["(?:POST|GET|DELETE)", .*?, "([\w.]+)"\]/g)].map((entry) => entry[1]));
-  assert.equal(calls.size, 9);
-  assert.deepEqual([...routes].filter((entry) => entry !== "customers.retrieve").sort(), [...calls].sort());
+  assert.equal(calls.size, 12);
+  assert.deepEqual([...routes].sort(), [...calls].sort());
   const supported = convergence.match(/const SUPPORTED = new Set\(\[([\s\S]*?)\]\)/)[1];
   const events = fake.match(/const EVENTS = \[([\s\S]*?)\]/)[1];
   assert.deepEqual([...supported.matchAll(/"([\w.]+)"/g)].map((entry) => entry[1]).sort(), [...events.matchAll(/"([\w.]+)"/g)].map((entry) => entry[1]).sort());

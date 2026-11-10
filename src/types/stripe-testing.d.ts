@@ -7,8 +7,8 @@ export type StripeFakeCatalogue = {
 export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"
   | "billingPortal.configurations.retrieve" | "billingPortal.sessions.create"
-  | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
-  | "customers.retrieve";
+  | "subscriptions.create" | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
+  | "customers.retrieve" | "prices.retrieve";
 export type StripeFakeFault = {
   operation: StripeFakeOperation;
   status: number | "timeout" | "paymentActionRequired" | "completeDuringExpire";
@@ -68,7 +68,7 @@ export type StripeTeamBillingFake = {
     renew(id: string): Promise<StripeFakeObject>;
     get(id: string): StripeFakeObject;
   };
-  customers: { subscriptions(id: string): StripeFakeObject[] };
+  customers: { subscriptions(id: string): StripeFakeObject[]; setBalance(id: string, currency: string, amount: number): void };
   /** Advances due trials to active, or cancels them when scheduled; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {

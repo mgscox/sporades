@@ -596,7 +596,7 @@ const app = capsule({
       ctx.app.publicOrigin = "https://changed.example.test";
       const rows = await ctx.db.todos.where("ownerId", input.teamId).all();
       input.teamRole satisfies "admin" | "member";
-      input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "erasure";
+      input.operation satisfies "read" | "checkout" | "portal" | "plan-transition" | "currency-handover" | "erasure";
       input.productKey?.toUpperCase();
       input.interval?.toUpperCase();
       input.currency?.toUpperCase();
@@ -1211,6 +1211,11 @@ teamBilling.openPortal({
   if (result.data?.state === "ready") result.data.url.toUpperCase();
   if (result.data?.state === "failed") result.data.reason.toUpperCase();
 });
+teamBilling.startCurrencyHandover({ teamId: "00000000-0000-4000-8000-000000000000", requestId: "33333333-3333-4333-8333-333333333333", productKey: "agency", interval: "month:1", currency: "eur" }).then(result => {
+  if (result.data?.state === "failed") result.data.reason.toUpperCase();
+});
+// @ts-expect-error A currency handover requires an explicit target currency.
+teamBilling.startCurrencyHandover({ teamId: "team", requestId: "request", productKey: "agency" });
 teamBilling.requestPlanTransition({
   interval: "month:1",
   currency: "usd",
