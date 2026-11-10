@@ -19,6 +19,8 @@ import { lockTeamLifecycle } from "./teams-runtime.js";
 type LooseRecord = Record<string, any>;
 
 export const TEAM_BILLING_PRODUCT_MAX = 32;
+// Shared by queries that inspect in-flight billing writes across operation kinds.
+export const TEAM_BILLING_READ_ONLY_KINDS_SQL = "'plan-preview'";
 export const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 export const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
 export const TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
@@ -781,7 +783,7 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
   }
   const operation = await transaction.prepare(sql(
     "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
-    "WHERE [teamId] = ? AND [kind] NOT IN ('currency-handover', 'plan-preview') AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1",
+    `WHERE [teamId] = ? AND [kind] NOT IN ('currency-handover', ${TEAM_BILLING_READ_ONLY_KINDS_SQL}) AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1`,
   )).get(teamId);
   if (operation) {
     const requestedAt = canonicalTimestamp(operation.createdAt);

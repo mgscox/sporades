@@ -72,9 +72,14 @@ test('expired, foreign, retargeted and already-consumed quote IDs fail with the 
   assert.equal((await confirm({})).error.code, 'TEAM_BILLING_QUOTE_INVALID');
   assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'expired');
   f.database.clock = clock;
-  const accepted = await confirm({});
+  assert.equal((await confirm({})).error.code, 'TEAM_BILLING_QUOTE_INVALID', 'expiry persists across a clock rollback');
+  const fresh = await readyQuote(f);
+  const accepted = await confirm({ quoteId: fresh.quote.quoteId });
   assert.equal(accepted.data.state, 'pending');
-  assert.equal((await confirm({})).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+  assert.equal(f.database.adapter.prepare(
+    "SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+  ).get(fresh.quote.quoteId).status, 'superseded');
+  assert.equal((await confirm({ quoteId: fresh.quote.quoteId })).error.code, 'TEAM_BILLING_QUOTE_INVALID');
   assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, 0);
 });
 

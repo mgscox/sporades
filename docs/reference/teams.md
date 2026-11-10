@@ -984,6 +984,9 @@ the transition; browser-supplied timing or provider parameters are refused.
 
 Quotes expire five minutes after admission and are bound to the exact actor,
 Team, verified Subscription snapshot, target Price, billable quantity and policy.
+An expiry Job retires abandoned previews and removes unused quote data, including
+after a runtime restart. Preview operations do not count as in-flight billing
+writes for currency handover.
 `quoteId` is optional on `requestPlanTransition` for existing callers. When
 supplied, it binds the original `proration_date`, is consumed atomically with
 the desired intent and Job, and cannot be reused for another transition request.

@@ -96,13 +96,16 @@ import {
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
 import {
   TEAM_BILLING_PLAN_PREVIEW_JOB,
+  TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB,
   previewTeamBillingPlanTransition,
   performTeamBillingPlanPreview,
+  expireTeamBillingPlanPreview,
   TEAM_BILLING_PLAN_TRANSITION_JOB,
   TEAM_BILLING_SEAT_CONVERGENCE_JOB,
   performTeamBillingPlanTransition,
   performTeamBillingSeatConvergence,
   repairTeamBillingDesiredStateAtStartup,
+  repairTeamBillingPlanPreviewExpiries,
   requestTeamBillingPlanTransition,
   settleExhaustedTeamBillingManagementJob,
   stageTeamBillingMembershipChange,
@@ -869,6 +872,8 @@ export async function openDevDatabase(
       expireTeamBillingPortal(database, context, payload),
     performTeamBillingPlanPreview: (context: LooseRecord, payload: LooseRecord) =>
       performTeamBillingPlanPreview(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
+    expireTeamBillingPlanPreview: (context: LooseRecord, payload: LooseRecord) =>
+      expireTeamBillingPlanPreview(database, context, payload),
     performTeamBillingPlanTransition: async (context: LooseRecord, payload: LooseRecord) => {
       try { return await performTeamBillingPlanTransition(database, context, payload); }
       catch (error) {
@@ -971,6 +976,8 @@ export async function openDevDatabase(
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
     enqueueTeamBillingPlanPreviewJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_PREVIEW_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 1_000 }, true),
+    enqueueTeamBillingPlanPreviewExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 1_000 }, true, availableAt, true),
     enqueueTeamBillingPlanTransitionJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PLAN_TRANSITION_JOB, payload, idempotencyKey, { maxAttempts: 3, delayMs: 5_000 }, true, availableAt, availableAt !== undefined),
     enqueueTeamBillingSeatConvergenceJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
@@ -1236,6 +1243,7 @@ export async function openDevDatabase(
         await runLifecycleHook(database.lifecycleHooks.init, context);
       }
       if (database.teamBillingDefinition) {
+        await repairTeamBillingPlanPreviewExpiries(database);
         await repairTeamBillingCurrencyHandovers(database);
         await repairTeamBillingDesiredStateAtStartup(database);
         await repairTeamBillingErasureStateAtStartup(database);
@@ -6947,8 +6955,8 @@ async function enqueueRuntimeJob(
   const now = queueDatabase.clock.now().toISOString();
   const jobAvailableAt = availableAt ?? now;
   // Checkout and Portal expiry Jobs have historically remained future queued
-  // rows. Only a provider-lane recovery successor opts into delayed storage so
-  // the delayed-Job wake timer durably owns its post-TTL rediscovery.
+  // rows. Provider-lane recovery and quote expiry opt into delayed storage
+  // so the delayed Job timer owns their durable wake.
   const status = persistDelayed && jobAvailableAt > now ? "delayed" : "queued";
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
   await jobAdapter.prepare(

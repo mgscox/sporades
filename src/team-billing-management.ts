@@ -1,4 +1,5 @@
 import { assertCurrencyHandoverInactive } from "./team-billing-currency-handover.js";
+import { PRIVILEGED_AUTH_USER_ID } from "./auth-runtime.js";
 import { billingCurrencyAmount, billingCurrencyMismatch } from "./team-billing-prices.js";
 // Desired-state controller for managed Team Billing changes. Membership and
 // browser mutations only stage durable intent; provider I/O runs later in a
@@ -13,7 +14,10 @@ import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantity
 type LooseRecord = Record<string, any>;
 
 export const TEAM_BILLING_PLAN_PREVIEW_JOB = "_sporades.team-billing-plan-preview";
+export const TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB = "_sporades.team-billing-plan-preview-expiry";
 const QUOTE_TTL_MS = 5 * 60 * 1_000;
+const PREVIEW_EXPIRY_KEY_PREFIX = "team-billing-preview-expiry:";
+const LIVE_PREVIEW_QUOTE = "EXISTS (SELECT 1 FROM [sporades_team_billing_quotes] WHERE [operationId] = [sporades_team_billing_operations].[id] AND [expiresAt] > ? AND [consumedBy] IS NULL)";
 export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 const CLAIM_TTL_MS = 5 * 60 * 1_000;
@@ -41,7 +45,12 @@ export async function previewTeamBillingPlanTransition(database: LooseRecord, au
       if (repeated.kind !== "plan-preview" || repeated.actorUserId !== auth.userId || repeated.productKey !== productKey
         || repeated.providerPriceId !== price.priceId) throw conflict();
       const quote = await readQuote(transaction, repeated.id);
-      if (!quote || quote.expiresAt <= nowIso(database)) return Object.freeze({ state: "expired", teamId, requestId, productKey });
+      const now = nowIso(database);
+      if (repeated.status === "expired" || !quote || quote.expiresAt <= now) {
+        await expirePlanPreview(transaction, repeated.id, now);
+        return Object.freeze({ state: "expired", teamId, requestId, productKey });
+      }
+      if (repeated.status === "superseded") throw invalidQuote();
       if (repeated.status === "ready") {
         const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, false, undefined, JSON.parse(quote.snapshot).effectiveAt);
         if (quote.consumedBy || quote.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
@@ -62,11 +71,63 @@ export async function previewTeamBillingPlanTransition(database: LooseRecord, au
       "INSERT INTO [sporades_team_billing_quotes] ([operationId], [teamId], [snapshot], [expiresAt]) VALUES (?, ?, ?, ?)",
     )).run(operationId, teamId, JSON.stringify(resolved), expiresAt);
     await database.enqueueTeamBillingPlanPreviewJob(transaction, { operationId }, `team-billing-preview:${operationId}`);
+    await database.enqueueTeamBillingPlanPreviewExpiryJob(transaction, { operationId }, PREVIEW_EXPIRY_KEY_PREFIX + operationId, expiresAt);
     enqueued = true;
     return Object.freeze({ state: "pending", teamId, requestId, productKey });
   });
   if (enqueued) scheduleAfterOwnedTransaction(database);
   return result;
+}
+
+export async function expireTeamBillingPlanPreview(database: LooseRecord, _context: LooseRecord, payload: any) {
+  if (!payload || Object.keys(payload).join() !== "operationId" || !TEAM_ID_PATTERN.test(payload.operationId)) throw denied();
+  await inTransaction(database, transaction => expirePlanPreview(transaction, payload.operationId, nowIso(database)));
+  return null;
+}
+
+async function expirePlanPreview(transaction: LooseRecord, operationId: string, now: string) {
+  await transaction.prepare(transaction.dialect.sql(
+    "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [updatedAt] = ? " +
+    "WHERE [id] = ? AND [kind] = 'plan-preview' AND [status] IN ('queued', 'running', 'retrying', 'ready') " +
+    "AND EXISTS (SELECT 1 FROM [sporades_team_billing_quotes] WHERE [operationId] = ? AND [expiresAt] <= ?)",
+  )).run(now, operationId, operationId, now);
+  // A confirmed transition still needs its quote for dispatch and recovery.
+  await transaction.prepare(transaction.dialect.sql(
+    "DELETE FROM [sporades_team_billing_quotes] WHERE [operationId] = ? AND [expiresAt] <= ? AND [consumedBy] IS NULL",
+  )).run(operationId, now);
+}
+
+/** Recover previews written before expiry Jobs were scheduled, or left overdue at shutdown. */
+export async function repairTeamBillingPlanPreviewExpiries(database: LooseRecord) {
+  const { adapter } = database;
+  const candidates = await adapter.prepare(adapter.dialect.sql(
+    "SELECT [o].[id] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_quotes] [q] ON [q].[operationId] = [o].[id] " +
+    "WHERE [o].[kind] = 'plan-preview' AND (([q].[consumedBy] IS NOT NULL AND [o].[status] = 'ready') " +
+    "OR ([q].[consumedBy] IS NULL AND ([q].[expiresAt] <= ? OR NOT EXISTS (SELECT 1 FROM [sporades_jobs] " +
+    "WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ? || [o].[id]))))",
+  )).all(nowIso(database), TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB, PRIVILEGED_AUTH_USER_ID, PREVIEW_EXPIRY_KEY_PREFIX);
+  for (const { id } of candidates) await inTransaction(database, async transaction => {
+    const sql = transaction.dialect.sql;
+    // Serialize repair for this operation across runtimes before checking for its Job again.
+    const locked = await transaction.prepare(sql(
+      "UPDATE [sporades_team_billing_operations] SET [updatedAt] = [updatedAt] WHERE [id] = ? AND [kind] = 'plan-preview'",
+    )).run(id);
+    if (Number(locked.changes ?? locked.changesCount) !== 1) return;
+    const quote = await readQuote(transaction, id);
+    if (!quote) return;
+    const now = nowIso(database);
+    if (quote.consumedBy) {
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'",
+      )).run(now, id);
+      return;
+    }
+    if (quote.expiresAt <= now) return expirePlanPreview(transaction, id, now);
+    const key = PREVIEW_EXPIRY_KEY_PREFIX + id;
+    const job = await transaction.prepare(sql("SELECT [id] FROM [sporades_jobs] WHERE [handler] = ? AND [actorUserId] = ? AND [idempotencyKey] = ?"))
+      .get(TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB, PRIVILEGED_AUTH_USER_ID, key);
+    if (!job) await database.enqueueTeamBillingPlanPreviewExpiryJob(transaction, { operationId: id }, key, quote.expiresAt);
+  });
 }
 
 export async function performTeamBillingPlanPreview(database: LooseRecord, context: LooseRecord, payload: any, attempt = 1) {
@@ -83,10 +144,15 @@ export async function performTeamBillingPlanPreview(database: LooseRecord, conte
       teamId = operation.teamId;
       const auth = await database.readTeamBillingActorAuth(transaction, operation.actorUserId);
       const quote = await readQuote(transaction, operation.id);
+      const now = nowIso(database);
+      if (quote && quote.expiresAt <= now) {
+        await expirePlanPreview(transaction, operation.id, now);
+        return null;
+      }
       const snapshot = quote && JSON.parse(quote.snapshot);
       const product = database.teamBillingDefinition?.catalogue?.[operation.productKey];
       const price = product && teamBillingPriceById(modeBinding(database, product), operation.providerPriceId);
-      if (!snapshot || !price || quote.expiresAt <= nowIso(database)) throw invalidQuote();
+      if (!snapshot || !price) throw invalidQuote();
       await admitPlanTransition(database, transaction, auth, operation.teamId, operation.productKey, price.interval);
       const resolved = await resolvePlanTarget(database, transaction, operation.teamId, operation.productKey, price, false, undefined, snapshot.effectiveAt);
       if (quote.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
@@ -95,9 +161,16 @@ export async function performTeamBillingPlanPreview(database: LooseRecord, conte
       )).get(teamId, snapshot.subscription.mode);
       if (!customer) throw attentionRequired();
       if (!await claimLane(transaction, operation.teamId, token, database)) throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [updatedAt] = ? WHERE [id] = ?",
-      )).run(nowIso(database), operation.id);
+      const dispatchAt = nowIso(database);
+      const dispatched = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'running', [updatedAt] = ? " +
+        "WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying') AND " + LIVE_PREVIEW_QUOTE,
+      )).run(dispatchAt, operation.id, dispatchAt);
+      if (Number(dispatched.changes ?? dispatched.changesCount) !== 1) {
+        await releaseLane(transaction, operation.teamId, token, database);
+        await expirePlanPreview(transaction, operation.id, dispatchAt);
+        return null;
+      }
       return {
         mode: snapshot.subscription.mode, customerId: customer.providerCustomerId,
         subscriptionId: snapshot.subscription.providerSubscriptionId, subscriptionItemId: snapshot.subscription.providerSubscriptionItemId,
@@ -118,16 +191,23 @@ export async function performTeamBillingPlanPreview(database: LooseRecord, conte
     const result = await provider.previewManagedSubscription(input);
     // Only the bounded normalized quote is retained, never an Invoice object.
     if (!validQuote(result)) throw coded("Team Billing quote unavailable.", "TEAM_BILLING_PROVIDER_REJECTED");
-    await inTransaction(database, async transaction => {
+    const ready = await inTransaction(database, async transaction => {
       if (!await releaseLane(transaction, teamId!, token, database)) throw invalidQuote();
+      const now = nowIso(database);
+      const published = await transaction.prepare(transaction.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [updatedAt] = ? " +
+        "WHERE [id] = ? AND [status] = 'running' AND " + LIVE_PREVIEW_QUOTE,
+      )).run(now, payload.operationId, now);
+      if (Number(published.changes ?? published.changesCount) !== 1) {
+        await expirePlanPreview(transaction, payload.operationId, now);
+        return false;
+      }
       await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_quotes] SET [result] = ? WHERE [operationId] = ?",
       )).run(JSON.stringify(result), payload.operationId);
-      await transaction.prepare(transaction.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'",
-      )).run(nowIso(database), payload.operationId);
+      return true;
     });
-    return { ready: true };
+    return ready ? { ready: true } : { superseded: true };
   } catch (error: any) {
     const retry = (error?.retryable === true || error?.name === "AbortError" || error?.code === "ABORT_ERR") && attempt < 3;
     await inTransaction(database, async transaction => {
@@ -246,9 +326,17 @@ export async function requestTeamBillingPlanTransition(
       targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null,
       targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
     }, quote !== null);
-    if (quote) await transaction.prepare(sql(
-      "UPDATE [sporades_team_billing_quotes] SET [consumedBy] = ? WHERE [operationId] = ? AND [consumedBy] IS NULL",
-    )).run(operationId, quoteId);
+    if (quote) {
+      const consumedAt = nowIso(database);
+      const retired = await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
+        "WHERE [id] = ? AND [kind] = 'plan-preview' AND [status] = 'ready' AND " + LIVE_PREVIEW_QUOTE,
+      )).run(consumedAt, quoteId, consumedAt);
+      if (Number(retired.changes ?? retired.changesCount) !== 1) throw invalidQuote();
+      await transaction.prepare(sql(
+        "UPDATE [sporades_team_billing_quotes] SET [consumedBy] = ? WHERE [operationId] = ? AND [consumedBy] IS NULL",
+      )).run(operationId, quoteId);
+    }
     await transaction.prepare(sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
       "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')",
