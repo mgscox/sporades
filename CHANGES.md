@@ -49,6 +49,14 @@ Changes since v0.9.46.
 
 ### Features
 
+- Team Billing Prices can declare exact regional amounts through `currencyOptions`.
+  Checkout selects a configured currency, verified billing truth records it, and
+  plan/interval changes preserve it or return a currency mismatch. The Stripe
+  fake models regional charges with provider-shaped Prices (regional amounts live
+  in `currency_options`, as Stripe does), convergence resolves the subscription's
+  charged amount from the selected currency, and the server-only
+  `validateTeamBillingPriceEvidence`
+  checks every configured amount in saved expanded Prices (#352).
 - Team Billing plan transitions recover from payment actions and scheduled cancellation. An SCA-required switch fails safely with an expiring `paymentAction` capability carrying a validated `invoice.stripe.com` hosted-invoice URL (any other host is rejected); `customer.subscription.pending_update_applied` settles the operation as done and `_expired` as refused, with entitlement unchanged until applied. `requestPlanTransition({ resume: true })` switches a cancelling Subscription and clears `cancel_at_period_end` / `cancel_at` in the same update (#369).
 - Payment-action recovery accepts Stripe's account/token invoice URLs and email-source query, with the same validation before storing or returning a capability. Resuming cancellation retains the other transition guards and survives member/usage quantity recalculation and repair (#369).
 - Team Billing can opt into in-place same-policy plan switches with `transitions.allowSamePolicy`, including transitions from retained legacy catalogue entries. Authorization receives the source product and interval; cancelling, past-due, trialing and scheduled Subscriptions refuse with distinct safe codes. The Stripe fake supports trial and external-schedule guard tests (#365).

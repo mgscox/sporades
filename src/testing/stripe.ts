@@ -1,3 +1,4 @@
+import { normalizeBillingCurrency, billingCurrencyAmount } from "../team-billing-prices.js";
 import { createHmac, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type {
@@ -51,6 +52,7 @@ function validateCatalogue(catalogue: StripeFakeCatalogue) {
       requireValue(/^price_[A-Za-z0-9_]+$/.test(price.id) && !prices.has(price.id) && ["day", "week", "month", "year"].includes(price.recurring)
         && Number.isInteger(price.intervalCount ?? 1) && (price.intervalCount ?? 1) >= 1
         && (price.intervalCount ?? 1) <= ({ day: 1095, week: 156, month: 36, year: 3 })[price.recurring]);
+      normalizeBillingCurrency(price, () => new Error("Invalid fake Price currency."));
       prices.add(price.id); products.get(product.id)!.add(price.id);
     }
   }
@@ -142,13 +144,25 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   function get(map: Map<string, Obj>, key: string) {
     return map.get(key) ?? fail(`No such resource: '${key}'.`, 404, "resource_missing");
   }
-  function price(priceId: string) {
+  function catalogueEntry(priceId: string) {
     for (const product of catalogue.products) {
       const entry = product.prices.find((item) => item.id === priceId);
-      if (entry) return { id: entry.id, object: "price", livemode: false, product: product.id,
-        recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" } };
+      if (entry) return { product, entry };
     }
     return fail("Unknown catalogue Price.");
+  }
+  // Provider-shaped Prices keep the default currency and amount in the base
+  // fields and carry regional amounts in currency_options, as Stripe does.
+  function price(priceId: string, currency?: string) {
+    const { product, entry } = catalogueEntry(priceId);
+    const selected = currency ?? entry.currency;
+    requireValue(!selected || billingCurrencyAmount(entry, selected) !== undefined, "Price does not support the subscription currency.");
+    return { id: entry.id, object: "price", livemode: false, product: product.id,
+      ...(entry.currency ? { currency: entry.currency, unit_amount: entry.unitAmount,
+        ...(entry.currencyOptions ? { currency_options: Object.fromEntries(
+          Object.entries(entry.currencyOptions).map(([code, option]) => [code, { unit_amount: option.unitAmount }])) } : {}),
+        billing_scheme: "per_unit", type: "recurring" } : {}),
+      recurring: { interval: entry.recurring, interval_count: entry.intervalCount ?? 1, usage_type: "licensed" } };
   }
   function periodEnd(start: number, priceValue: Obj) {
     const { interval, interval_count: count } = priceValue.recurring;
@@ -204,10 +218,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {} });
-    const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id);
+    requireValue(![...subscriptions.values()].some(sub => sub.customer === customerId && sub.currency !== session.currency), "Customer currency cannot change.");
+    const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id, session.currency);
     const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
     const trialEnd = trialDays ? now + trialDays * 86400 : null;
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
+      ...(session.currency ? { currency: session.currency } : {}),
       status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
@@ -260,6 +276,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     item.current_period_start = now;
     item.current_period_end = periodEnd(now, item.price);
     const invoice = { id: idForInvoice(), object: "invoice", livemode: false, customer: subscription.customer,
+      ...(subscription.currency ? { currency: subscription.currency } : {}),
       billing_reason: "subscription_update", status: "paid", paid: true,
       parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } } };
     invoices.set(invoice.id, invoice);
@@ -267,7 +284,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   }
   async function switchPrice(subscriptionId: string, priceId: string) {
     const subscription = liveSubscription(subscriptionId);
-    applyPrice(subscription, price(priceId)); return subscriptionEvent(subscription);
+    applyPrice(subscription, price(priceId, subscription.currency)); return subscriptionEvent(subscription);
   }
   async function setCancellation(subscriptionId: string, cancel: boolean) {
     const subscription = liveSubscription(subscriptionId);
@@ -288,7 +305,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   async function operate(operation: StripeFakeOperation, resourceId: string, p: Obj, fault?: StripeFakeFault): Promise<Obj> {
     switch (operation) {
       case "checkout.sessions.create": {
-        exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer"]);
+        exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
         requireValue(p.mode === "subscription"); exactKeys(p.line_items, ["0"]); exactKeys(p.line_items[0], ["price", "quantity"]);
         exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
         if (p.subscription_data.trial_period_days !== undefined) integer(p.subscription_data.trial_period_days, 90);
@@ -296,12 +313,17 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation
           && p.client_reference_id === p.subscription_data.metadata.sporades_team_billing_operation);
         if (p.customer) get(customers, p.customer);
+        const { entry } = catalogueEntry(p.line_items[0].price);
+        const itemPrice = price(p.line_items[0].price, p.currency);
+        const sessionCurrency = p.currency ?? entry.currency;
+        const sessionAmount = sessionCurrency ? billingCurrencyAmount(entry, sessionCurrency) : undefined;
         const sessionId = id("cs_test");
         const session = { id: sessionId, object: "checkout.session", mode: "subscription", status: "open", livemode: false,
+          ...(sessionCurrency ? { currency: sessionCurrency, amount_total: sessionAmount! * integer(p.line_items[0].quantity) } : {}),
           url: `https://checkout.stripe.com/c/pay/${sessionId}`, customer: p.customer ?? null, subscription: null,
           success_url: p.success_url, cancel_url: p.cancel_url, client_reference_id: p.client_reference_id,
           expires_at: integer(p.expires_at, 253_402_300_799), metadata: copy(p.metadata), subscription_data: copy(p.subscription_data),
-          line_items: { object: "list", has_more: false, data: [{ price: price(p.line_items[0].price), quantity: integer(p.line_items[0].quantity) }] } };
+          line_items: { object: "list", has_more: false, data: [{ price: itemPrice, quantity: integer(p.line_items[0].quantity) }] } };
         sessions.set(sessionId, session); return copy(session);
       }
       case "checkout.sessions.retrieve": exactKeys(p, []); return copy(get(sessions, resourceId));
@@ -334,7 +356,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
           subscription.cancel_at_period_end = false; subscription.cancel_at = null;
         }
         integer(p.proration_date, 253_402_300_799);
-        const targetPrice = price(p.items[0].price); const quantity = integer(p.items[0].quantity);
+        const targetPrice = price(p.items[0].price, subscription.currency); const quantity = integer(p.items[0].quantity);
         if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
           subscription.pending_update = { expires_at: now + 3600,
             ...(p.trial_end === "now" ? { trial_end: now } : {}),
@@ -447,6 +469,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const subscription = liveSubscription(id); subscription.status = "past_due";
         const item = subscription.items.data[0]; const invoiceId = idForInvoice();
         const invoice = { id: invoiceId, object: "invoice", livemode: false, customer: subscription.customer,
+          ...(subscription.currency ? { currency: subscription.currency } : {}),
           status: "open", paid: false, attempt_count: 1,
           parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } },
           lines: { object: "list", has_more: false, data: [{ id: idForLine(), object: "line_item", invoice: invoiceId, livemode: false,

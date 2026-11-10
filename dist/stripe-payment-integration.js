@@ -1,3 +1,4 @@
+export { validateTeamBillingPriceEvidence } from "./team-billing-price-evidence.js";
 import Stripe from "stripe";
 import { deepFreezeVerifiedJson } from "./stripe-events-runtime.js";
 import { validateStripePaymentsRuntimeConfig } from "./stripe-payment-config.js";

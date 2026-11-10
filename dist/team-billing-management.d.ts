@@ -1,7 +1,7 @@
 type LooseRecord = Record<string, any>;
 export declare const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export declare const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
-export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any): Promise<any>;
+export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any, currency?: any): Promise<any>;
 /** Called after a membership transaction commits. It performs no provider I/O. */
 export declare function stageTeamBillingMembershipChange(database: LooseRecord, teamId: any, effectiveAt?: number): Promise<any>;
 /** Repair only an already-associated usage Subscription; quarantined evidence grants no entitlement. */

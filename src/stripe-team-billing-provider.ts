@@ -1,3 +1,4 @@
+import { validBillingCurrency } from "./team-billing-prices.js";
 import Stripe from "stripe";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
@@ -25,6 +26,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       try {
         session = await stripe.checkout.sessions.create({
           mode: "subscription",
+          ...(input.currency ? { currency: input.currency } : {}),
           line_items: [{ price: input.priceId, quantity: input.quantity }],
           success_url: new URL(input.successPath, config.publicOrigin).toString(),
           cancel_url: new URL(input.cancelPath, config.publicOrigin).toString(),
@@ -44,6 +46,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       if (session.mode !== "subscription" || session.livemode !== config.livemode
         || session.client_reference_id !== input.businessReference || session.expires_at !== input.providerExpiresAt
         || !validSessionId(session.id) || !validUrl(session.url, session.id)
+        || (input.currency && session.currency !== input.currency)
         || (input.customerId && session.customer !== input.customerId)) throw providerFailure(false);
       return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
     },
@@ -180,6 +183,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         try {
           recovered = await stripe.checkout.sessions.create({
             mode: "subscription",
+            ...(recovery.currency ? { currency: recovery.currency } : {}),
             line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
             success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
             cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
@@ -321,12 +325,13 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => key !== "targetProductId" && key !== "resume" && key !== "endTrial").sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "endTrial"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
     || !["plan-transition", "seat-convergence"].includes(input.operationKind)
     || (input.resume !== undefined && typeof input.resume !== "boolean")
+    || (input.currency !== undefined && !validBillingCurrency(input.currency))
     || (input.endTrial !== undefined && (typeof input.endTrial !== "boolean" || input.operationKind !== "plan-transition"))
     || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)
     || !validSubscriptionItemId(input.subscriptionItemId)
@@ -346,6 +351,7 @@ function attestManagedSubscription(
 ) {
   const items = subscription?.items;
   if (subscription?.object !== "subscription" || subscription.id !== input.subscriptionId
+    || (input.currency && subscription.currency !== input.currency)
     || subscription.customer !== input.customerId || subscription.livemode !== (input.mode === "live")
     || items?.object !== "list" || items.has_more !== false || !Array.isArray(items.data) || items.data.length !== 1) {
     throw providerFailure(false);
@@ -355,8 +361,12 @@ function attestManagedSubscription(
 
 function attestManagedItem(item: LooseRecord, input: LooseRecord, acceptedPriceIds: Set<string>, requireTarget: boolean) {
   const price = item?.price;
+  // A multi-currency Price keeps its default currency in price.currency and
+  // carries the subscription currency's override in price.currency_options.
   if (item?.object !== "subscription_item" || item.id !== input.subscriptionItemId
     || item.subscription !== input.subscriptionId || !acceptedPriceIds.has(price?.id)
+    || (input.currency && price?.currency !== input.currency
+      && !Object.hasOwn(price?.currency_options ?? {}, input.currency))
     || price?.object !== "price" || price.livemode !== (input.mode === "live")
     || !validProductId(price?.product) || price?.recurring?.usage_type !== "licensed"
     || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 999_999
@@ -504,8 +514,9 @@ function throwProviderOperationFailure(error: any): never {
 
 function validateInput(input: LooseRecord) {
   const required = ["businessReference", "cancelPath", "idempotencyKey", "mode", "operationId", "priceId", "productKey", "providerExpiresAt", "quantity", "successPath", "teamId"];
-  const keys = Object.keys(input ?? {}).filter((key) => key !== "customerId" && key !== "trialDays").sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["customerId", "currency", "trialDays"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== required.sort().join("\0")
+    || (input.currency !== undefined && !validBillingCurrency(input.currency))
     || input.mode !== "subscription" || !validUuid(input.operationId) || input.businessReference !== input.operationId
     || !validUuid(input.teamId) || typeof input.productKey !== "string"
     || typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(input.priceId)

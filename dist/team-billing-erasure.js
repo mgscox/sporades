@@ -65,7 +65,7 @@ export async function performTeamBillingErasure(database, context, payload) {
             throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
         const customer = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(state.teamId);
         const subscriptions = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]")).all(state.teamId);
-        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
+        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [productKey], [providerObjectId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
             "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] = 'checkout' ORDER BY [providerObjectId], [id]")).all(state.teamId);
         const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode
             ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
@@ -81,6 +81,7 @@ export async function performTeamBillingErasure(database, context, payload) {
             productKey: row.productKey,
             mode: "subscription",
             priceId: row.providerPriceId,
+            ...(row.currency ? { currency: row.currency } : {}),
             quantity: Number(row.quantity),
             ...(row.trialDays == null ? {} : { trialDays: row.trialDays }),
             successPath: database.teamBillingDefinition?.checkout?.successPath,

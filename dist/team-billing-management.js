@@ -1,3 +1,4 @@
+import { billingCurrencyAmount, billingCurrencyMismatch } from "./team-billing-prices.js";
 // Desired-state controller for managed Team Billing changes. Membership and
 // browser mutations only stage durable intent; provider I/O runs later in a
 // serialized lane and verified Stripe observations are the only settlement.
@@ -10,7 +11,7 @@ export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-tra
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 const CLAIM_TTL_MS = 5 * 60 * 1_000;
 const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval) {
+export async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval, currency) {
     const definition = database.teamBillingDefinition;
     if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))
         || typeof productKey !== "string" || !definition?.catalogue?.[productKey])
@@ -23,8 +24,10 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         const sql = transaction.dialect.sql;
-        const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [providerPriceId], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
+        const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
         if (repeated) {
+            if (currency !== undefined && currency !== repeated.currency)
+                throw billingCurrencyMismatch();
             if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey || (repeated.providerPriceId ?? null) !== (price.interval ? price.priceId : null))
                 throw conflict();
             return planOperationResult(teamId, requestId, productKey, repeated);
@@ -36,6 +39,10 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         const currentProduct = definition.catalogue[subscription.productKey];
         const targetProduct = definition.catalogue[productKey];
         assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+        if ((currency !== undefined && currency !== subscription.currency)
+            || ((price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency)
+                && billingCurrencyAmount(price, subscription.currency) === undefined))
+            throw billingCurrencyMismatch();
         if (!managedTransitionAllowed(database, subscription, targetProduct, price))
             throw transitionNotRequired();
         const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
@@ -49,8 +56,8 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
             "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')")).run(now, teamId);
         await transaction.prepare(sql("INSERT INTO [sporades_team_billing_operations] " +
-            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId]) " +
-            "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity, price.interval ? price.priceId : null);
+            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [currency]) " +
+            "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, operationIdempotency(database, operationId), now, now, subscription.mode, quantity, price.interval ? price.priceId : null, subscription.currency ?? null);
         await enqueueIntent(database, transaction, staged);
         enqueued = true;
         return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
@@ -184,6 +191,9 @@ async function performDesired(database, _context, payload, kind) {
         const price = desired.targetPriceId ? teamBillingPriceById(binding, desired.targetPriceId) : teamBillingPrice(binding, undefined);
         if (!price)
             return attention(transaction, database, desired, "CATALOGUE_MISMATCH");
+        if ((price.currency || teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.currency)
+            && billingCurrencyAmount(price, subscription.currency) === undefined)
+            return attention(transaction, database, desired, "CURRENCY_MISMATCH");
         if (kind === "plan-transition") {
             const refusal = transitionRefusal(subscription);
             if (refusal)
@@ -242,6 +252,7 @@ async function performDesired(database, _context, payload, kind) {
                 providerSubscriptionId: subscription.providerSubscriptionId,
                 providerSubscriptionItemId: subscription.providerSubscriptionItemId,
                 sourcePriceId: subscription.providerPriceId,
+                ...(subscription.currency ? { currency: subscription.currency } : {}),
                 targetPriceId: price.priceId,
                 ...(binding.productId ? { targetProductId: binding.productId } : {}),
                 targetProductKey: desired.targetProductKey,
@@ -528,6 +539,7 @@ async function tryAdmitPlanTransition(database, transaction, auth, teamId, produ
         return false;
     const source = await optionalCurrentSubscription(transaction, teamId);
     const decision = await database.runTeamBillingAuthority?.(transaction, auth, Object.freeze({
+        ...(source?.currency ? { currency: source.currency } : {}),
         operation: "plan-transition", teamId, teamRole: "admin", productKey, ...(interval ? { interval } : {}),
         ...(source ? { fromProductKey: source.productKey, ...(source.interval ? { fromInterval: source.interval } : {}) } : {}),
     }));
@@ -609,7 +621,9 @@ function modeBinding(database, product) {
 }
 function assertCurrentModeAndCatalogue(database, subscription, product) {
     const mode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
-    if (!product || subscription.mode !== mode || !teamBillingPriceById(product.stripe?.[mode], subscription.providerPriceId)
+    const price = teamBillingPriceById(product?.stripe?.[mode], subscription.providerPriceId);
+    if ((price?.currency && billingCurrencyAmount(price, subscription.currency) === undefined)
+        || !product || subscription.mode !== mode || !teamBillingPriceById(product.stripe?.[mode], subscription.providerPriceId)
         || (product.stripe[mode].prices && teamBillingPriceById(product.stripe[mode], subscription.providerPriceId)?.interval !== subscription.interval))
         throw attentionRequired();
 }
@@ -659,8 +673,9 @@ function planOperationResult(teamId, requestId, productKey, operation) {
     if (operation.status === "failed") {
         const reason = operation.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed"
             : operation.safeFailureCode === "PAYMENT_ACTION_REQUIRED" ? "payment-action-required"
-                : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)
-                    ? "provider-state-ambiguous" : "unavailable";
+                : operation.safeFailureCode === "CURRENCY_MISMATCH" ? "currency-mismatch"
+                    : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)
+                        ? "provider-state-ambiguous" : "unavailable";
         return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
     }
     return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
