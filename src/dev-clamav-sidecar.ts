@@ -103,7 +103,8 @@ function waitForDevClamavReadinessProof(child: any, deadline: number, ready: () 
     const finish = (ready: boolean) => { if (settled) return; settled = true; if (timer) clearTimeout(timer); remove(); resolve(ready); };
     const onData = () => { if (ready() && now() <= deadline) finish(true); };
     const onTerminated = () => finish(false);
-    const expire = () => { const remaining = deadline - now(); if (remaining <= 0) finish(false); else timer = setTimeout(expire, Math.max(1, Math.ceil(remaining))); };
+    // A proof observed at exactly the deadline is accepted (onData uses <=), so expiry must also wait until the clock is strictly past it.
+    const expire = () => { const remaining = deadline - now(); if (remaining < 0) finish(false); else timer = setTimeout(expire, Math.max(1, Math.ceil(remaining))); };
     child.stdout?.on?.("data", onData); child.once("exit", onTerminated); child.once("close", onTerminated); child.once("error", onTerminated);
     expire();
     if (ready() && now() <= deadline) finish(true);
