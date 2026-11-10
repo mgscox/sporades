@@ -160679,7 +160679,7 @@ function waitForDevClamavReadinessProof(child, deadline, ready, now3) {
     const onTerminated = () => finish(false);
     const expire = () => {
       const remaining = deadline - now3();
-      if (remaining <= 0) finish(false);
+      if (remaining < 0) finish(false);
       else timer = setTimeout(expire, Math.max(1, Math.ceil(remaining)));
     };
     child.stdout?.on?.("data", onData);
