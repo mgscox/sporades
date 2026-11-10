@@ -2178,10 +2178,17 @@ test("sporades host helper serializes stale health repair against a concurrent s
 
 test("sporades host helper keeps read-only Capsule inspection available during a route mutation", async () => {
   await withTempDir(async (dir) => {
+    // No timing budget. The mutation holds the route lock until the test creates `release`, so
+    // the read is proven not to wait on the lock by completing while the mutation still holds it.
+    // A read that queued behind the lock would instead fail with "route is locked" once its own
+    // lock timeout expired, because the lock is not released until after the read has settled.
+    const release = path.join(dir, "release-route-lock");
     const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "800" },
+      env: { SPORADES_FAKE_ROUTE_LOCK_HOLD_UNTIL_PATH: release },
     });
     const mutation = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    let mutationSettled = false;
+    mutation.result.then(() => { mutationSettled = true; });
     let read;
     try {
       await waitForPath(fixture.lockDir);
@@ -2189,18 +2196,18 @@ test("sporades host helper keeps read-only Capsule inspection available during a
         action: "capsule.release.list",
         host: fixture.request.host,
         capsule: fixture.request.capsule,
-      }, { cwd: dir, env: { ...fixture.docker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "2000" } });
-      const readResult = await Promise.race([
-        read.result,
-        new Promise((resolve) => setTimeout(() => resolve(null), 300)),
-      ]);
-      assert.notEqual(readResult, null, "read-only inspection must not wait behind route mutation");
-      assert.doesNotMatch(JSON.parse(readResult.stdout).error?.message ?? "", /route is locked/i);
-      assert.equal((await Promise.race([mutation.result.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 10))])), false);
+      }, { cwd: dir, env: fixture.docker.env });
+      const readResult = await read.result;
+      const readOutput = JSON.parse(readResult.stdout);
+      assert.doesNotMatch(readOutput.error?.message ?? "", /route is locked/i, "read-only inspection must not wait behind route mutation");
+      assert.equal(readOutput.ok, true, readResult.stdout);
+      assert.equal(mutationSettled, false, "the mutation still holds the route lock while the read completes");
+      await writeFile(release, "");
       assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
     } finally {
-      // Even a failed timing assertion must settle both helper processes before the
-      // surrounding fixture removes their directory.
+      // Release the gate even after a failed assertion, and settle both helper processes before
+      // the surrounding fixture removes their directory.
+      await writeFile(release, "").catch(() => {});
       await Promise.allSettled([mutation.result, ...(read ? [read.result] : [])]);
     }
   });
