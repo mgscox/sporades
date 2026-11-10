@@ -16,6 +16,13 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
     }>>;
     updateManagedSubscription(input: LooseRecord): Promise<Readonly<{
         ok: true;
+        outcome: "acknowledged";
+    }> | Readonly<{
+        paymentAction?: {
+            url: string;
+            expiresAt: string;
+        } | undefined;
+        ok: true;
         outcome: "payment-action-required" | "acknowledged";
     }>>;
     quiesceTeamBilling(input: LooseRecord): Promise<Readonly<{
