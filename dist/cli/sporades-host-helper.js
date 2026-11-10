@@ -5822,6 +5822,7 @@ async function withManagedRouteLock(routeFile, fn) {
         await writeFile(process.env.SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER, "route-lock-proof-retained\n", { mode: 0o600 });
     }
     await fakeManagedRouteLockPause("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS");
+    await fakeManagedRouteLockGate("SPORADES_FAKE_ROUTE_LOCK_HOLD_UNTIL_PATH");
     if (!(await processRetainsOsFlock(lockFile)))
         throw routeTrustError();
     await assertActiveManagedRouteTrust(routeFile);
@@ -5987,6 +5988,16 @@ async function fakeManagedRouteLockPause(name) {
     if (raw && /^[1-9][0-9]*$/.test(raw)) {
         await delay(Math.min(Number(raw), 60_000));
     }
+}
+// Test hook: holds the route lock until the named path exists, so a test can keep a mutation
+// inside its lock for exactly as long as it needs, without racing a wall-clock pause.
+async function fakeManagedRouteLockGate(name) {
+    const gate = process.env[name];
+    if (!gate)
+        return;
+    const deadline = Date.now() + 60_000;
+    while (!(await pathExists(gate)) && Date.now() < deadline)
+        await delay(10);
 }
 async function removePathIfPresent(targetPath, options = {}) {
     const existed = await pathExists(targetPath);
