@@ -224,6 +224,125 @@ test('provider read refuses an unsafe state before its callback has arrived', as
   }
 });
 
+test('an SCA-required switch returns an expiring hosted-invoice capability and settles as done from pending evidence', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  const requestId = randomUUID();
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1')).state, 'pending');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await f.drain();
+  const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.reason, 'payment-action-required');
+  assert.match(failed.paymentAction.url, /^https:\/\/invoice\.stripe\.com\/i\/acct_[A-Za-z0-9]+\/test_[A-Za-z0-9_]+\?s=em$/);
+  assert.equal((await f.read()).productKey, 'basic', 'entitlement is unchanged until the pending update is applied');
+  await fake.subscriptions.completePayment(subscriptionId);
+  assert.equal(fake.events.pending().at(-1).type, 'customer.subscription.pending_update_applied');
+  await f.deliver();
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1')).state, 'completed');
+  assert.equal((await f.read()).productKey, 'offered');
+});
+
+test('an expired pending update settles the switch as refused with entitlement unchanged', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  const requestId = randomUUID();
+  await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await f.drain();
+  await fake.clock.advance(3601);
+  assert.equal(fake.events.pending().at(-1).type, 'customer.subscription.pending_update_expired');
+  await f.deliver();
+  const refused = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(refused.state, 'failed');
+  assert.equal(refused.reason, 'payment-action-required');
+  assert.equal((await f.read()).productKey, 'basic');
+});
+
+test('a hostile hosted-invoice URL outside invoice.stripe.com is rejected', async t => {
+  const f = await fixture(t);
+  const { database, actor, teamId, fake } = f;
+  const requestId = randomUUID();
+  await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequiredOffHost' });
+  await f.drain();
+  const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1');
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.reason, 'unavailable');
+  assert.equal(failed.paymentAction, undefined);
+});
+
+for (const billingMode of ['classic', 'flexible']) for (const pending of [false, true]) test(`resume-and-switch resets and invoices the longer interval (${billingMode}, pending=${pending})`, async t => {
+  const f = await fixture(t, 'basic', false, { billingMode, currency: 'usd' });
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await fake.portal.cancelAtPeriodEnd(subscriptionId);
+  await f.deliver();
+  assert.equal((await f.read()).state, 'cancelling');
+  await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'year:1'),
+    { code: 'TEAM_BILLING_SUBSCRIPTION_CANCELLING' });
+  const requestId = randomUUID();
+  const input = { teamId, requestId, productKey: 'offered', interval: 'year:1', resume: true };
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input })).data.state, 'pending');
+  if (pending) fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+  await f.drain();
+  const write = fake.requests().find(r => r.operation === 'subscriptions.update');
+  assert.equal(write.parameters.billing_cycle_anchor, 'now');
+  assert.equal(write.parameters.proration_behavior, 'always_invoice');
+  assert.equal(write.parameters.cancel_at_period_end, 'false');
+  assert.deepEqual(write.parameters.expand, { 0: 'latest_invoice' });
+  if (pending) {
+    const failed = await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'year:1', true);
+    assert.equal(failed.reason, 'payment-action-required');
+    assert.ok(failed.paymentAction.url.startsWith('https://invoice.stripe.com/i/'));
+    assert.equal(fake.state().invoices.length, 0);
+    assert.equal((await f.read()).productKey, 'basic');
+    await fake.subscriptions.completePayment(subscriptionId);
+  }
+  const subscription = fake.subscriptions.get(subscriptionId);
+  assert.equal(subscription.cancel_at_period_end, false);
+  assert.equal(subscription.cancel_at, null);
+  assert.equal(subscription.items.data[0].price.id, 'price_offered_year');
+  assert.equal(fake.state().invoices.length, 1);
+  const invoice = fake.state().invoices.find(i => i.id === subscription.latest_invoice);
+  assert.equal(invoice.status, 'paid');
+  assert.equal(invoice.currency, 'usd');
+  assert.equal(invoice.lines.data[0].amount, 2900);
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptions.update').length, 1);
+  await f.deliver();
+  const read = await f.read();
+  assert.equal(read.state, 'active');
+  assert.equal(read.productKey, 'offered');
+  assert.equal(read.interval, 'year:1');
+  assert.equal(read.currency, 'usd');
+});
+
+test('resume and payment action preserve the server trial-switch policy', async t => {
+  for (const endTrial of [false, true]) {
+    const f = await fixture(t, 'basic', false, { trialDays: 14, endTrial });
+    const before = f.fake.subscriptions.get(f.subscriptionId);
+    await f.fake.portal.cancelAtPeriodEnd(f.subscriptionId);
+    await f.deliver();
+    const requestId = randomUUID();
+    await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true);
+    f.fake.faults.inject({ operation: 'subscriptions.update', status: 'paymentActionRequired' });
+    await f.drain();
+    const failed = await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true);
+    assert.equal(failed.reason, 'payment-action-required');
+    assert.ok(failed.paymentAction);
+    assert.equal((await f.read()).productKey, 'basic');
+    await f.fake.subscriptions.completePayment(f.subscriptionId);
+    await f.deliver();
+    const updated = f.fake.subscriptions.get(f.subscriptionId);
+    assert.equal(updated.cancel_at_period_end, false);
+    assert.equal(updated.cancel_at, null);
+    assert.equal(updated.status, endTrial ? 'active' : 'trialing');
+    if (!endTrial) assert.equal(updated.trial_end, before.trial_end);
+    else assert.equal(f.fake.state().invoices.find(i => i.id === updated.latest_invoice).status, 'paid');
+    assert.equal((await f.read()).productKey, 'offered');
+    assert.equal((await requestTeamBillingPlanTransition(f.database, f.actor, f.teamId, requestId, 'offered', 'year:1', true)).state, 'completed');
+  }
+});
+
 async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-transitions-'));
   const teamId = randomUUID();

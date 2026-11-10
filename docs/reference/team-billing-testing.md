@@ -128,11 +128,11 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `trialing`, `incomplete`, `incomplete_expired`, `canceled`; canceled and expired Subscriptions stay terminal. |
 | `subscriptions.setSchedule(id, scheduleId)` | Attaches an external `sub_sched_…` identity or clears it with `null`, emitting an update for transition-guard tests. |
 | `subscriptions.setQuantity(id, quantity)` | Changes a licensed seat or usage quantity and emits an update. |
-| `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits an active update. |
+| `subscriptions.completePayment(id)` | Applies an unexpired pending Price/quantity update after simulated successful payment, clears `pending_update`, and emits `customer.subscription.pending_update_applied`. |
 | `subscriptions.failPayment(id)` | Moves to `past_due` and emits a Dahlia `invoice.payment_failed`. |
 | `subscriptions.renew(id)` | Advances the billing period and emits an active update. |
 | `subscriptions.get(id)`, `customers.subscriptions(customerId)` | Inspects provider state. |
-| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates, applying scheduled cancellations, and converting due trials to active. |
+| `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, and converting due trials to active. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
 
 Team Billing catalogue products declared with `trialDays` use trial Checkout through the real
@@ -180,19 +180,28 @@ Fault statuses accept Stripe 4xx/5xx errors (including 409, 429, 500 and 503) or
 executes it and loses the acknowledgement. Timeout faults hold the connection
 beyond the fake's `requestTimeoutMs` (default 10000); set the SDK/runtime timeout
 to that value or lower. `count` defaults to one. Special statuses
-`"paymentActionRequired"` for `subscriptions.update` and
-`"completeDuringExpire"` for `checkout.sessions.expire` exercise payment action
+`"paymentActionRequired"` and `"paymentActionRequiredOffHost"` for
+`subscriptions.update` and `"completeDuringExpire"` for
+`checkout.sessions.expire` exercise payment action, hostile hosted-invoice URLs,
 and erasure races.
 
 `paymentActionRequired` retains the existing Subscription item Price and quantity.
 The requested item is recorded in `pending_update.subscription_items`, with a
-one-hour expiry. Signed update events therefore retain the existing plan/seats
-until `subscriptions.completePayment(id)` succeeds and emits fresh applied
-evidence. `setStatus(id, "active")` alone does not apply pending changes.
+one-hour expiry, and a hosted `latest_invoice` carrying an
+`invoice.stripe.com/i/acct_…/test_…?s=em` hosted-invoice URL
+(`paymentActionRequiredOffHost` models a
+URL on any other host, which the real provider rejects). Signed update events
+therefore retain the existing plan/seats
+until `subscriptions.completePayment(id)` succeeds and emits
+`customer.subscription.pending_update_applied`; advancing the clock past the
+expiry emits `customer.subscription.pending_update_expired` instead.
+`setStatus(id, "active")` alone does not apply pending changes.
 Expiration or cancellation discards them. Retrieve returns current state;
 idempotent POST replay returns the original pending response even after payment
 or expiration, without reapplying changes or emitting another event. The real
-provider attests the exact requested pending item separately from applied items.
+provider attests the exact requested pending item separately from applied items,
+and a managed update with `resume: true` also clears `cancel_at_period_end` /
+`cancel_at` in the same request.
 
 POSTs replay committed results for the same key and parameters, scoped to the
 test API key. Changed parameters return `idempotency_error`. Before-execution

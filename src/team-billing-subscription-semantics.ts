@@ -2,7 +2,9 @@ export type TeamBillingSubscriptionState = "trialing" | "active" | "past-due" | 
 export type TeamBillingSubscriptionEventType =
   | "customer.subscription.created"
   | "customer.subscription.updated"
-  | "customer.subscription.deleted";
+  | "customer.subscription.deleted"
+  | "customer.subscription.pending_update_applied"
+  | "customer.subscription.pending_update_expired";
 
 export type TeamBillingSubscriptionSemantics = Readonly<{
   kind: "trialing" | "active" | "cancelling" | "past-due" | "cancelled";

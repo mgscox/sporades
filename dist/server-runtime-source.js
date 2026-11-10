@@ -858,6 +858,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 prorationDate: input.prorationDate,
                 idempotencyKey: input.idempotencyKey,
                 operationKind: input.operationKind,
+                ...(input.resume === true ? { resume: true } : {}),
                 ...(input.endTrial === true ? { endTrial: true } : {}),
             }));
         },
@@ -6068,7 +6069,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
         if (message.type === "teamBilling.requestPlanTransition") {
             try {
                 const input = message.input;
-                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.currency);
+                const data = await requestTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId, input?.productKey, input?.interval, input?.resume, input?.currency);
                 sendJson(client, { id: message.id ?? null, type: "teamBilling.requestPlanTransition.result", data, error: null });
             }
             catch (error) {

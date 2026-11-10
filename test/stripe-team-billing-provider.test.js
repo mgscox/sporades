@@ -3,6 +3,7 @@ import http, { createServer } from "node:http";
 import { test } from "node:test";
 
 import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
+import { hostedInvoiceUrls, unsafeHostedInvoiceUrls } from "./support/team-billing-invoice-urls.js";
 
 const config = {
   enabled: true,
@@ -462,23 +463,95 @@ test("managed subscription updates attest current state and send one stable atom
 });
 
 test("managed subscription updates surface a bounded payment-action result without provider identifiers", async () => {
-  for (const paymentState of [
-    { priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
-      pendingUpdate: { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] } },
-    { status: "past_due" },
+  for (const url of hostedInvoiceUrls) {
+    const hostedInvoice = { object: "invoice", hosted_invoice_url: url };
+    for (const [paymentState, expected] of [
+      [{ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
+        pendingUpdate: { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] }, latestInvoice: hostedInvoice },
+      { ok: true, outcome: "payment-action-required",
+        paymentAction: { url, expiresAt: new Date(2_000_086_523 * 1000).toISOString() } }],
+      [{ status: "past_due" }, { ok: true, outcome: "payment-action-required" }],
+    ]) {
+      await withProvider(async (request, response) => {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(request.method === "GET"
+          ? validManagedSubscription({ priceId: managedSubscriptionInput.targetPriceId })
+          : validManagedSubscription(paymentState)));
+      }, async (apiBaseUrl) => {
+        const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+        const result = await provider.updateManagedSubscription(managedSubscriptionInput);
+        assert.deepEqual(result, expected);
+        assert.equal(Object.isFrozen(result), true);
+        if (expected.paymentAction) assert.equal(Object.isFrozen(result.paymentAction), true);
+        assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
+      });
+    }
+  }
+});
+
+test("pending managed updates reject any hosted-invoice URL outside invoice.stripe.com", async () => {
+  for (const latestInvoice of [
+    ...unsafeHostedInvoiceUrls.map((url) => ({ object: "invoice", hosted_invoice_url: url })),
+    undefined,
   ]) {
+    const pending = { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] };
+    const current = validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14 });
     await withProvider(async (request, response) => {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify(request.method === "GET"
-        ? validManagedSubscription({ priceId: managedSubscriptionInput.targetPriceId })
-        : validManagedSubscription(paymentState)));
+        ? current
+        : { ...current, pending_update: pending, latest_invoice: latestInvoice ?? null }));
     }, async (apiBaseUrl) => {
       const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
-      const result = await provider.updateManagedSubscription(managedSubscriptionInput);
-      assert.deepEqual(result, { ok: true, outcome: "payment-action-required" });
-      assert.equal(Object.isFrozen(result), true);
-      assert.equal(JSON.stringify(result).includes("sub_managed_team"), false);
+      await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), rejectedProviderFailure);
     });
+  }
+});
+
+test("an explicit resume clears scheduled cancellation inside the same managed update", async () => {
+  const cancelling = validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14, cancelAtPeriodEnd: true });
+  await withProvider(async (request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(request.method === "GET" ? cancelling : validManagedSubscription()));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription(managedSubscriptionInput), (error) =>
+      error?.code === "TEAM_BILLING_SUBSCRIPTION_CANCELLING" && error?.retryable === false);
+    assert.deepEqual(await provider.updateManagedSubscription({ ...managedSubscriptionInput, resume: true }), { ok: true, outcome: "acknowledged" });
+  });
+});
+
+test("an already applied trial-ending target refuses newly scheduled cancellation without changing its provider tuple", async () => {
+  const writes = [];
+  await withProvider(async (request, response) => {
+    if (request.method === "POST") writes.push(new URLSearchParams(await readBody(request)));
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(validManagedSubscription({ cancelAtPeriodEnd: request.method === "GET" })));
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resume: true, endTrial: true }), { code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS" });
+  });
+  assert.equal(writes.length, 0);
+});
+
+test("resume preserves all other guards even when cancellation is also scheduled", async () => {
+  for (const [override, code] of [
+    [{ status: "past_due" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    [{ status: "unpaid" }, "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    [{ schedule: "sub_sched_external" }, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
+  ]) {
+    for (const cancellation of [{ cancel_at_period_end: true }, { cancel_at: 2_000_086_523 }]) {
+      let writes = 0;
+      await withProvider(async (request, response) => {
+        if (request.method === "POST") writes += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ...validManagedSubscription(), ...cancellation, ...override }));
+      }, async (apiBaseUrl) => {
+        const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+        await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resume: true }), { code });
+      });
+      assert.equal(writes, 0);
+    }
   }
 });
 
@@ -488,6 +561,8 @@ test("pending managed updates attest the exact requested item and preserve Subsc
     { expires_at: 2_000_086_523 },
     { ...pending, expires_at: 0 },
     { ...pending, expires_at: "2000086523" },
+    { ...pending, expires_at: Number.MAX_SAFE_INTEGER },
+    { ...pending, expires_at: 253_402_300_800 },
     { ...pending, subscription_items: [] },
     { ...pending, subscription_items: [validManagedItem(), validManagedItem()] },
     ...[
@@ -498,7 +573,8 @@ test("pending managed updates attest the exact requested item and preserve Subsc
   ];
   const current = validManagedSubscription({ priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14 });
   const responses = [
-    ...invalidPending.map((pendingUpdate) => ({ ...current, pending_update: pendingUpdate })),
+    ...invalidPending.map((pendingUpdate) => ({ ...current, pending_update: pendingUpdate,
+      latest_invoice: { object: "invoice", hosted_invoice_url: hostedInvoiceUrls[0] } })),
     { ...current, customer: "cus_another_team", pending_update: pending },
     { ...current, livemode: true, pending_update: pending },
     { ...current, items: { ...current.items, has_more: true }, pending_update: pending },
@@ -703,6 +779,8 @@ function validManagedSubscription({
   quantity = managedSubscriptionInput.targetQuantity,
   pendingUpdate = null,
   status = "active",
+  cancelAtPeriodEnd = false,
+  latestInvoice = null,
 } = {}) {
   return {
     id: managedSubscriptionInput.subscriptionId,
@@ -710,7 +788,9 @@ function validManagedSubscription({
     customer: managedSubscriptionInput.customerId,
     livemode: false,
     status,
+    cancel_at_period_end: cancelAtPeriodEnd,
     pending_update: pendingUpdate,
+    latest_invoice: latestInvoice,
     items: {
       object: "list",
       has_more: false,
@@ -775,6 +855,25 @@ for (const [interval, count, anchor, start, end] of [
   }, async apiBaseUrl => {
     const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
     assert.deepEqual(await provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, prorationDate: seconds(anchor) }), { ok: true, outcome: "acknowledged" });
+  });
+  assert.equal(writes, 0);
+});
+
+for (const cancellation of [{ cancel_at_period_end: true }, { cancel_at: 1_800_000_000 }])
+test(`resumed reset recovery rejects new ${Object.keys(cancellation)[0]} without a write`, async () => {
+  const anchor = Date.parse("2027-01-01T00:00:00Z") / 1000;
+  const current = { ...validManagedSubscription(), ...cancellation, billing_cycle_anchor: anchor };
+  Object.assign(current.items.data[0], { current_period_start: anchor, current_period_end: Date.parse("2027-02-01T00:00:00Z") / 1000 });
+  current.items.data[0].price.recurring.interval_count = 1;
+  let writes = 0;
+  await withProvider((request, response) => {
+    if (request.method === "POST") writes++;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(current));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_recovery" }, apiBaseUrl });
+    await assert.rejects(provider.updateManagedSubscription({ ...managedSubscriptionInput, resetBillingCycle: true, resume: true, prorationDate: anchor }), {
+      code: "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", retryable: false,
+    });
   });
   assert.equal(writes, 0);
 });

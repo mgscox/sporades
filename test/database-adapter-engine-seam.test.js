@@ -523,6 +523,8 @@ test("the census covers every module the deployed Capsule bundle carries", () =>
     "team-billing-subscription-semantics.js",
     // Closed Portal policy validation only; no SQL or adapter behavior.
     "team-billing-portal-policy.js",
+    // Hosted-invoice URL validation is pure and owns no SQL or adapter behavior.
+    "team-billing-payment-action.js",
     // Pure Price declaration/currency matching and offline saved-Price evidence validation;
     // these modules own no SQL, adapter primitive, dialect or stored-value normalization.
     "team-billing-prices.js",

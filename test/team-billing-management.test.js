@@ -15,6 +15,7 @@ import {
 } from "../dist/server-runtime-source.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
 import { POSTGRES_SKIP_REASON, postgresTestUrl, withPostgresAdapter } from "./support/database-adapter-engines.js";
+import { hostedInvoiceUrls, unsafeHostedInvoiceUrls } from "./support/team-billing-invoice-urls.js";
 
 const sourceMode = process.execArgv.includes("--experimental-strip-types");
 const management = await import(sourceMode
@@ -368,9 +369,66 @@ test("a newer exact member count supersedes a plan worker before Price and quant
       teamId, mode: "sandbox", providerCustomerId: "cus_test", providerSubscriptionId: "sub_test", providerSubscriptionItemId: "si_test",
       sourcePriceId: "price_studio", targetPriceId: "price_agency", targetProductKey: "agency", targetQuantity: 3,
       effectiveAt: desired.effectiveAt, prorationDate: desired.effectiveAt, idempotencyKey: desired.idempotencyKey,
-      operationKind: "plan-transition",
+      operationKind: "plan-transition", resume: false,
     });
   } finally { fixture.close(); }
+});
+
+test("resume intent survives a newer member or usage count before the plan worker runs", async () => {
+  for (const [quantityKind, trial] of [["team-members", false], ["usage", false], ["team-members", true], ["usage", true]]) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      let usage = 2;
+      if (trial) {
+        fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+        fixture.database.teamBillingDefinition.transitions = { endTrial: true };
+      }
+      if (quantityKind === "usage") {
+        fixture.database.teamBillingDefinition.catalogue.agency.quantity = { kind: "usage", meter: "venues" };
+        fixture.database.runTeamBillingUsage = () => ({ venues: usage });
+      }
+      fixture.setMembers(2);
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [cancelAtPeriodEnd] = 1").run();
+      const requestId = randomRequestId("b");
+      await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency", undefined, true);
+      const original = fixture.desired();
+      fixture.setMembers(3);
+      usage = 3;
+      await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(original));
+      assert.equal(fixture.providerCalls.length, 0);
+      await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+      assert.equal(fixture.providerCalls.length, 1);
+      assert.equal(fixture.providerCalls[0].resume, true);
+      assert.equal(fixture.providerCalls[0].endTrial, trial ? true : undefined);
+      assert.equal(fixture.providerCalls[0].targetQuantity, 3);
+      assert.equal(fixture.operationForRequest(requestId).status, "awaiting-observation");
+    } finally { fixture.close(); }
+  }
+});
+
+test("usage repair preserves the acknowledged plan's resume intent", async () => {
+  for (const repair of ["count", "acknowledged", "observation"]) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      fixture.database.teamBillingDefinition.catalogue.agency.quantity = { kind: "usage", meter: "venues" };
+      fixture.database.runTeamBillingUsage = () => ({ venues: 2 });
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [state] = 'trialing'").run();
+      fixture.database.teamBillingDefinition.transitions = { endTrial: true };
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [cancelAtPeriodEnd] = 1").run();
+      await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("b"), "agency", undefined, true);
+      await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [productKey] = 'agency', [providerPriceId] = 'price_agency'").run();
+      const original = fixture.desired();
+      if (repair === "count") await stageTeamBillingUsageRepair(fixture.database, teamId);
+      else if (repair === "acknowledged") await stageAcknowledgedTeamBillingUsageTransitionRepair(fixture.database, teamId, "agency");
+      else await settleVerifiedTeamBillingTarget(fixture.database, { teamId, productKey: "agency", quantity: 1, subscriptionId: "sub_test" });
+      assert.notEqual(fixture.desired().intentId, original.intentId);
+      await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+      assert.equal(fixture.providerCalls.length, 2);
+      assert.equal(fixture.providerCalls[1].resume, true);
+      assert.equal(fixture.providerCalls[1].endTrial, true);
+    } finally { fixture.close(); }
+  }
 });
 
 test("payment action required fails safely and verified Plan evidence stages latest Team seats", async () => {
@@ -399,6 +457,136 @@ test("payment action required fails safely and verified Plan evidence stages lat
     assert.equal(fixture.desired().targetQuantity, 4);
     assert.equal(fixture.operation().status, "completed");
   } finally { fixture.close(); }
+});
+
+test("a payment-action capability is stored on the operation and returned while unexpired", async () => {
+  const fixture = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    const requestId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+    const action = { url: hostedInvoiceUrls[0], expiresAt: "2026-08-23T13:00:00.000Z" };
+    fixture.providerOutcome = { ok: true, outcome: "payment-action-required", paymentAction: action };
+    await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+    const operation = fixture.operationForRequest(requestId);
+    assert.equal(operation.status, "failed");
+    assert.equal(operation.safeFailureCode, "PAYMENT_ACTION_REQUIRED");
+    assert.equal(operation.paymentActionUrl, action.url);
+    assert.equal(operation.paymentActionExpiresAt, action.expiresAt);
+    assert.deepEqual(await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency"), {
+      state: "failed", teamId, requestId, productKey: "agency", reason: "payment-action-required", paymentAction: action,
+    });
+
+    fixture.providerOutcome = { ok: true, outcome: "payment-action-required", paymentAction: { ...action, url: "https://pay.example.test/i/hosted" } };
+    await repairTeamBillingDesiredState(fixture.database);
+    await assert.rejects(performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired())),
+      (error) => error?.code === "TEAM_BILLING_PROVIDER_REJECTED");
+    assert.equal(fixture.desired().status, "failed");
+    assert.equal(fixture.desired().safeFailureCode, "TEAM_BILLING_PROVIDER_REJECTED");
+
+    fixture.providerOutcome = { ok: true, outcome: "acknowledged", paymentAction: action };
+    await repairTeamBillingDesiredState(fixture.database);
+    await assert.rejects(performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired())),
+      (error) => error?.code === "TEAM_BILLING_PROVIDER_REJECTED");
+  } finally { fixture.close(); }
+});
+
+test("the management seam rejects unsafe hosted-invoice URLs before storage and on read", async () => {
+  for (const url of unsafeHostedInvoiceUrls) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      const requestId = randomRequestId("d");
+      await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+      const action = { url, expiresAt: "2026-08-23T13:00:00.000Z" };
+      fixture.providerOutcome = { ok: true, outcome: "payment-action-required", paymentAction: action };
+      await assert.rejects(performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired())), { code: "TEAM_BILLING_PROVIDER_REJECTED" });
+      assert.equal(fixture.operation().paymentActionUrl, null);
+      // Retained state must pass the same boundary before reaching the browser.
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PAYMENT_ACTION_REQUIRED', [paymentActionUrl] = ?, [paymentActionExpiresAt] = ?").run(url, action.expiresAt);
+      const result = await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+      assert.equal(result.paymentAction, undefined);
+    } finally { fixture.close(); }
+  }
+});
+
+test("noncanonical payment-action expiry is rejected before storage and on read", async () => {
+  for (const expiresAt of ["Thu, 01 Jan 1970 00:00:00 GMT", "2026-08-23T13:00:00Z", "+010000-01-01T00:00:00.000Z", "invalid"]) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      const requestId = randomRequestId("d");
+      await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+      const action = { url: hostedInvoiceUrls[0], expiresAt };
+      fixture.providerOutcome = { ok: true, outcome: "payment-action-required", paymentAction: action };
+      await assert.rejects(performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired())), { code: "TEAM_BILLING_PROVIDER_REJECTED" });
+      assert.equal(fixture.operation().paymentActionExpiresAt, null);
+      fixture.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PAYMENT_ACTION_REQUIRED', [paymentActionUrl] = ?, [paymentActionExpiresAt] = ?").run(action.url, expiresAt);
+      const result = await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+      assert.equal(result.paymentAction, undefined);
+    } finally { fixture.close(); }
+  }
+});
+
+test("an expired payment-action capability is never returned", async () => {
+  const fixture = openFixture({ productKey: "studio", quantity: 1 });
+  try {
+    const requestId = "dddddddd-eeee-4eee-8eee-eeeeeeeeeeee";
+    await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency");
+    fixture.providerOutcome = {
+      ok: true, outcome: "payment-action-required",
+      paymentAction: { url: "https://invoice.stripe.com/i/in_expired", expiresAt: "2026-08-23T11:00:00.000Z" },
+    };
+    await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+    assert.deepEqual(await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency"), {
+      state: "failed", teamId, requestId, productKey: "agency", reason: "payment-action-required",
+    });
+  } finally { fixture.close(); }
+});
+
+test("resume stages a cancelling Subscription and clears its cancellation inside one provider update", async () => {
+  for (const [resume, cancelling] of [[undefined, true], [true, true], [true, false]]) {
+    const fixture = openFixture({ productKey: "studio", quantity: 1 });
+    try {
+      if (cancelling) fixture.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [cancelAtPeriodEnd] = 1").run();
+      const requestId = randomRequestId("c");
+      if (resume !== true) {
+        await assert.rejects(requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency"),
+          { code: "TEAM_BILLING_SUBSCRIPTION_CANCELLING" });
+        assert.equal(fixture.desired(), undefined);
+        continue;
+      }
+      assert.equal((await requestTeamBillingPlanTransition(fixture.database, actor, teamId, requestId, "agency", undefined, true)).state, "pending");
+      assert.equal(fixture.desired().resume, 1);
+      await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+      assert.equal(fixture.providerCalls[0].resume, true);
+      assert.equal(fixture.operationForRequest(requestId).status, "awaiting-observation");
+      assert.equal(fixture.providerCalls.length, 1);
+    } finally { fixture.close(); }
+  }
+});
+
+test("resume does not lift the past-due or schedule refusals", async () => {
+  for (const [column, value, code] of [
+    ["state", "past-due", "TEAM_BILLING_SUBSCRIPTION_PAST_DUE"],
+    ["hasSchedule", 1, "TEAM_BILLING_UNKNOWN_SCHEDULE"],
+  ]) {
+    for (const cancelling of [0, 1]) {
+      for (const phase of ["request", "worker"]) {
+        const fixture = openFixture({ productKey: "studio", quantity: 1 });
+        try {
+          if (phase === "worker") await requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("e"), "agency", undefined, true);
+          fixture.adapter.prepare(`UPDATE [sporades_team_billing_subscriptions] SET [${column}] = ?, [cancelAtPeriodEnd] = ?`).run(value, cancelling);
+          if (phase === "request") {
+            await assert.rejects(requestTeamBillingPlanTransition(fixture.database, actor, teamId, randomRequestId("e"), "agency", undefined, true), { code });
+            assert.equal(fixture.desired(), undefined);
+          } else {
+            await performTeamBillingPlanTransition(fixture.database, {}, desiredPayload(fixture.desired()));
+            assert.equal(fixture.operation().safeFailureCode, code);
+            assert.equal(fixture.operation().status, "failed");
+          }
+          assert.equal(fixture.providerCalls.length, 0);
+        } finally { fixture.close(); }
+      }
+    }
+  }
 });
 
 test("provider outage, retry exhaustion, and startup repair retain the same desired tuple", async () => {
@@ -918,11 +1106,11 @@ function openFixture(options = {}) {
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   };
-  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [resetBillingCycle] INTEGER NULL, [endTrial] INTEGER NULL, [preserveTrial] INTEGER NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetPriceId] TEXT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [resetBillingCycle] INTEGER NULL, [endTrial] INTEGER NULL, [preserveTrial] INTEGER NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [resume] INTEGER NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_erasure_tombstones] ([erasureKey] TEXT PRIMARY KEY, [evidenceDigest] TEXT NOT NULL, [providerQuiescedAt] TEXT NOT NULL, [createdAt] TEXT NOT NULL)");
-  sqlite.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL)");
+  sqlite.exec("CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [paymentActionUrl] TEXT NULL, [paymentActionExpiresAt] TEXT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)");
   sqlite.exec("CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [interval] TEXT NULL, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [currentPeriodStart] TEXT NULL, [currentPeriodEnd] TEXT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [lastEventOccurredAt] TEXT NULL, [lastEventKind] TEXT NULL, [lastEventRank] INTEGER NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)");
   sqlite.exec("CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL)");

@@ -4,6 +4,7 @@ import { billingCurrencyAmount, billingCurrencyMismatch } from "./team-billing-p
 // serialized lane and verified Stripe observations are the only settlement.
 import { createHash, randomUUID } from "node:crypto";
 import { teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
+import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
 import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
 import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
@@ -11,10 +12,16 @@ export const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-tra
 export const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
 const CLAIM_TTL_MS = 5 * 60 * 1_000;
 const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-export async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval, currency) {
+export async function requestTeamBillingPlanTransition(database, auth, teamId, requestId, productKey, interval, resume, currency) {
+    // Callers that predate the `resume` parameter pass the selected currency positionally.
+    if (typeof resume === "string") {
+        currency = resume;
+        resume = undefined;
+    }
     const definition = database.teamBillingDefinition;
     if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? ""))
-        || typeof productKey !== "string" || !definition?.catalogue?.[productKey])
+        || typeof productKey !== "string" || !definition?.catalogue?.[productKey]
+        || (resume !== undefined && typeof resume !== "boolean"))
         throw denied();
     const price = teamBillingPrice(modeBinding(database, definition.catalogue[productKey]), interval);
     if (!price)
@@ -24,16 +31,16 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         const sql = transaction.dialect.sql;
-        const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
+        const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [providerPriceId], [currency], [status], [safeFailureCode], [createdAt], [paymentActionUrl], [paymentActionExpiresAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
         if (repeated) {
             if (currency !== undefined && currency !== repeated.currency)
                 throw billingCurrencyMismatch();
             if (repeated.kind !== "plan-transition" || repeated.productKey !== productKey || (repeated.providerPriceId ?? null) !== (price.interval ? price.priceId : null))
                 throw conflict();
-            return planOperationResult(teamId, requestId, productKey, repeated);
+            return planOperationResult(database, teamId, requestId, productKey, repeated);
         }
         const subscription = await currentSubscription(transaction, teamId);
-        const refusal = transitionRefusal(subscription);
+        const refusal = transitionRefusal(subscription, resume === true);
         if (refusal)
             throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
         const currentProduct = definition.catalogue[subscription.productKey];
@@ -51,7 +58,7 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         const now = nowIso(database);
         const effectiveAt = nowSeconds(database);
         const staged = await stageDesired(transaction, database, {
-            teamId, kind: "plan-transition", operationId, endTrial: subscription.state === "trialing" && definition.transitions?.endTrial === true, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt,
+            teamId, kind: "plan-transition", operationId, endTrial: subscription.state === "trialing" && definition.transitions?.endTrial === true, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
         });
         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
             "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')")).run(now, teamId);
@@ -97,7 +104,7 @@ async function stageTeamBillingCountChange(database, teamId, effectiveAt, quanti
             return Object.freeze({ staged: false });
         const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
             teamId, kind: existing.kind, operationId: existing.operationId, targetProductKey: existing.targetProductKey,
-            endTrial: existing.endTrial, targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt,
+            endTrial: existing.endTrial, targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt, resume: existing.resume,
         } : {
             teamId, kind: "seat-convergence", operationId: null, targetProductKey: subscription.productKey,
             targetQuantity: quantity, effectiveAt,
@@ -130,7 +137,7 @@ export async function stageAcknowledgedTeamBillingUsageTransitionRepair(database
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         const replacement = await stageDesired(transaction, database, {
             teamId, kind: desired.kind, operationId: desired.operationId, targetProductKey: productKey,
-            endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database),
+            endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
         }, true);
         await enqueueIntent(database, transaction, replacement);
         enqueued = true;
@@ -195,9 +202,10 @@ async function performDesired(database, _context, payload, kind) {
             && billingCurrencyAmount(price, subscription.currency) === undefined)
             return attention(transaction, database, desired, "CURRENCY_MISMATCH");
         if (kind === "plan-transition") {
-            const refusal = transitionRefusal(subscription);
-            if (refusal)
+            const refusal = transitionRefusal(subscription, desired.resume === 1);
+            if (refusal) {
                 return attention(transaction, database, desired, refusal);
+            }
             // Verified target usage can still drift after a cross-policy or interval switch.
             const repairsUsageQuantity = product.quantity.kind === "usage"
                 && subscription.productKey === desired.targetProductKey && subscription.providerPriceId === price.priceId;
@@ -213,7 +221,7 @@ async function performDesired(database, _context, payload, kind) {
             if (billableQuantity !== Number(desired.targetQuantity)) {
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
-                    endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+                    endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database), resume: desired.resume,
                 });
                 await enqueueIntent(database, transaction, replacement);
                 return { superseded: true, dispatch: true };
@@ -261,6 +269,7 @@ async function performDesired(database, _context, payload, kind) {
                 prorationDate: Number(desired.effectiveAt),
                 idempotencyKey: desired.idempotencyKey,
                 operationKind: desired.kind,
+                resume: desired.resume === 1,
                 ...(desired.endTrial === 1 ? { endTrial: true } : {}),
             },
         };
@@ -278,7 +287,8 @@ async function performDesired(database, _context, payload, kind) {
         if (!validProviderAcknowledgement(providerResult))
             throw coded("Team Billing provider returned an invalid acknowledgement.", "TEAM_BILLING_PROVIDER_REJECTED");
         if (providerResult?.outcome === "payment-action-required") {
-            await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" });
+            const paymentAction = validPaymentAction(providerResult.paymentAction) ? providerResult.paymentAction : null;
+            await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" }, paymentAction);
             return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
         }
     }
@@ -361,7 +371,7 @@ export async function settleVerifiedTeamBillingTarget(database, accepted) {
                 // A new drift must make a new provider write, rather than replay an acknowledged Stripe key.
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind: desired.kind, operationId: desired.operationId,
-                    targetProductKey: desired.targetProductKey, endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database),
+                    targetProductKey: desired.targetProductKey, endTrial: desired.endTrial, targetPriceId: desired.targetPriceId, targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
                 }, true);
                 await enqueueIntent(database, transaction, replacement);
                 enqueued = true;
@@ -483,13 +493,15 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     input = { ...input, targetPriceId, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0 };
     const existing = await desiredForTeam(transaction, input.teamId);
     const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
-        && (existing.endTrial ?? 0) === input.endTrial && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId;
+        && (existing.endTrial ?? 0) === input.endTrial
+        && Number(existing.targetQuantity) === input.targetQuantity && (existing.targetPriceId ?? null) === input.targetPriceId
+        && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
     if (unchanged) {
         const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string"
             && input.operationId !== existing.operationId;
         const enqueue = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
         if (enqueue)
-            await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [updatedAt] = ? WHERE [intentId] = ?")).run(transfersPlanOwnership ? input.operationId : existing.operationId, nowIso(database), existing.intentId);
+            await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [resume] = ?, [updatedAt] = ? WHERE [intentId] = ?")).run(transfersPlanOwnership ? input.operationId : existing.operationId, input.resume ?? 0, nowIso(database), existing.intentId);
         return { ...existing, operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
             status: enqueue ? "queued" : existing.status, enqueue };
     }
@@ -497,11 +509,11 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
     const now = nowIso(database);
     if (existing) {
-        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [endTrial] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, now, now, input.teamId);
+        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [endTrial] = ?, [effectiveAt] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now, input.teamId);
     }
     else {
-        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [endTrial], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [createdAt], [updatedAt]) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, now, now);
+        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [endTrial], [effectiveAt], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.endTrial, input.effectiveAt, idempotencyKey, input.resume ?? 0, now, now);
     }
     await ensureLane(transaction, input.teamId, database);
     return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -559,8 +571,8 @@ async function currentSubscription(transaction, teamId) {
         throw attentionRequired();
     return rows[0];
 }
-function transitionRefusal(subscription) {
-    return teamBillingTransitionRefusal(subscription.state, subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
+function transitionRefusal(subscription, resume) {
+    return teamBillingTransitionRefusal(subscription.state, !resume && subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
 }
 async function optionalCurrentSubscription(transaction, teamId) {
     try {
@@ -593,7 +605,7 @@ async function releaseLane(transaction, teamId, token, database) {
     const released = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?")).run(nowIso(database), teamId, token);
     return Number(released?.changes ?? released?.changesCount ?? 0) === 1;
 }
-async function releaseAfterFailure(database, desired, token, classified) {
+async function releaseAfterFailure(database, desired, token, classified, paymentAction = null) {
     await inTransaction(database, async (transaction) => {
         await releaseLane(transaction, desired.teamId, token, database);
         const current = await desiredByIntent(transaction, desired.intentId);
@@ -602,7 +614,7 @@ async function releaseAfterFailure(database, desired, token, classified) {
         const updated = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [safeFailureCode] = ?, [updatedAt] = ? " +
             "WHERE [intentId] = ? AND [activeJobGenerationId] = ?")).run(classified.retryable ? "queued" : "failed", classified.code, nowIso(database), desired.intentId, desired.activeJobGenerationId);
         if (!classified.retryable && Number(updated?.changes ?? updated?.changesCount ?? 0) === 1 && current.operationId)
-            await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [updatedAt] = ? WHERE [id] = ?")).run(classified.code, nowIso(database), current.operationId);
+            await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = ?, [paymentActionUrl] = ?, [paymentActionExpiresAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(classified.code, paymentAction?.url ?? null, paymentAction?.expiresAt ?? null, nowIso(database), current.operationId);
     });
 }
 async function attention(transaction, database, desired, code, deniedResult = false) {
@@ -662,11 +674,25 @@ function safeCode(value) {
     return text || "PROVIDER_REJECTED";
 }
 function validProviderAcknowledgement(value) {
-    return value && typeof value === "object" && !Array.isArray(value)
-        && Object.keys(value).sort().join("\0") === "ok\0outcome"
-        && value.ok === true && ["acknowledged", "payment-action-required"].includes(value.outcome);
+    if (!value || typeof value !== "object" || Array.isArray(value)
+        || !Object.keys(value).every((key) => ["ok", "outcome", "paymentAction"].includes(key)))
+        return false;
+    if (value.ok !== true || !["acknowledged", "payment-action-required"].includes(value.outcome))
+        return false;
+    return value.paymentAction === undefined
+        ? true : value.outcome === "payment-action-required" && validPaymentAction(value.paymentAction);
 }
-function planOperationResult(teamId, requestId, productKey, operation) {
+/** The hosted-invoice capability is revalidated at this seam: never an arbitrary URL. */
+function validPaymentAction(action) {
+    if (!action || typeof action !== "object" || Array.isArray(action)
+        || Object.keys(action).sort().join("\0") !== "expiresAt\0url")
+        return false;
+    return validTeamBillingHostedInvoiceUrl(action.url) && typeof action.expiresAt === "string"
+        && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(action.expiresAt)
+        && Number.isFinite(Date.parse(action.expiresAt))
+        && new Date(action.expiresAt).toISOString() === action.expiresAt;
+}
+function planOperationResult(database, teamId, requestId, productKey, operation) {
     if (operation.status === "completed" || operation.status === "superseded") {
         return Object.freeze({ state: operation.status, teamId, requestId, productKey });
     }
@@ -676,7 +702,11 @@ function planOperationResult(teamId, requestId, productKey, operation) {
                 : operation.safeFailureCode === "CURRENCY_MISMATCH" ? "currency-mismatch"
                     : ["PROVIDER_STATE_AMBIGUOUS", "CATALOGUE_MISMATCH", "PROVIDER_DRIFT"].includes(operation.safeFailureCode)
                         ? "provider-state-ambiguous" : "unavailable";
-        return Object.freeze({ state: "failed", teamId, requestId, productKey, reason });
+        const action = { url: operation.paymentActionUrl, expiresAt: operation.paymentActionExpiresAt };
+        const paymentAction = reason === "payment-action-required" && validPaymentAction(action)
+            && action.expiresAt > nowIso(database) ? Object.freeze(action) : null;
+        return Object.freeze({ state: "failed", teamId, requestId, productKey, reason,
+            ...(paymentAction ? { paymentAction } : {}) });
     }
     return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: operation.createdAt });
 }

@@ -11,7 +11,8 @@ export type StripeFakeOperation =
   | "customers.retrieve";
 export type StripeFakeFault = {
   operation: StripeFakeOperation;
-  status: number | "timeout" | "paymentActionRequired" | "completeDuringExpire";
+  /** `paymentActionRequiredOffHost` models a hostile hosted-invoice URL outside `invoice.stripe.com`. */
+  status: number | "timeout" | "paymentActionRequired" | "paymentActionRequiredOffHost" | "completeDuringExpire";
   count?: number;
   when?: "before" | "after";
 };
