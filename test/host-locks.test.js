@@ -29,6 +29,9 @@ import { trustedClientAddress } from "../dist/client-address.js";
 import { ADMISSION_INSPECTION_SCRIPT } from "../dist/cli/admission-inspection.js";
 import { installPrerenderWarnings, assertPrerenderWarnings } from "./support/prerender-warnings.js";
 // OS lock and signal fixtures run in the serial lane.
+const AFTER_OS_LOCK = "SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS";
+const GLOBAL_LOCK_PAUSE = "SPORADES_FAKE_HOST_GLOBAL_ROUTE_LOCK_PAUSE_MS";
+const GLOBAL_LOCK_FILE = ".sporades-host-helper.host-route.lock";
 import {
 repoRoot,
 cliPath,
@@ -54,6 +57,7 @@ waitForHostHelperMarker,
 stopHostHelper,
 waitForPath,
 waitForChildPid,
+createHostPauseGate,
 hostEnv,
 writeHostProfileConfig,
 prepareFakeBin,
@@ -99,13 +103,12 @@ runRouteRecoveryPass
 
 test("sporades host helper automatically releases the OS route lock after its owner is killed", async () => {
   await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
-    });
+    const gate = await createHostPauseGate(dir);
+    const fixture = await prepareRouteLockFixture(dir, { env: gate.env(AFTER_OS_LOCK) });
     const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
+    // The gate is entered only after the OS lock is taken, so the kill lands on a real owner.
+    await gate.entered(AFTER_OS_LOCK, { action: holder });
     assert.equal((await stat(fixture.lockDir)).isFile(), true);
-    await new Promise((resolve) => setTimeout(resolve, 100));
     process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 
@@ -122,15 +125,19 @@ test("sporades host helper automatically releases the OS route lock after its ow
 
 test("sporades host helper releases the OS route lock to one waiting successor", async () => {
   await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "300" },
-    });
+    const gate = await createHostPauseGate(dir);
+    const fixture = await prepareRouteLockFixture(dir, { env: gate.env(AFTER_OS_LOCK) });
     const predecessor = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const successor = runHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
+    await gate.entered(AFTER_OS_LOCK, { action: predecessor });
+    const successor = startHostHelper(fixture.request, {
+      cwd: dir,
+      env: { ...fixture.docker.env, [AFTER_OS_LOCK]: "0", SPORADES_ROUTE_LOCK_TIMEOUT_MS: "60000" },
+    });
+    // Release the predecessor only once the successor is provably queued on the route lock.
+    await gate.flockWaiter(fixture.lockDir, { action: successor });
+    await gate.release(AFTER_OS_LOCK);
 
-    const [predecessorResult, successorResult] = await Promise.all([predecessor.result, successor]);
+    const [predecessorResult, successorResult] = await Promise.all([predecessor.result, successor.result]);
     assert.equal(JSON.parse(predecessorResult.stdout).ok, true, predecessorResult.stdout);
     assert.equal(JSON.parse(successorResult.stdout).ok, true, successorResult.stdout);
     assert.equal((await stat(fixture.lockDir)).isFile(), true);
@@ -139,8 +146,9 @@ test("sporades host helper releases the OS route lock to one waiting successor",
 
 test("Host bootstrap and Capsule route mutations share a global lock without deadlock", async () => {
   await withTempDir(async (dir) => {
+    const gate = await createHostPauseGate(dir);
     const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "1000" },
+      env: { ...gate.env(AFTER_OS_LOCK), SPORADES_ROUTE_LOCK_TIMEOUT_MS: "60000" },
     });
     const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
     const env = {
@@ -149,7 +157,7 @@ test("Host bootstrap and Capsule route mutations share a global lock without dea
       PATH: `${caddyUser.fakeBinDir}${path.delimiter}${fixture.docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
     };
     const mutation = startHostHelper(fixture.request, { cwd: dir, env });
-    await waitForPath(fixture.lockDir);
+    await gate.entered(AFTER_OS_LOCK, { action: mutation });
     const bootstrap = startHostHelper({
       action: "host.bootstrap",
       host: fixture.request.host,
@@ -158,26 +166,31 @@ test("Host bootstrap and Capsule route mutations share a global lock without dea
     }, { cwd: dir, env });
     let bootstrapSettled = false;
     bootstrap.result.then(() => { bootstrapSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 700));
+    // A bootstrap that skipped the global lock would finish while the mutation is held, so it would
+    // never be recorded as queued and this wait would fail.
+    await gate.flockWaiter(path.join(dir, GLOBAL_LOCK_FILE), { action: bootstrap });
     assert.equal(bootstrapSettled, false, "global bootstrap must wait for an active Capsule route mutation");
+    await gate.release(AFTER_OS_LOCK);
     assert.equal(JSON.parse((await mutation.result).stdout).ok, true);
     assert.equal(JSON.parse((await bootstrap.result).stdout).ok, true);
 
+    const exclusiveGate = await createHostPauseGate(path.join(dir, "exclusive"));
     const exclusiveBootstrap = startHostHelper({
       action: "host.bootstrap",
       host: fixture.request.host,
       capsule: null,
       bootstrap: { tls: { mode: "automatic" } },
-    }, { cwd: dir, env: { ...env, SPORADES_FAKE_HOST_GLOBAL_ROUTE_LOCK_PAUSE_MS: "700" } });
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    }, { cwd: dir, env: { ...env, ...exclusiveGate.env(GLOBAL_LOCK_PAUSE), [AFTER_OS_LOCK]: "0" } });
+    await exclusiveGate.entered(GLOBAL_LOCK_PAUSE, { action: exclusiveBootstrap });
     const laterMutation = startHostHelper(fixture.request, {
       cwd: dir,
-      env: { ...env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "0" },
+      env: { ...env, ...exclusiveGate.env(), [AFTER_OS_LOCK]: "0" },
     });
     let mutationSettled = false;
     laterMutation.result.then(() => { mutationSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await exclusiveGate.flockWaiter(path.join(dir, GLOBAL_LOCK_FILE), { mode: "--shared", action: laterMutation });
     assert.equal(mutationSettled, false, "Capsule mutation must wait for exclusive global bootstrap");
+    await exclusiveGate.release(GLOBAL_LOCK_PAUSE);
     assert.equal(JSON.parse((await exclusiveBootstrap.result).stdout).ok, true);
     assert.equal(JSON.parse((await laterMutation.result).stdout).ok, true);
   });
@@ -231,21 +244,17 @@ test("sporades host helper ignores stale lock-file contents because ownership is
 
 test("sporades host helper fences an ancestor swap after route lock acquisition", async () => {
   await withTempDir(async (dir) => {
-    const proofMarker = path.join(dir, "route-lock-proof.marker");
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: {
-        SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "700",
-        SPORADES_TEST_ROUTE_LOCK_PROOF_MARKER: proofMarker,
-      },
-    });
+    const gate = await createHostPauseGate(dir);
+    const fixture = await prepareRouteLockFixture(dir, { env: gate.env(AFTER_OS_LOCK) });
     const domainDirectory = path.dirname(fixture.routeFile);
     const preservedDirectory = `${domainDirectory}.preserved`;
     const outside = path.join(dir, "outside-route-target");
     await mkdir(outside, { mode: 0o700 });
     const action = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(proofMarker);
+    await gate.entered(AFTER_OS_LOCK, { action });
     await rename(domainDirectory, preservedDirectory);
     await symlink(outside, domainDirectory, "dir");
+    await gate.release(AFTER_OS_LOCK);
     const result = await action.result;
     assert.equal(JSON.parse(result.stdout).error.message, "Hosted Capsule route trust validation failed.", result.stdout);
     assert.deepEqual(await readdir(outside), []);
@@ -330,14 +339,13 @@ test("first Host helper upgrade drains legacy actions and blocks new commands be
 
 test("sporades host helper cannot continue route mutation after its lock-holding action process is killed", async () => {
   await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "600" },
-    });
+    const gate = await createHostPauseGate(dir);
+    const fixture = await prepareRouteLockFixture(dir, { env: gate.env(AFTER_OS_LOCK) });
     const staleRequest = structuredClone(fixture.request);
     const winnerRequest = structuredClone(fixture.request);
     const stale = startHostHelper(staleRequest, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // The stale action is held inside its lock and is never released: only the kill ends it.
+    await gate.entered(AFTER_OS_LOCK, { action: stale });
 
     const lockHolderPid = await waitForChildPid(stale.child.pid);
     process.kill(lockHolderPid, "SIGKILL");
@@ -354,21 +362,22 @@ test("sporades host helper cannot continue route mutation after its lock-holding
 
 test("sporades host helper does not steal a live route owner and rejects malformed lock bounds", async () => {
   await withTempDir(async (dir) => {
-    const fixture = await prepareRouteLockFixture(dir, {
-      env: { SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
-    });
+    const gate = await createHostPauseGate(dir);
+    const fixture = await prepareRouteLockFixture(dir, { env: gate.env(AFTER_OS_LOCK) });
     const holder = startHostHelper(fixture.request, { cwd: dir, env: fixture.docker.env });
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await gate.entered(AFTER_OS_LOCK, { action: holder });
+    let holderSettled = false;
+    holder.result.then(() => { holderSettled = true; });
 
     const contenderDocker = await installFakeDocker(path.join(dir, "contender"));
-    const startedAt = Date.now();
     const contender = await runHostHelper(fixture.request, {
       cwd: dir,
       env: { ...contenderDocker.env, SPORADES_ROUTE_LOCK_TIMEOUT_MS: "100" },
     });
     assert.equal(JSON.parse(contender.stdout).error.message, "Hosted Capsule route is locked.");
-    assert.ok(Date.now() - startedAt < 1000, "a live-owner timeout must remain bounded");
+    // The holder is gated and never released, so the contender can only have returned through its
+    // own 100 ms lock timeout: an unbounded wait would hang here until the test timeout.
+    assert.equal(holderSettled, false, "the live owner still holds the route lock");
 
     for (const invalidTimeout of ["NaN", "Infinity", "0", "-1", "1.5", "60001"]) {
       const invalid = await runHostHelper(fixture.request, {

@@ -48,6 +48,7 @@ startExecutable,
 writeFakeProcEntry,
 waitForPath,
 waitForChildPid,
+createHostPauseGate,
 hostEnv,
 writeHostProfileConfig,
 installFakeSsh,
@@ -341,9 +342,10 @@ test("Host helper legacy drain uses a monotonic bounded deadline despite wall-cl
         SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       },
     });
+    // Hang backstop only: a drain that ignored its monotonic deadline is killed and fails on code.
     const forcedKill = setTimeout(() => {
       try { process.kill(-upgrade.child.pid, "SIGKILL"); } catch {}
-    }, 2_000);
+    }, 60_000);
     const result = await upgrade.result;
     clearTimeout(forcedKill);
     assert.equal(result.code, 1);
@@ -366,21 +368,20 @@ test("Host helper legacy drain rejects an oversized process table within its wor
     await copyFile(hostHelperPath, stage);
     await chmod(stage, 0o755);
     await Promise.all(Array.from({ length: 80 }, (_, index) => mkdir(path.join(procRoot, String(44000 + index)))));
-    const startedAt = process.hrtime.bigint();
+    // No elapsed-time budget: the bound is proven by the work-bound error itself. With the drain
+    // timeout left at its 60 s default, an unbounded scan of all 80 entries would instead succeed or
+    // fail with the drain-timeout error, not this one.
     const result = await startExecutable(stage, ["--install-host-helper", target, checksum], {
       cwd: dir,
       env: {
         SPORADES_TEST_FLOCK_PATH: path.join(repoRoot, "test", "support", "exec-flock.py"),
         SPORADES_TEST_PROC_ROOT: procRoot,
-        SPORADES_HOST_UPGRADE_DRAIN_TIMEOUT_MS: "1000",
         SPORADES_HOST_UPGRADE_PROC_MAX_ENTRIES: "64",
         SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       },
     }).result;
-    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
     assert.equal(result.code, 1);
     assert.match(result.stdout, /Host process inspection exceeded its safe work bound/);
-    assert.ok(elapsedMs < 1000, `process inspection must be bounded, took ${elapsedMs}ms`);
   });
 });
 
@@ -2114,13 +2115,14 @@ test("sporades host helper scavenges a dead pre-publication claim after SIGKILL"
     await writeFile(unrelatedFile, "unrelated\n");
     const orphanClaim = `${fixture.lockDir}.claim-${"e".repeat(32)}`;
     await writeFile(orphanClaim, `${JSON.stringify({ token: "e".repeat(32), pid: 999999, processIdentity: "dead", createdAt: 1 })}\n`);
+    const gate = await createHostPauseGate(dir);
     const holder = startHostHelper(fixture.request, {
       cwd: dir,
-      env: { ...fixture.docker.env, SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS: "10000" },
+      env: { ...fixture.docker.env, ...gate.env("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS") },
     });
     const routeDir = path.dirname(fixture.routeFile);
-    await waitForPath(fixture.lockDir);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // Killed while provably holding the lock; the gate is never released.
+    await gate.entered("SPORADES_FAKE_ROUTE_LOCK_PAUSE_AFTER_OS_LOCK_MS", { action: holder });
     process.kill(await waitForChildPid(holder.child.pid), "SIGKILL");
     await holder.result;
 

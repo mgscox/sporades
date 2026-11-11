@@ -24,6 +24,7 @@ lock_path = args[6]
 command = args[7:]
 fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
 deadline = time.monotonic() + timeout
+reported_wait = False
 while True:
     try:
         operation = fcntl.LOCK_EX if args[0] == "--exclusive" else fcntl.LOCK_SH
@@ -31,6 +32,14 @@ while True:
             fcntl.flock(fd, operation | fcntl.LOCK_NB)
         break
     except BlockingIOError:
+        # Test hook: record that this process is queued behind a held lock, so a test can release
+        # the holder only once a contender is provably waiting, instead of sleeping and hoping.
+        # Zero-timeout probes (ownership checks) are not waiters and are not recorded.
+        wait_marker = os.environ.get("SPORADES_TEST_FLOCK_WAIT_MARKER")
+        if wait_marker and timeout > 0 and not reported_wait:
+            with open(wait_marker, "a") as marker:
+                marker.write(f"{args[0]} {os.path.basename(lock_path)}\n")
+            reported_wait = True
         if time.monotonic() >= deadline:
             raise SystemExit(conflict_exit_code)
         time.sleep(0.025)
