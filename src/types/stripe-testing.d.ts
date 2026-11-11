@@ -9,6 +9,7 @@ export type StripeFakeOperation =
   | "billingPortal.configurations.retrieve" | "billingPortal.sessions.create"
   | "subscriptions.create" | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
   | "subscriptionSchedules.create" | "subscriptionSchedules.update" | "subscriptionSchedules.release"
+  | "invoices.createPreview"
   | "customers.retrieve" | "prices.retrieve";
 export type StripeFakeFault = {
   operation: StripeFakeOperation;

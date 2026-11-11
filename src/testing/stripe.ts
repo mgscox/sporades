@@ -21,6 +21,7 @@ const ENDPOINTS: Array<[string, RegExp, StripeFakeOperation]> = [
   ["POST", /^\/v1\/subscriptions$/, "subscriptions.create"],
   ["GET", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.retrieve"],
   ["POST", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.update"],
+  ["POST", /^\/v1\/invoices\/create_preview$/, "invoices.createPreview"],
   ["DELETE", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.cancel"],
   ["POST", /^\/v1\/subscription_schedules$/, "subscriptionSchedules.create"],
   ["POST", /^\/v1\/subscription_schedules\/([^/]+)$/, "subscriptionSchedules.update"],
@@ -142,6 +143,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const portalSessions = new Map<string, Obj>();
   const setupIntents = new Map<string, Obj>();
   const invoices = new Map<string, Obj>();
+  const pendingProrations = new Map<string, number>();
   const eventLog: StripeFakeEvent[] = []; const delivered = new Set<string>(); const deliveryLog: StripeFakeDelivery[] = [];
   const requests: StripeFakeRequest[] = []; const faults: StripeFakeFault[] = [];
   // Keys are namespaced by the bearer key, which never appears in snapshots or logs.
@@ -277,26 +279,53 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   function priceAmount(value: Obj, currency: string) {
     return value.currency === currency ? value.unit_amount : value.currency_options[currency].unit_amount;
   }
-  function applyPrice(subscription: Obj, targetPrice: Obj, quantity: number, reset = false, invoiceNow = false, endTrialNow = false) {
+  function transitionInvoice(subscription: Obj, targetPrice: Obj, quantity: number, reset: boolean, endTrialNow: boolean, prorationDate: number, recurringOnly = false) {
     const item = subscription.items.data[0];
     const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval
       || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
-    const resetPeriod = endTrialNow || subscription.status !== "trialing" && (reset || subscription.billing_mode.type === "classic" && changedInterval);
-    if (resetPeriod && (invoiceNow || endTrialNow || subscription.billing_mode.type === "classic")) {
-      const currency = subscription.currency ?? targetPrice.currency;
-      const amount = priceAmount(targetPrice, currency) * quantity;
-      const credit = subscription.status === "trialing" || now < subscription.billing_cycle_anchor ? 0 : -Math.round(priceAmount(item.price, currency) * item.quantity
-        * Math.max(0, item.current_period_end - now) / (item.current_period_end - item.current_period_start));
-      const invoice = { id: id("in"), object: "invoice", livemode: false, customer: subscription.customer,
-        billing_reason: "subscription_update", paid: true,
-        parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } }, subscription: subscription.id, created: now,
-        status: "paid", currency, amount_paid: Math.max(0, amount + credit),
-        lines: { object: "list", data: [
-          { price: targetPrice.id, amount, proration: false, quantity, period: { start: now, end: periodEnd(now, targetPrice) } },
-          { price: item.price.id, amount: credit, proration: true },
-        ] } };
-      invoices.set(invoice.id, invoice);
-      subscription.latest_invoice = invoice.id;
+    const currency = subscription.currency ?? targetPrice.currency;
+    const freeToPaid = priceAmount(item.price, currency) === 0 && priceAmount(targetPrice, currency) > 0;
+    const immediate = !recurringOnly && (endTrialNow || subscription.status !== "trialing"
+      && (freeToPaid || reset || subscription.billing_mode.type === "classic" && changedInterval));
+    const amount = priceAmount(targetPrice, currency) * quantity;
+    const remaining = Math.max(0, item.current_period_end - prorationDate) / (item.current_period_end - item.current_period_start);
+    const credit = recurringOnly || subscription.status === "trialing" || prorationDate < subscription.billing_cycle_anchor ? 0
+      : -Math.round(priceAmount(item.price, currency) * item.quantity * remaining);
+    const debit = recurringOnly || subscription.status === "trialing" || immediate || prorationDate < subscription.billing_cycle_anchor
+      ? 0 : Math.round(amount * remaining);
+    const proration = credit + debit;
+    const total = amount + proration + (recurringOnly ? 0 : pendingProrations.get(subscription.id) ?? 0);
+    const customer = get(customers, subscription.customer);
+    const balance = (customer.invoice_credit_balance[currency] ?? 0) + (customer.balance ?? 0);
+    requireValue([amount, total, balance, total + balance].every(Number.isSafeInteger));
+    const at = immediate ? now : subscription.status === "trialing" ? subscription.trial_end : item.current_period_end;
+    return { immediate, proration, invoice: { id: id("upcoming_in"), object: "invoice", livemode: false, customer: subscription.customer,
+      parent: { type: "subscription_details", subscription_details: { subscription: subscription.id } },
+      status: "draft", currency, amount_due: Math.max(0, total + balance), total, starting_balance: balance, ending_balance: Math.min(0, total + balance),
+      period_start: at, period_end: at, lines: { object: "list", has_more: false, data: [
+        { price: targetPrice.id, amount, proration: false, quantity, period: { start: at, end: periodEnd(at, targetPrice) } },
+        { price: item.price.id, amount: credit, proration: true },
+        ...(debit ? [{ price: targetPrice.id, amount: debit, proration: true }] : []),
+      ] } } };
+  }
+  function applyPrice(subscription: Obj, targetPrice: Obj, quantity: number, reset = false, invoiceNow = false, endTrialNow = false, prorationDate = now) {
+    const item = subscription.items.data[0];
+    const changedInterval = item.price.recurring.interval !== targetPrice.recurring.interval
+      || item.price.recurring.interval_count !== targetPrice.recurring.interval_count;
+    const currency = subscription.currency ?? targetPrice.currency;
+    const freeToPaid = priceAmount(item.price, currency) === 0 && priceAmount(targetPrice, currency) > 0;
+    const resetPeriod = endTrialNow || subscription.status !== "trialing" && (freeToPaid || reset || subscription.billing_mode.type === "classic" && changedInterval);
+    const calculated = transitionInvoice(subscription, targetPrice, quantity, reset, endTrialNow, prorationDate);
+    if (resetPeriod && (freeToPaid || invoiceNow || endTrialNow || subscription.billing_mode.type === "classic")) {
+      const invoice = { ...calculated.invoice, id: id("in"), status: "paid", paid: true, created: now,
+        billing_reason: "subscription_update", subscription: subscription.id, amount_paid: calculated.invoice.amount_due };
+      invoices.set(invoice.id, invoice); subscription.latest_invoice = invoice.id;
+      pendingProrations.delete(subscription.id);
+      const customer = get(customers, subscription.customer);
+      customer.invoice_credit_balance[invoice.currency] = invoice.ending_balance;
+      customer.balance = 0;
+    } else if (subscription.status !== "trialing") {
+      pendingProrations.set(subscription.id, (pendingProrations.get(subscription.id) ?? 0) + calculated.proration);
     }
     if (resetPeriod) {
       subscription.billing_cycle_anchor = now;
@@ -457,6 +486,23 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
             quantity: integer(p.items[0].quantity), price: itemPrice, current_period_start: now, current_period_end: anchor }] } };
         subscriptions.set(subscriptionId, subscription); await emit(SUBSCRIPTION_CREATED, subscription); return copy(subscription);
       }
+      case "invoices.createPreview": {
+        exactKeys(p, ["customer", "subscription", "subscription_details"], ["preview_mode"]);
+        requireValue(p.preview_mode === undefined || p.preview_mode === "recurring");
+        const details = p.subscription_details;
+        exactKeys(details, ["items"], ["proration_date", "proration_behavior", "billing_cycle_anchor", "trial_end"]);
+        exactKeys(details.items, ["0"]); exactKeys(details.items[0], ["id", "price", "quantity"]);
+        const subscription = liveSubscription(p.subscription);
+        requireValue(subscription.customer === p.customer && details.items[0].id === subscription.items.data[0].id);
+        if (p.preview_mode !== "recurring") {
+          integer(details.proration_date, 253_402_300_799);
+          requireValue(["create_prorations", "always_invoice"].includes(details.proration_behavior));
+          requireValue(details.billing_cycle_anchor === undefined || details.billing_cycle_anchor === "now");
+          requireValue(details.trial_end === undefined || details.trial_end === "now");
+        } else requireValue(Object.keys(details).length === 1);
+        return transitionInvoice(subscription, price(details.items[0].price, subscription.currency), integer(details.items[0].quantity),
+          details.billing_cycle_anchor === "now", details.trial_end === "now", Number(details.proration_date ?? now), p.preview_mode === "recurring").invoice;
+      }
       case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
       case "subscriptions.update": {
         exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "cancel_at_period_end", "expand", "trial_end"]);
@@ -476,7 +522,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         if (fault?.status === "paymentActionRequired" || fault?.status === "paymentActionRequiredOffHost") {
           subscription.pending_update = { expires_at: now + 3600,
             billing_cycle_anchor: p.billing_cycle_anchor === "now" ? now : null,
-            proration_behavior: p.proration_behavior,
+            proration_behavior: p.proration_behavior, proration_date: Number(p.proration_date),
             ...(p.trial_end === "now" ? { trial_end: now } : {}),
             subscription_items: [{ ...copy(item), price: targetPrice, quantity }] };
           subscription.latest_invoice = { id: idForInvoice(), object: "invoice", livemode: false,
@@ -484,7 +530,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
               ? "https://pay.example.test/i/untrusted" : `https://invoice.stripe.com/i/acct_sporades/test_${id("in")}?s=em` };
         } else {
           subscription.latest_invoice = null;
-          applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice", p.trial_end === "now");
+          applyPrice(subscription, targetPrice, quantity, p.billing_cycle_anchor === "now", p.proration_behavior === "always_invoice", p.trial_end === "now", Number(p.proration_date));
           subscription.pending_update = null;
         }
         return subscriptionEvent(subscription);
@@ -618,7 +664,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         requireValue(pending && pending.expires_at > now, "No payable pending update.");
         const requested = pending.subscription_items[0];
         subscription.latest_invoice = null;
-        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice", pending.trial_end != null);
+        applyPrice(subscription, requested.price, requested.quantity, pending.billing_cycle_anchor !== null, pending.proration_behavior === "always_invoice", pending.trial_end != null, pending.proration_date);
         subscription.pending_update = null;
         if (subscription.status !== "trialing") subscription.status = "active";
         await emit(PENDING_UPDATE_APPLIED, subscription);
@@ -689,7 +735,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       for (const sub of subscriptions.values()) if (sub.status === "active" && sub.billing_cycle_anchor && sub.items.data[0].current_period_end <= now) {
         const anchor = sub.items.data[0].current_period_end;
         const item = sub.items.data[0]; const currency = sub.currency ?? item.price.currency;
-        const amount = priceAmount(item.price, currency) * item.quantity;
+        const customer = get(customers, sub.customer);
+        const total = priceAmount(item.price, currency) * item.quantity + (pendingProrations.get(sub.id) ?? 0);
+        const balance = (customer.invoice_credit_balance[currency] ?? 0) + (customer.balance ?? 0);
+        const amount = Math.max(0, total + balance);
+        pendingProrations.delete(sub.id);
+        customer.invoice_credit_balance[currency] = Math.min(0, total + balance); customer.balance = 0;
         const invoice = { id: idForInvoice(), object: "invoice", customer: sub.customer, currency, status: "paid", amount_paid: amount,
           parent: { type: "subscription_details", subscription_details: { subscription: sub.id } }, period_start: anchor };
         invoices.set(invoice.id, invoice); sub.latest_invoice = invoice.id;
@@ -726,7 +777,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()], schedules: [...schedules.values()],
       checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices: [...invoices.values()], events: eventLog }),
     reset() {
-      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); schedules.clear(); portalSessions.clear(); invoices.clear(); idempotency.clear(); lastCreated.clear();
+      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); schedules.clear(); portalSessions.clear(); invoices.clear(); pendingProrations.clear(); idempotency.clear(); lastCreated.clear();
       eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };

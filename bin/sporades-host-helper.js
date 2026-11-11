@@ -30347,6 +30347,7 @@ var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), 
 var CLAIM_TTL_MS = 5 * 6e4;
 
 // src/team-billing-management.ts
+var QUOTE_TTL_MS = 5 * 60 * 1e3;
 var CLAIM_TTL_MS2 = 5 * 60 * 1e3;
 
 // src/jobs-runtime.ts
@@ -46632,7 +46633,7 @@ var mutationExecution = new MutationExecutionStorage();
 init_cli_support();
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.50";
+var CLI_VERSION = "0.9.51";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
@@ -48384,6 +48385,7 @@ async function drainUncooperativeHostHelpers(target) {
       emptySince = null;
       emptyScans = 0;
     }
+    await fakeManagedRouteLockPause("SPORADES_FAKE_HOST_UPGRADE_DRAIN_SCAN_PAUSE_MS");
     assertHostHelperDrainDeadline(deadline);
     await delay(25);
   }
@@ -53905,8 +53907,25 @@ async function cleanupManagedRouteProtocolArtifacts(lockFile) {
     }
   }
 }
+var fakeManagedRouteLockGateVisits = /* @__PURE__ */ new Map();
 async function fakeManagedRouteLockPause(name2) {
   const raw = process.env[name2];
+  if (raw === "gate") {
+    const gateDirectory = process.env.SPORADES_FAKE_HOST_PAUSE_GATE_DIR;
+    if (!gateDirectory) throw new Error(`${name2}=gate requires SPORADES_FAKE_HOST_PAUSE_GATE_DIR.`);
+    if (await pathExists(path15.join(gateDirectory, `${name2}.open`))) return;
+    const visit = (fakeManagedRouteLockGateVisits.get(name2) ?? 0) + 1;
+    fakeManagedRouteLockGateVisits.set(name2, visit);
+    const gate = path15.join(gateDirectory, `${name2}.${visit}`);
+    await writeFile6(`${gate}.entered`, `${process.pid}
+`, { mode: 384 });
+    const deadline = Date.now() + 12e4;
+    while (!await pathExists(`${gate}.release`)) {
+      if (Date.now() >= deadline) throw new Error(`${name2} gate ${visit} was never released.`);
+      await delay(10);
+    }
+    return;
+  }
   if (raw && /^[1-9][0-9]*$/.test(raw)) {
     await delay(Math.min(Number(raw), 6e4));
   }

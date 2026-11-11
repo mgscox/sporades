@@ -330,6 +330,12 @@ test("headless Team Billing docs preserve the platform-mechanics and app-renderi
   assert.match(clientTypes, /startCheckout\(input: TeamBillingCheckoutRequest\): Promise<SporadesResult<TeamBillingCheckoutResult>>/);
   assert.match(clientTypes, /openPortal\(input: TeamBillingPortalRequest\): Promise<SporadesResult<TeamBillingPortalResult>>/);
   assert.match(clientTypes, /requestPlanTransition\(input: TeamBillingPlanTransitionRequest\): Promise<SporadesResult<TeamBillingPlanTransitionResult>>/);
+  assert.match(clientTypes, /previewPlanTransition\(input: TeamBillingPlanPreviewRequest\): Promise<SporadesResult<TeamBillingPlanPreviewResult>>/);
+  assert.match(reference, /previewPlanTransition[\s\S]*invoices.createPreview[\s\S]*TEAM_BILLING_QUOTE_INVALID/);
+  for (const field of ["quoteId", "amountDueNow", "nextInvoiceAmount", "nextInvoiceAt", "creditCarriedForward", "expiresAt"]) {
+    assert.ok(clientTypes.includes(field));
+    assert.ok(reference.includes(field));
+  }
   assert.doesNotMatch(clientTypes, /providerCustomerId|providerSubscriptionId|providerPriceId|providerEventId|idempotencyKey/);
 });
 

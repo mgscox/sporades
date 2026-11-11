@@ -1,7 +1,7 @@
 // A currency replacement owns its paid-through entitlement independently of
 // either Subscription, so an uncertain cancel/create can recover after restart.
 import { randomUUID } from "node:crypto";
-import { admitTeamBillingActor, assertTeamBillingErasureInactive, safeTeamBillingProjection, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
+import { admitTeamBillingActor, assertTeamBillingErasureInactive, safeTeamBillingProjection, teamBillingPrice, teamBillingPriceById, TEAM_BILLING_READ_ONLY_KINDS_SQL } from "./team-billing-runtime.js";
 import { billingCurrencyAmount, validBillingCurrency, matchesBillingCurrency } from "./team-billing-prices.js";
 import { readTeamBillingQuantity } from "./team-billing-quantity.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
@@ -50,7 +50,7 @@ export async function startTeamBillingCurrencyHandover(db: Obj, auth: Obj, input
     if (!source || source.hasSchedule === 1 || source.cancelAtPeriodEnd !== 0 || source.mode !== mode
       || !Number.isFinite(Date.parse(source.currentPeriodEnd)) || source.currentPeriodEnd <= now(db)) throw failure("TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
     const busy = await tx.prepare(tx.dialect.sql(
-      "SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')",
+      `SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] NOT IN (${TEAM_BILLING_READ_ONLY_KINDS_SQL}) AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')`,
     )).get(teamId);
     if (busy) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
     // An abandoned plan must not reappear against the replacement after restart.

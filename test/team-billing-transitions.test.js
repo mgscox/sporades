@@ -13,6 +13,253 @@ import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocke
 import { startTeamBillingCheckout, readCurrentUserTeamBilling } from '../dist/team-billing-runtime.js';
 import { requestTeamBillingPlanTransition, repairTeamBillingDesiredState, stageTeamBillingMembershipChange } from '../dist/team-billing-management.js';
 
+test('a durable provider-free preview pins the charge when confirmation happens later', async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', targetAmount: 5900 });
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
+  const pending = await f.send({ type: 'teamBilling.previewPlanTransition', input });
+  assert.equal(pending.error, null);
+  assert.equal(pending.data.state, 'pending');
+  await f.drain();
+  const ready = await f.send({ type: 'teamBilling.previewPlanTransition', input });
+  assert.equal(ready.error, null);
+  const quote = ready.data;
+  assert.equal(quote.state, 'ready');
+  assert.equal(quote.currency, 'usd');
+  assert.equal(quote.amountDueNow, 3000);
+  assert.equal(quote.nextInvoiceAmount, 5900);
+  assert.ok(Number.isSafeInteger(quote.nextInvoiceAmount));
+  assert.ok(quote.nextInvoiceAt);
+  assert.ok(quote.expiresAt);
+  assert.doesNotMatch(JSON.stringify(quote), /price_|prod_|cus_|sub_|proration/);
+  assert.equal(f.fake.state().invoices.length, 0);
+  const preview = f.fake.requests().find(r => r.operation === 'invoices.createPreview');
+  assert.ok(preview);
+  await f.fake.clock.advance(120);
+  const transition = { ...input, requestId: randomUUID(), quoteId: quote.quoteId };
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: transition })).data.state, 'pending');
+  await f.drain();
+  const write = f.fake.requests().find(r => r.operation === 'subscriptions.update');
+  assert.equal(write.parameters.proration_date, preview.parameters.subscription_details.proration_date);
+  assert.equal(f.fake.state().invoices[0].amount_paid, quote.amountDueNow);
+  await f.deliver();
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: transition })).data.state, 'completed');
+});
+
+async function readyQuote(f, overrides = {}) {
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1', ...overrides };
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  await f.drain();
+  const reply = await f.send({ type: 'teamBilling.previewPlanTransition', input });
+  assert.equal(reply.error, null);
+  assert.equal(reply.data.state, 'ready');
+  return { input, quote: reply.data };
+}
+
+test('expired, foreign, retargeted and already-consumed quote IDs fail with the same safe code', async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd' });
+  const { input, quote } = await readyQuote(f);
+  const confirm = changes => f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId, ...changes } });
+  for (const changes of [{ quoteId: randomUUID() }, { quoteId: 'sub_private' }, { quoteId: null }, { interval: 'month:1' }, { resume: true }]) {
+    assert.equal((await confirm(changes)).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+  }
+  const otherTeamId = randomUUID();
+  const now = new Date().toISOString();
+  f.database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Other', ?, ?)").run(otherTeamId, now, f.actor.userId);
+  f.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(otherTeamId, f.actor.userId, now);
+  assert.equal((await confirm({ teamId: otherTeamId })).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+  const clock = f.database.clock;
+  f.database.clock = { now: () => new Date(Date.parse(quote.expiresAt)) };
+  assert.equal((await confirm({})).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'expired');
+  f.database.clock = clock;
+  assert.equal((await confirm({})).error.code, 'TEAM_BILLING_QUOTE_INVALID', 'expiry persists across a clock rollback');
+  const fresh = await readyQuote(f);
+  const accepted = await confirm({ quoteId: fresh.quote.quoteId });
+  assert.equal(accepted.data.state, 'pending');
+  assert.equal(f.database.adapter.prepare(
+    "SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+  ).get(fresh.quote.quoteId).status, 'superseded');
+  assert.equal((await confirm({ quoteId: fresh.quote.quoteId })).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, 0);
+});
+
+test('only the current policy-approved Billing Holder can preview or read a quote', async t => {
+  let holder;
+  const f = await fixture(t, 'basic', false, { authorize: ctx => { holder ??= ctx.auth.userId; return ctx.auth.userId === holder; } });
+  const { input } = await readyQuote(f);
+  await f.send({ type: 'auth.signOut' });
+  const signup = await f.send({ type: 'auth.signUp', provider: 'email', credentials: { email: 'member@example.test', password: 'password-123', name: 'Member' } });
+  assert.equal(signup.error, null);
+  const memberId = signup.data.auth.userId;
+  const previews = f.fake.requests().filter(r => r.operation === 'invoices.createPreview').length;
+  for (const role of ['member', 'admin']) {
+    f.database.adapter.prepare('DELETE FROM [sporades_team_memberships] WHERE [teamId] = ? AND [userId] = ?').run(f.teamId, memberId);
+    f.database.adapter.prepare('INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, ?, ?)').run(f.teamId, memberId, role, new Date().toISOString());
+    for (const request of [input, { ...input, requestId: randomUUID() }]) {
+      const refused = await f.send({ type: 'teamBilling.previewPlanTransition', input: request });
+      assert.equal(refused.error.code, 'TEAM_BILLING_DENIED');
+      assert.doesNotMatch(JSON.stringify(refused), /price_|prod_|cus_|sub_/);
+    }
+  }
+  assert.equal(f.fake.requests().filter(r => r.operation === 'invoices.createPreview').length, previews);
+});
+
+test('a quote cannot be transferred to another policy-approved administrator', async t => {
+  const f = await fixture(t);
+  const { input, quote } = await readyQuote(f);
+  await f.send({ type: 'auth.signOut' });
+  const signup = await f.send({ type: 'auth.signUp', provider: 'email', credentials: { email: 'admin@example.test', password: 'password-123', name: 'Admin' } });
+  f.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(f.teamId, signup.data.auth.userId, new Date().toISOString());
+  const refused = await f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } });
+  assert.equal(refused.error.code, 'TEAM_BILLING_QUOTE_INVALID');
+});
+
+test('a revoked Billing Holder cannot dispatch a queued preview', async t => {
+  const f = await fixture(t);
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  f.database.adapter.prepare("UPDATE [sporades_team_memberships] SET [role] = 'member' WHERE [teamId] = ?").run(f.teamId);
+  await f.drain();
+  assert.equal(f.fake.requests().filter(r => r.operation === 'invoices.createPreview').length, 0);
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).error.code, 'TEAM_BILLING_DENIED');
+});
+
+test('provider and local quantity drift refuse a quoted transition before charging', async t => {
+  for (const drift of ['provider', 'target-price', 'local', 'queued', 'balance']) await t.test(drift, async t => {
+    const f = await fixture(t, 'basic', false, { currency: 'usd', counted: true });
+    const { input, quote } = await readyQuote(f);
+    const request = { ...input, requestId: randomUUID(), quoteId: quote.quoteId };
+    if (drift === 'queued') assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: request })).data.state, 'pending');
+    if (drift === 'provider') await f.fake.subscriptions.setQuantity(f.subscriptionId, 2);
+    else if (drift === 'target-price') { await f.fake.portal.switchPrice(f.subscriptionId, 'price_offered_year'); await f.fake.subscriptions.setQuantity(f.subscriptionId, 2); }
+    else if (drift === 'balance') f.fake.customers.setBalance(f.fake.subscriptions.get(f.subscriptionId).customer, 'usd', 500);
+    else f.database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'member', ?)").run(f.teamId, randomUUID(), new Date().toISOString());
+    if (drift === 'local') {
+      assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: request })).error.code, 'TEAM_BILLING_QUOTE_INVALID');
+    } else {
+      if (drift !== 'queued') assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: request })).data.state, 'pending');
+      await f.drain();
+      const result = await f.send({ type: 'teamBilling.requestPlanTransition', input: request });
+      assert.equal(result.data.state, 'failed');
+      assert.equal(result.data.reason, 'quote-invalid');
+    }
+    assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, 0);
+    assert.equal(f.fake.state().invoices.length, 0);
+  });
+});
+
+test('preview rejects browser timing and proration inputs without provider calls', async t => {
+  const f = await fixture(t);
+  for (const extra of [{ timing: 'now' }, { prorationDate: 1 }, { quantity: 10 }, { priceId: 'price_private' }]) {
+    const reply = await f.send({ type: 'teamBilling.previewPlanTransition', input: { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', ...extra } });
+    assert.equal(reply.error.code, 'TEAM_BILLING_DENIED');
+  }
+  assert.equal(f.fake.requests().filter(r => r.operation === 'invoices.createPreview').length, 0);
+});
+
+test('a queued preview and its quote survive runtime restart', async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', targetAmount: 5900 });
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  await f.restart(); await f.drain();
+  const ready = await f.send({ type: 'teamBilling.previewPlanTransition', input });
+  assert.equal(ready.data.state, 'ready');
+  await f.restart();
+  assert.deepEqual((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data, ready.data);
+  const transition = { ...input, requestId: randomUUID(), quoteId: ready.data.quoteId };
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: transition })).data.state, 'pending');
+  await f.restart(); await f.drain();
+  assert.equal(f.fake.state().invoices[0].amount_paid, 3000);
+  await f.deliver();
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: transition })).data.state, 'completed');
+});
+
+test('failed Job persistence rolls quote consumption back with the transition', async t => {
+  const f = await fixture(t);
+  const { input, quote } = await readyQuote(f);
+  const confirmation = { ...input, requestId: randomUUID(), quoteId: quote.quoteId };
+  f.database.adapter.exec("CREATE TRIGGER [refuse_billing_job] BEFORE INSERT ON [sporades_jobs] BEGIN SELECT RAISE(ABORT, 'synthetic Job storage failure'); END");
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: confirmation })).error.code, 'TEAM_BILLING_DENIED');
+  f.database.adapter.exec('DROP TRIGGER [refuse_billing_job]');
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: confirmation })).data.state, 'pending');
+  await f.drain();
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update').length, 1);
+});
+
+test('an interrupted preview retries without exposing a partial quote', async t => {
+  const f = await fixture(t);
+  const createProvider = f.database.createStripeTeamBillingProvider;
+  let interrupt = true;
+  f.database.createStripeTeamBillingProvider = options => {
+    const provider = createProvider(options);
+    return { ...provider, async previewManagedSubscription(input) {
+      if (interrupt) { interrupt = false; throw Object.assign(new Error('Synthetic shutdown'), { name: 'AbortError', code: 'ABORT_ERR' }); }
+      return provider.previewManagedSubscription(input);
+    } };
+  };
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'year:1' };
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  await f.drain();
+  assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  const clock = f.database.clock;
+  f.database.clock = { ...clock, now: () => new Date(Date.now() + 2000) };
+  try {
+    await f.drain();
+    assert.equal((await f.send({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'ready');
+  } finally { f.database.clock = clock; }
+});
+
+for (const billingMode of ['classic', 'flexible']) test(`a same-interval quote matches the next invoice, including prorations (${billingMode})`, async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', targetAmount: 5900, billingMode });
+  const { input, quote } = await readyQuote(f, { interval: 'month:1' });
+  assert.equal(quote.amountDueNow, 0);
+  assert.equal(quote.nextInvoiceAmount, 8900);
+  assert.equal(quote.creditCarriedForward, 0);
+  await f.fake.clock.advance(120);
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } })).data.state, 'pending');
+  await f.drain();
+  assert.equal(f.fake.state().invoices.length, 0);
+  const sub = f.fake.subscriptions.get(f.subscriptionId);
+  await f.fake.clock.advance(sub.items.data[0].current_period_end - sub.items.data[0].current_period_start);
+  assert.equal(f.fake.state().invoices[0].amount_paid, quote.nextInvoiceAmount);
+});
+
+test('an immediate downgrade quote reports carried credit and the following invoice after credit', async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', targetAmount: 500 });
+  const { input, quote } = await readyQuote(f);
+  assert.equal(quote.amountDueNow, 0);
+  assert.equal(quote.creditCarriedForward, 2400);
+  assert.equal(quote.nextInvoiceAmount, 0);
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } })).data.state, 'pending');
+  await f.drain();
+  assert.equal(f.fake.state().invoices[0].amount_paid, quote.amountDueNow);
+  const sub = f.fake.subscriptions.get(f.subscriptionId);
+  await f.fake.clock.advance(sub.items.data[0].current_period_end - sub.items.data[0].current_period_start);
+  assert.equal(f.fake.state().invoices[1].amount_paid, quote.nextInvoiceAmount);
+});
+
+for (const endTrial of [false, true]) test(`preview uses the server trial policy (endTrial=${endTrial})`, async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', targetAmount: 5900, trialDays: 14, endTrial });
+  const { input, quote } = await readyQuote(f);
+  assert.equal(quote.amountDueNow, endTrial ? 5900 : 0);
+  assert.equal(quote.nextInvoiceAmount, 5900);
+  assert.equal(quote.creditCarriedForward, 0);
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } })).data.state, 'pending');
+  await f.drain();
+  assert.equal(f.fake.state().invoices.length, endTrial ? 1 : 0);
+  if (endTrial) assert.equal(f.fake.state().invoices[0].amount_paid, quote.amountDueNow);
+});
+
+for (const billingMode of ['classic', 'flexible']) test(`a free-to-paid quote reports an immediate same-interval charge (${billingMode})`, async t => {
+  const f = await fixture(t, 'basic', false, { currency: 'usd', sourceAmount: 0, targetAmount: 5900, billingMode });
+  const { input, quote } = await readyQuote(f, { interval: 'month:1' });
+  assert.equal(quote.amountDueNow, 5900);
+  assert.equal(quote.nextInvoiceAmount, 5900);
+  assert.equal((await f.send({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } })).data.state, 'pending');
+  await f.drain();
+  assert.equal(f.fake.state().invoices[0].amount_paid, quote.amountDueNow);
+});
+
 for (const source of ['basic', 'legacy']) test(`${source} to offered fixed plan switches in place with source authorization`, async t => {
   const f = await fixture(t, source);
   const { database, actor, teamId, fake, subscriptionId } = f;
@@ -348,27 +595,29 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
   const teamId = randomUUID();
   const checks = [];
   const offered = new Set([source, 'offered']);
-  const priceCurrency = options.currency ? { currency: 'gbp', unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 } } } : {};
+  const priceCurrency = options.currency ? { currency: 'gbp', unitAmount: 1900, currencyOptions: { usd: { unitAmount: options.sourceAmount ?? 2900 } } } : {};
+  const priceCurrencyFor = key => key === 'offered' && options.targetAmount ? { ...priceCurrency, currencyOptions: { usd: { unitAmount: options.targetAmount } } } : priceCurrency;
   const catalogue = Object.fromEntries([source, 'offered'].map(key => [key, {
     ...(options.trialDays ? { trialDays: options.trialDays } : {}), quantity: options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
       productId: `prod_${mode === 'live' ? 'live_' : ''}${key}`, portalConfigurationId: `bpc_${mode}_${key}`,
-      prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month`, ...priceCurrency }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year`, ...priceCurrency } },
+      prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month`, ...priceCurrencyFor(key) }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year`, ...priceCurrencyFor(key) } },
     }])),
   }]));
   const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
   const env = { STRIPE_SECRET_KEY: 'sk_test_transitions', STRIPE_WEBHOOK_SECRET: 'whsec_transitions' };
-  const database = await openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'transitions', auth: { providers: { email: true } }, payments: { stripe: config } }, {
+  const openDatabase = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'transitions', auth: { providers: { email: true } }, payments: { stripe: config } }, {
     name: 'transitions', schema: {}, teamBilling: {
       catalogue, transitions: { allowSamePolicy: true, endTrial: options.endTrial ?? false }, checkout: { successPath: '/billing', cancelPath: '/billing' },
-      authorize: (_ctx, input) => { checks.push(input); return { allow: input.operation === 'read' || offered.has(input.productKey) }; },
+      authorize: (ctx, input) => { checks.push(input); return { allow: (input.operation === 'read' || offered.has(input.productKey)) && (options.authorize?.(ctx, input) ?? true) }; },
     },
   }, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  let database = await openDatabase();
   const callback = createServer(async (req, res) => { try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); } catch { res.writeHead(500).end(); } });
   const hub = createWebSocketHub(() => database);
   callback.on('upgrade', (req, socket) => hub.accept(req, socket));
   callback.listen(0, '127.0.0.1'); await once(callback, 'listening');
   const fake = await createStripeTeamBillingFake({ webhookSecret: env.STRIPE_WEBHOOK_SECRET, webhookTarget: `http://127.0.0.1:${callback.address().port}/stripe/webhook`, delivery: 'manual', catalogue: {
-    products: [source, 'offered'].map(key => ({ id: `prod_${key}`, prices: [{ id: `price_${key}_month`, recurring: 'month', ...priceCurrency }, { id: `price_${key}_year`, recurring: 'year', ...priceCurrency }] })), portalConfigurations: [],
+    products: [source, 'offered'].map(key => ({ id: `prod_${key}`, prices: [{ id: `price_${key}_month`, recurring: 'month', ...priceCurrencyFor(key) }, { id: `price_${key}_year`, recurring: 'year', ...priceCurrencyFor(key) }] })), portalConfigurations: [],
   } });
   t.after(async () => { await fake.close(); hub.disconnectAll(); callback.closeAllConnections(); await new Promise(resolve => callback.close(resolve)); await database.close(); await rm(dir, { recursive: true, force: true }); });
   database.stripeApiBaseUrl = fake.origin; await database.init();
@@ -398,5 +647,11 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
   } else { await deliver(); assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, options.trialDays ? 'trialing' : 'active'); }
   // Keep source checkout available for setup; exclude it as a transition target afterwards.
   offered.delete(source);
-  return { database, actor, teamId, fake, checks, send, drain, deliver, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };
+  const restart = async () => {
+    await database.close();
+    database = await openDatabase(); database.stripeApiBaseUrl = fake.origin;
+    database.scheduleTeamBillingJobDispatch = () => {};
+    await database.init();
+  };
+  return { get database() { return database; }, restart, actor, teamId, fake, checks, send, drain, deliver, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };
 }

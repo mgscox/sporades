@@ -60,6 +60,50 @@ test('a period-end downgrade keeps the current plan until the boundary, then swi
   assert.equal(fake.subscriptions.get(subscriptionId).schedule, null);
 });
 
+for (const cancelling of [false, true]) test(`resume under a period-end policy switches immediately (cancelling=${cancelling})`, async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  if (cancelling) {
+    await fake.portal.cancelAtPeriodEnd(subscriptionId);
+    await f.deliver();
+    assert.equal((await f.read()).state, 'cancelling');
+    await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1'),
+      { code: 'TEAM_BILLING_SUBSCRIPTION_CANCELLING' });
+  }
+  const requestId = randomUUID();
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'month:1', true)).state, 'pending');
+  await f.drain();
+  const subscription = fake.subscriptions.get(subscriptionId);
+  assert.equal(subscription.items.data[0].price.id, 'price_offered_month');
+  assert.equal(subscription.cancel_at_period_end, false);
+  assert.equal(subscription.cancel_at, null);
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptions.update').length, 1);
+  assert.equal(fake.requests().filter(r => r.operation.startsWith('subscriptionSchedules.')).length, 0);
+  assert.equal((await f.read()).state, 'pending', 'provider acknowledgement grants no entitlement');
+  await f.deliver();
+  const read = await f.read();
+  assert.equal(read.state, 'active');
+  assert.equal(read.productKey, 'offered');
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'month:1', true)).state, 'completed');
+});
+
+test('an immediate quote cannot confirm a period-end transition after policy changes', async t => {
+  const policy = { ...SCHEDULE_TEST, periodEnd: false };
+  const f = await fixture(t, policy);
+  const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'offered', interval: 'month:1' };
+  assert.equal((await f.request({ type: 'teamBilling.previewPlanTransition', input })).data.state, 'pending');
+  await f.drain();
+  const quote = (await f.request({ type: 'teamBilling.previewPlanTransition', input })).data;
+  assert.equal(quote.state, 'ready');
+  assert.equal(quote.timing, 'now');
+  policy.periodEnd = true;
+  const result = await f.request({ type: 'teamBilling.requestPlanTransition', input: { ...input, requestId: randomUUID(), quoteId: quote.quoteId } });
+  assert.equal(result.error?.code, 'TEAM_BILLING_QUOTE_INVALID');
+  await f.drain();
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptions.update' || r.operation.startsWith('subscriptionSchedules.')).length, 0);
+  assert.equal((await f.read()).productKey, 'basic');
+});
+
 test('cancelScheduledPlanTransition releases the schedule and restores the original plan', async t => {
   const f = await fixture(t, SCHEDULE_TEST);
   const { database, actor, teamId, fake, subscriptionId } = f;

@@ -1,5 +1,21 @@
 # Changes
 
+## v0.9.51 - 2026-11-11
+
+Changes since v0.9.50.
+
+### 🚀 Features
+
+- Add durable Team Billing plan-change previews (#395) (486659c8).
+
+### 🐛 Bug Fixes
+
+- Drop node's aggregate counts once resource exhaustion is declared (#399) (f8701a78).
+
+### 📦 Packaging
+
+- Replace fake-pause timing windows with release gates (#398) (76c83b04).
+
 ## v0.9.50 - 2026-11-10
 
 Changes since v0.9.49.
@@ -73,6 +89,11 @@ Changes since v0.9.47.
 
 ## Unreleased
 
+- Add provider-free Team Billing `previewPlanTransition` quotes. Durable previews
+  bind confirmation to the same proration date and refuse expired, foreign or
+  changed quotes safely. Public types and the Stripe fake include preview support
+  (#367).
+
 - Add Team Billing currency handover through setup Checkout, non-prorated
   cancellation and an anchored replacement Subscription. A durable paid-through
   latch survives restart; old-currency balances refuse safely (#371). Public
@@ -87,7 +108,9 @@ Changes since v0.9.47.
   work with `TEAM_BILLING_UNKNOWN_SCHEDULE`; erasure releases every attached
   schedule before cancelling its Subscription. A trialling Subscription never
   rides a schedule: `timing: "period-end"` falls back to an immediate switch
-  that keeps the trial, as documented. Schedule phases pin the Subscription's
+  that keeps the trial, as documented. Explicit `resume: true` also switches
+  immediately, with or without a scheduled cancellation, clearing cancellation
+  in the same provider update. Schedule phases pin the Subscription's
   attested period dates; entering the final phase is not release, and
   cancelling after the boundary applied the target fails safely. The Stripe
   fake models the schedule subset with attested phase dates, phase transition

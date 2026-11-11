@@ -15,6 +15,25 @@ async function importClientRuntime(options = {}) {
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
 
+test("shipped and generated clients carry Plan preview targets and opaque quote confirmations", async () => {
+  for (const load of [() => import("../dist/client.js"), () => importClientRuntime()]) {
+    const browser = installBrowserFakes(anonymousAuth, { handlers: {
+      "teamBilling.previewPlanTransition": () => ({ type: "teamBilling.previewPlanTransition.result", data: { state: "ready", quoteId: "opaque-quote" }, error: null }),
+      "teamBilling.requestPlanTransition": () => ({ type: "teamBilling.requestPlanTransition.result", data: { state: "pending" }, error: null }),
+    } });
+    try {
+      const runtime = await load();
+      const input = { teamId: "team", requestId: "preview", productKey: "agency", interval: "year:1" };
+      const quote = await runtime.teamBilling.previewPlanTransition(input);
+      assert.equal(quote.data.quoteId, "opaque-quote");
+      const confirmation = { ...input, requestId: "confirmation", quoteId: quote.data.quoteId };
+      assert.equal((await runtime.teamBilling.requestPlanTransition(confirmation)).data.state, "pending");
+      assert.deepEqual(browser.sent.find(message => message.type === "teamBilling.previewPlanTransition").input, input);
+      assert.deepEqual(browser.sent.find(message => message.type === "teamBilling.requestPlanTransition").input, confirmation);
+    } finally { browser.cleanup(); }
+  }
+});
+
 test("usePayments starts dormant and subscribes without an application query", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

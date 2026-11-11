@@ -354,6 +354,56 @@ async function stopHostHelper(action) {
 }
 
 
+// Holds Host helper fake pauses (SPORADES_FAKE_*_PAUSE_MS="gate") until the test releases them,
+// and records which flock contenders are queued, so lock and race tests act inside a window the
+// helper is provably holding instead of a wall-clock pause the test must land in.
+async function createHostPauseGate(dir) {
+  const gateDirectory = path.join(dir, "host-pause-gates");
+  await mkdir(gateDirectory, { recursive: true });
+  const flockWaits = path.join(gateDirectory, "flock-waits");
+  const gatePath = (name, visit, suffix) => path.join(gateDirectory, `${name}.${visit}.${suffix}`);
+  return {
+    env(...names) {
+      return {
+        SPORADES_FAKE_HOST_PAUSE_GATE_DIR: gateDirectory,
+        SPORADES_TEST_FLOCK_WAIT_MARKER: flockWaits,
+        ...Object.fromEntries(names.map((name) => [name, "gate"])),
+      };
+    },
+    async entered(name, { visit = 1, action } = {}) {
+      const file = gatePath(name, visit, "entered");
+      if (action) await waitForHostHelperMarker(action, file, () => true, 60_000);
+      else await waitForFileText(file, () => true, 60_000);
+    },
+    async isEntered(name, visit = 1) {
+      return stat(gatePath(name, visit, "entered")).then(() => true, (error) => {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      });
+    },
+    release(name, visit = 1) {
+      return writeFile(gatePath(name, visit, "release"), "");
+    },
+    // Lets every later visit of the named pause pass without stopping.
+    open(name) {
+      return writeFile(path.join(gateDirectory, `${name}.open`), "");
+    },
+    // Resolves once a flock contender is queued on the named lock (basename of the lock file).
+    // Given the contender's `action`, it fails at once if the contender exits without queuing.
+    flockWaiter(lockFile, { mode = "--exclusive", action } = {}) {
+      const line = `${mode} ${path.basename(lockFile)}`;
+      const queued = (text) => text.split("\n").includes(line);
+      return action ? waitForHostHelperMarker(action, flockWaits, queued, 60_000) : waitForFileText(flockWaits, queued, 60_000);
+    },
+    // Releases every gate entered so far, so a failed test still lets its helpers finish.
+    async releaseAll() {
+      for (const entry of await readdir(gateDirectory).catch(() => [])) {
+        if (entry.endsWith(".entered")) await writeFile(path.join(gateDirectory, entry.replace(/\.entered$/, ".release")), "");
+      }
+    },
+  };
+}
+
 async function waitForPath(filePath, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1757,6 +1807,7 @@ waitForHostHelperMarker,
 stopHostHelper,
 waitForPath,
 waitForChildPid,
+createHostPauseGate,
 hostEnv,
 writeHostProfileConfig,
 prepareFakeBin,

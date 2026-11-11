@@ -1,6 +1,7 @@
 export { validTeamBillingInterval, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
 type LooseRecord = Record<string, any>;
 export declare const TEAM_BILLING_PRODUCT_MAX = 32;
+export declare const TEAM_BILLING_READ_ONLY_KINDS_SQL = "'plan-preview'";
 export declare const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 export declare const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
 export declare const TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;

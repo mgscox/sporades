@@ -113,6 +113,15 @@ to test policy attestation and drift.
 Anchored currency replacements record their full configured amount when the anchor
 is due. Their initial free period generates no unused paid-period credit on reset.
 
+The fake supports `invoices.createPreview` for the exact Subscription item,
+target Price, quantity, and `subscription_details.proration_date`, including
+`preview_mode: "recurring"`. Previewing creates no invoice or Subscription change.
+Confirmation uses the same proration date; deferred prorations enter the next
+renewal invoice, and unused credit carries forward. Use this subset to test
+[Plan preview and confirmation](./teams.md#preview-a-plan-change-before-confirmation)
+with the public SDK, including delayed confirmation and invalid quotes. It retains
+the same tax, discount, and accounting limits described above.
+
 ## Control transitions and delivery
 
 All returned objects are independent JSON snapshots of the supported provider

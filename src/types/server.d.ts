@@ -826,13 +826,13 @@ export type TeamBillingAuthorityInput = {
   productKey?: string;
   interval?: TeamBillingInterval;
   currency?: string;
-  /** Verified source of a plan-transition, resolved under the Team lifecycle lock. */
+  /** Verified source of a plan-transition or its preview, resolved under the Team lifecycle lock. Both use operation: "plan-transition". */
   fromProductKey?: string;
   fromInterval?: TeamBillingInterval;
   /** Verified source currency for a currency handover; currency is the requested target. */
   fromCurrency?: string;
 };
-export type TeamBillingAuthorityDecision = { allow: boolean; /** `"period-end"` defers a plan-transition to the current period's end through a Stripe Subscription Schedule. Default `"now"`. */
+export type TeamBillingAuthorityDecision = { allow: boolean; /** `"period-end"` defers a plan-transition to the current period's end through a Stripe Subscription Schedule. Trials and `resume: true` use `"now"`. Default `"now"`. */
   timing?: "now" | "period-end" };
 /** Closed provider-identifier-free Team Billing truth available to Capsule policy. */
 export type TeamBillingProjection =

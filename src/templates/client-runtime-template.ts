@@ -206,6 +206,9 @@ export const teamBilling = {
   startCurrencyHandover(input) {
     return connect().teamBillingStartCurrencyHandover(input);
   },
+  previewPlanTransition(input) {
+    return connect().teamBillingPreviewPlanTransition(input);
+  },
   requestPlanTransition(input) {
     return connect().teamBillingRequestPlanTransition(input);
   },
@@ -1652,6 +1655,7 @@ function createConnection() {
     teamBillingStartCheckout(input) { return request("teamBilling.startCheckout", { input }); },
     teamBillingOpenPortal(input) { return request("teamBilling.openPortal", { input }); },
     teamBillingStartCurrencyHandover(input) { return request("teamBilling.startCurrencyHandover", { input }); },
+    teamBillingPreviewPlanTransition(input) { return request("teamBilling.previewPlanTransition", { input }); },
     teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
     teamBillingCancelScheduledPlanTransition(input) { return request("teamBilling.cancelScheduledPlanTransition", { input }); },
     teamBillingPrepareErasure(input) { return request("teamBilling.prepareErasure", { input }); },
