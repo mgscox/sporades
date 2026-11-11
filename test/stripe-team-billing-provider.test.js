@@ -555,6 +555,33 @@ test("resume preserves all other guards even when cancellation is also scheduled
   }
 });
 
+test("a released schedule is correlated through released_subscription", async () => {
+  const scheduleId = "sub_sched_owned_team";
+  const current = { ...validManagedSubscription({
+    priceId: managedSubscriptionInput.sourcePriceId, productId: "prod_agency", quantity: 14,
+  }), schedule: scheduleId };
+  let releases = 0;
+  await withProvider(async (request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.method === "GET") return void response.end(JSON.stringify(current));
+    if (request.url?.endsWith("/release")) {
+      releases += 1;
+      // Stripe clears `subscription` and records the detached id on release.
+      return void response.end(JSON.stringify({ id: scheduleId, object: "subscription_schedule",
+        status: "released", livemode: false, customer: managedSubscriptionInput.customerId,
+        subscription: null, released_subscription: managedSubscriptionInput.subscriptionId,
+        end_behavior: "release", phases: [] }));
+    }
+    response.writeHead(500).end();
+  }, async (apiBaseUrl) => {
+    const provider = createStripeTeamBillingProvider({ config, env: { STRIPE_SECRET_KEY: "sk_test_team_provider" }, apiBaseUrl });
+    assert.deepEqual(await provider.updateManagedSubscription({
+      ...managedSubscriptionInput, timing: "period-end", releaseScheduleId: scheduleId,
+    }), { ok: true, outcome: "acknowledged" });
+  });
+  assert.equal(releases, 1);
+});
+
 test("pending managed updates attest the exact requested item and preserve Subscription association checks", async () => {
   const pending = { expires_at: 2_000_086_523, subscription_items: [validManagedItem()] };
   const invalidPending = [

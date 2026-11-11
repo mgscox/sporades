@@ -164,7 +164,8 @@ export async function performTeamBillingErasure(database: LooseRecord, context: 
         "INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)",
       )).run(current.erasureKey, digest, canonical.providerObservedAt, now(database));
       for (const entry of [...canonical.checkouts.map((item: LooseRecord) => ({ ...item, kind: "checkout" })),
-        ...canonical.subscriptions.map((item: LooseRecord) => ({ ...item, kind: "subscription" }))]) {
+        ...canonical.subscriptions.map((item: LooseRecord) => ({ ...item, kind: "subscription" })),
+        ...canonical.schedules.map((item: LooseRecord) => ({ ...item, kind: "schedule" }))]) {
         await transaction.prepare(transaction.dialect.sql(
           "INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
@@ -339,9 +340,9 @@ async function inTransaction(database: LooseRecord, callback: (transaction: Loos
 
 function validateEvidence(value: any, expected: LooseRecord) {
   if (!value || typeof value !== "object" || Array.isArray(value)
-    || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0subscriptions"
+    || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0schedules\0subscriptions"
     || value.ok !== true || value.outcome !== "quiesced" || !canonicalTimestamp(value.providerObservedAt)
-    || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions)) throw unavailable();
+    || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions) || !Array.isArray(value.schedules)) throw unavailable();
   const checkouts = value.checkouts.map((entry: any) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
       || Object.keys(entry).sort().join("\0") !== "id\0state" || !CHECKOUT_ID.test(entry.id)
@@ -354,12 +355,20 @@ function validateEvidence(value: any, expected: LooseRecord) {
       || !["cancelled", "safely-closed"].includes(entry.state)) throw unavailable();
     return { id: entry.id, state: entry.state };
   }).sort(byId);
+  const SCHEDULE_ID = /^sub_sched_[A-Za-z0-9_]{1,240}$/;
+  const schedules = value.schedules.map((entry: any) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || Object.keys(entry).sort().join("\0") !== "id\0state" || !SCHEDULE_ID.test(entry.id)
+      || !["released", "canceled", "safely-closed"].includes(entry.state)) throw unavailable();
+    return { id: entry.id, state: entry.state };
+  }).sort(byId);
   if (new Set(checkouts.map((entry: LooseRecord) => entry.id)).size !== checkouts.length
     || new Set(subscriptions.map((entry: LooseRecord) => entry.id)).size !== subscriptions.length
+    || new Set(schedules.map((entry: LooseRecord) => entry.id)).size !== schedules.length
     || checkouts.length < expected.checkoutSessionIds.length + (expected.checkoutRecoveries?.length ?? 0)
     || expected.checkoutSessionIds.some((id: string) => !checkouts.some((entry: LooseRecord) => entry.id === id))
     || expected.subscriptionIds.some((id: string) => !subscriptions.some((entry: LooseRecord) => entry.id === id))) throw unavailable();
-  return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
+  return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions, schedules };
 }
 
 function providerIdempotency(database: LooseRecord, key: string) {

@@ -91,7 +91,7 @@ test("erasure retries stable provider intent, accepts newly discovered closed ob
     assert.equal(fixture.sqlite.prepare("SELECT [status] FROM [sporades_team_billing_erasure_state]").get().status, "queued");
     fixture.controls.error = null;
     fixture.controls.outcome = {
-      ok: true, outcome: "quiesced", providerObservedAt: "2026-08-24T10:00:00.000Z",
+      ok: true, outcome: "quiesced", schedules: [], providerObservedAt: "2026-08-24T10:00:00.000Z",
       checkouts: [{ id: "cs_test_erasure", state: "safely-closed" }],
       subscriptions: [
         { id: "sub_discovered_late", state: "cancelled" },
@@ -267,7 +267,7 @@ test("erasure refuses incomplete or malformed provider evidence without authoriz
   try {
     await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId);
     fixture.controls.outcome = {
-      ok: true, outcome: "quiesced", providerObservedAt: "2026-08-24T10:00:00.000Z",
+      ok: true, outcome: "quiesced", schedules: [], providerObservedAt: "2026-08-24T10:00:00.000Z",
       checkouts: [{ id: "cs_test_erasure", state: "expired" }], subscriptions: [],
     };
     await assert.rejects(performTeamBillingErasure(fixture.database, {}, fixture.enqueued[0].payload),
@@ -298,7 +298,7 @@ test("erasure recovers an attempted Checkout from its exact immutable provider r
     ).run(teamId, "2026-08-24T10:00:00.000Z", "2026-08-24T10:00:00.000Z", "2026-08-24T10:00:00.000Z");
     await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId);
     fixture.controls.outcome = {
-      ok: true, outcome: "quiesced", providerObservedAt: "2026-08-24T10:00:00.000Z",
+      ok: true, outcome: "quiesced", schedules: [], providerObservedAt: "2026-08-24T10:00:00.000Z",
       checkouts: [
         { id: "cs_test_erasure", state: "expired" },
         { id: "cs_test_recovered_lost", state: "expired" },
@@ -406,7 +406,7 @@ test("real runtime exhaustion and lease recovery wake fresh erasure generations 
         async quiesceTeamBilling(input) {
           providerCalls.push(input);
           return {
-            ok: true, outcome: "quiesced", providerObservedAt: clock.now().toISOString(),
+            ok: true, outcome: "quiesced", schedules: [], providerObservedAt: clock.now().toISOString(),
             checkouts: input.checkoutSessionIds.map((id) => ({ id, state: "expired" })),
             subscriptions: input.subscriptionIds.map((id) => ({ id, state: "cancelled" })),
           };
@@ -505,7 +505,7 @@ test("two PostgreSQL runtimes fence a stale erasure call after a newer claimant 
           gate.markStarted();
           await gate.promise;
           return {
-            ok: true, outcome: "quiesced", providerObservedAt: instant.toISOString(),
+            ok: true, outcome: "quiesced", schedules: [], providerObservedAt: instant.toISOString(),
             checkouts: [{ id: "cs_test_erasure_pg_lane", state: "expired" }],
             subscriptions: [{ id: "sub_erasure_pg_lane", state: "cancelled" }],
           };
@@ -570,7 +570,7 @@ test("a real runtime restart replaces retained erasure work and converges withou
       async quiesceTeamBilling(input) {
         providerCalls.push(input);
         return {
-          ok: true, outcome: "quiesced", providerObservedAt: "2026-08-24T10:00:00.000Z",
+          ok: true, outcome: "quiesced", schedules: [], providerObservedAt: "2026-08-24T10:00:00.000Z",
           checkouts: [{ id: "cs_test_erasure_restart", state: "expired" }],
           subscriptions: [{ id: "sub_erasure_restart", state: "cancelled" }],
         };
@@ -628,11 +628,11 @@ function openFixture() {
     "CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
-    "CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [replacedBy] TEXT NULL, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0)",
+    "CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [replacedBy] TEXT NULL, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerScheduleId] TEXT NULL, [ownedScheduleId] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [providerExpiresAt] INTEGER NULL, [attemptedAt] TEXT NULL, [trialDays] INTEGER NULL, [providerCustomerId] TEXT NULL, [providerSubscriptionId] TEXT NULL, UNIQUE ([teamId], [requestId]))",
     "CREATE TABLE [sporades_team_billing_observations] ([id] TEXT PRIMARY KEY, [teamId] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_quotes] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [snapshot] TEXT NOT NULL, [result] TEXT NULL, [expiresAt] TEXT NOT NULL, [consumedBy] TEXT NULL)",
-    "CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
+    "CREATE TABLE [sporades_team_billing_desired_state] ([teamId] TEXT PRIMARY KEY, [intentId] TEXT NOT NULL UNIQUE, [kind] TEXT NOT NULL, [operationId] TEXT NULL, [targetProductKey] TEXT NOT NULL, [targetQuantity] INTEGER NOT NULL, [effectiveAt] INTEGER NOT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [providerAttemptedAt] TEXT NULL, [timing] TEXT NULL, [providerScheduleId] TEXT NULL, [releaseSchedule] INTEGER NULL, [providerAcknowledgedAt] TEXT NULL, [activeJobGenerationId] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_handovers] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [sourceSubscriptionId] TEXT NOT NULL, [sourceSnapshot] TEXT NOT NULL, [anchor] TEXT NOT NULL, [phase] TEXT NOT NULL, [setupSessionId] TEXT NULL, [latchUntil] TEXT NULL, [cancelDispatched] INTEGER NOT NULL DEFAULT 0, [attemptToken] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_provider_lanes] ([teamId] TEXT PRIMARY KEY, [claimToken] TEXT NULL, [claimExpiresAt] TEXT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_erasure_state] ([teamId] TEXT PRIMARY KEY, [erasureKey] TEXT NOT NULL UNIQUE, [operationId] TEXT NOT NULL UNIQUE, [activeJobGenerationId] TEXT NOT NULL, [status] TEXT NOT NULL, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
@@ -654,7 +654,7 @@ function openFixture() {
     providerGate: null,
     instant: now,
     outcome: {
-      ok: true, outcome: "quiesced", providerObservedAt: now,
+      ok: true, outcome: "quiesced", schedules: [], providerObservedAt: now,
       checkouts: [{ id: "cs_test_erasure", state: "expired" }],
       subscriptions: [{ id: "sub_erasure", state: "cancelled" }],
     },

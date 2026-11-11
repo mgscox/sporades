@@ -8,6 +8,7 @@ export type StripeFakeOperation =
   | "checkout.sessions.create" | "checkout.sessions.retrieve" | "checkout.sessions.expire"
   | "billingPortal.configurations.retrieve" | "billingPortal.sessions.create"
   | "subscriptions.create" | "subscriptions.retrieve" | "subscriptions.update" | "subscriptions.list" | "subscriptions.cancel"
+  | "subscriptionSchedules.create" | "subscriptionSchedules.update" | "subscriptionSchedules.release"
   | "invoices.createPreview"
   | "customers.retrieve" | "prices.retrieve";
 export type StripeFakeFault = {
@@ -71,7 +72,7 @@ export type StripeTeamBillingFake = {
     get(id: string): StripeFakeObject;
   };
   customers: { subscriptions(id: string): StripeFakeObject[]; setBalance(id: string, currency: string, amount: number): void };
-  /** Advances due trials, scheduled cancellations and paid renewals; emits Subscription evidence. */
+  /** Advances due trials, scheduled cancellations, schedule phase boundaries and paid renewals; emits Subscription evidence. */
   clock: { advance(seconds: number): Promise<void> };
   events: {
     pending(): StripeFakeEvent[];

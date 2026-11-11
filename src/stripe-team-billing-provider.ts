@@ -204,11 +204,86 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       attestManagedSubscription(current, input, new Set([input.sourcePriceId, input.targetPriceId]), false);
       if (input.operationKind === "plan-transition") {
+        const owned = input.scheduleId ?? input.releaseScheduleId ?? null;
+        // A period-end write without an owned id may be recovering the schedule
+        // its own stable create key already produced; its identity is verified
+        // against that replayed create response below.
+        const recovering = input.timing === "period-end" && owned === null;
         const refusal = teamBillingTransitionRefusal(current.status,
-          input.resume !== true && (current.cancel_at_period_end === true || current.cancel_at != null), current.schedule != null);
+          input.resume !== true && (current.cancel_at_period_end === true || current.cancel_at != null),
+          current.schedule != null && current.schedule !== owned && !recovering);
         if (refusal) {
           throw Object.assign(new Error("Team Billing plan transition is unavailable in the current subscription state."), { code: refusal, retryable: false });
         }
+      }
+      if (input.timing === "period-end") {
+        throwIfAborted(options.signal);
+        if (input.releaseScheduleId !== undefined) {
+          // An already-detached schedule is a replay-safe acknowledgement.
+          if (current.schedule == null) return Object.freeze({ ok: true, outcome: "acknowledged" });
+          if (current.schedule !== input.releaseScheduleId) throw providerFailure(false);
+          let released: LooseRecord;
+          try {
+            released = await stripe.subscriptionSchedules.release(input.releaseScheduleId, {},
+              { idempotencyKey: `${input.idempotencyKey}:release` });
+          } catch (error: any) { throwProviderOperationFailure(error); }
+          throwIfAborted(options.signal);
+          // Stripe clears `subscription` on release and records the detached
+          // subscription in `released_subscription`.
+          if (released?.object !== "subscription_schedule" || released.id !== input.releaseScheduleId
+            || released.status !== "released" || released.livemode !== config.livemode
+            || released.customer !== input.customerId
+            || released.released_subscription !== input.subscriptionId
+            || (released.subscription != null && released.subscription !== input.subscriptionId)) throw providerFailure(false);
+          return Object.freeze({ ok: true, outcome: "acknowledged" });
+        }
+        const item = current.items.data[0];
+        // The schedule must pin its current phase to the provider's attested
+        // period, never to an implicitly derived boundary.
+        const periodStart = item.current_period_start;
+        const periodEnd = item.current_period_end;
+        if (!Number.isSafeInteger(periodStart) || !Number.isSafeInteger(periodEnd)
+          || periodStart < 1 || periodEnd <= periodStart || periodEnd > 253_402_300_799) throw providerFailure(false);
+        // A phase built from the source tuple would revert a Subscription that
+        // already carries the target, so refuse rather than write backwards.
+        if (item.price.id !== input.sourcePriceId) throw providerFailure(false);
+        const currentQuantity = input.sourceQuantity ?? item.quantity;
+        const phases = [
+          { items: [{ price: input.sourcePriceId, quantity: currentQuantity }], start_date: periodStart, end_date: periodEnd },
+          { items: [{ price: input.targetPriceId, quantity: input.targetQuantity }], start_date: periodEnd, proration_behavior: "none" as const },
+        ];
+        let scheduleId: string;
+        if (input.scheduleId !== undefined) {
+          if (current.schedule !== input.scheduleId) throw providerFailure(false);
+          let updated: LooseRecord;
+          try {
+            updated = await stripe.subscriptionSchedules.update(input.scheduleId, { phases, end_behavior: "release" },
+              { idempotencyKey: `${input.idempotencyKey}:schedule-phases` });
+          } catch (error: any) { throwProviderOperationFailure(error); }
+          throwIfAborted(options.signal);
+          attestSchedulePhases(updated, input, "active", currentQuantity, periodStart, periodEnd);
+          scheduleId = input.scheduleId;
+        } else {
+          let created: LooseRecord;
+          try {
+            created = await stripe.subscriptionSchedules.create({ from_subscription: input.subscriptionId },
+              { idempotencyKey: `${input.idempotencyKey}:schedule` });
+          } catch (error: any) { throwProviderOperationFailure(error); }
+          throwIfAborted(options.signal);
+          // The stable create key replays the schedule an earlier attempt already
+          // made, even when the phase-update response was lost.
+          attestCreatedSchedule(created, input, item);
+          if (current.schedule != null && current.schedule !== created.id) throw providerFailure(false);
+          scheduleId = created.id;
+          let updated: LooseRecord;
+          try {
+            updated = await stripe.subscriptionSchedules.update(scheduleId, { phases, end_behavior: "release" },
+              { idempotencyKey: `${input.idempotencyKey}:schedule-phases` });
+          } catch (error: any) { throwProviderOperationFailure(error); }
+          throwIfAborted(options.signal);
+          attestSchedulePhases(updated, input, "active", currentQuantity, periodStart, periodEnd);
+        }
+        return Object.freeze({ ok: true, outcome: "acknowledged", scheduleId });
       }
       if ((input.endTrial === true || input.preserveTrial === true) && current.status !== "trialing") {
         const item = current.items.data[0];
@@ -380,6 +455,13 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         else throw providerFailure(false);
       }
       const subscriptions = new Map<string, LooseRecord>();
+      const scheduleIds = new Set<string>();
+      const schedules: LooseRecord[] = [];
+      const collectSchedule = (subscription: LooseRecord) => {
+        if (subscription.schedule == null) return;
+        if (!validScheduleId(subscription.schedule)) throw providerFailure(false);
+        scheduleIds.add(subscription.schedule);
+      };
       for (let pass = 0; pass < 4; pass += 1) {
         if (customerId) {
           let startingAfter: string | undefined;
@@ -392,12 +474,31 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
               attestErasureSubscription(subscription, subscription.id, customerId, config.livemode);
               subscriptionIds.add(subscription.id);
               subscriptions.set(subscription.id, subscription);
+              collectSchedule(subscription);
             }
             startingAfter = page.has_more ? page.data.at(-1)?.id : undefined;
             if (page.has_more && !validSubscriptionId(startingAfter)) throw providerFailure(false);
           } while (startingAfter);
         }
         let changed = false;
+        // No live schedule may survive the fence: release every attached
+        // schedule before cancelling the subscription it guards.
+        for (const scheduleId of [...scheduleIds].sort()) {
+          if (schedules.some((entry) => entry.id === scheduleId)) continue;
+          let schedule: LooseRecord;
+          try {
+            schedule = await stripe.subscriptionSchedules.release(scheduleId, {},
+              { idempotencyKey: erasureCancellationKey(input.idempotencyKey, scheduleId) });
+          } catch (error: any) {
+            if (Number(error?.statusCode) === 404) { schedules.push({ id: scheduleId, state: "safely-closed" }); continue; }
+            throwProviderOperationFailure(error);
+          }
+          if (schedule?.object !== "subscription_schedule" || schedule.id !== scheduleId
+            || !["released", "canceled"].includes(schedule.status) || schedule.livemode !== config.livemode
+            || (customerId && schedule.customer !== customerId)) throw providerFailure(false);
+          schedules.push({ id: scheduleId, state: schedule.status === "canceled" ? "canceled" : "released" });
+        }
+        schedules.sort((left, right) => left.id.localeCompare(right.id));
         for (const subscriptionId of [...subscriptionIds].sort()) {
           let subscription = subscriptions.get(subscriptionId);
           if (!subscription) {
@@ -411,6 +512,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
             if (!customerId) throw providerFailure(false);
             attestErasureSubscription(subscription, subscriptionId, customerId, config.livemode);
             subscriptions.set(subscriptionId, subscription);
+            collectSchedule(subscription);
           }
           if (!subscription.safelyClosed && subscription.status !== "canceled") {
             try { subscription = await stripe.subscriptions.cancel(subscriptionId, {}, { idempotencyKey: erasureCancellationKey(input.idempotencyKey, subscriptionId) }); }
@@ -435,6 +537,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         checkouts: Object.freeze(checkouts.sort((left, right) => left.id.localeCompare(right.id)).map(Object.freeze)),
         subscriptions: Object.freeze([...subscriptions.values()].sort((left, right) => left.id.localeCompare(right.id))
           .map((subscription) => Object.freeze({ id: subscription.id, state: subscription.safelyClosed ? "safely-closed" : "cancelled" }))),
+        schedules: Object.freeze(schedules.map((schedule) => Object.freeze(schedule))),
       });
     },
   });
@@ -473,10 +576,19 @@ function erasureCancellationKey(erasureKey: string, subscriptionId: string) {
 
 function validateManagedSubscriptionInput(input: LooseRecord, livemode: boolean) {
   const required = ["customerId", "idempotencyKey", "mode", "operationKind", "prorationDate", "sourcePriceId", "subscriptionId", "subscriptionItemId", "targetPriceId", "targetQuantity"];
-  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "resetBillingCycle", "endTrial", "preserveTrial", "quote"].includes(key)).sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["targetProductId", "resume", "currency", "resetBillingCycle", "endTrial", "preserveTrial", "quote",
+    "timing", "scheduleId", "sourceQuantity", "releaseScheduleId"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input)
     || keys.join("\0") !== required.join("\0")
     || !["sandbox", "live"].includes(input.mode) || (input.mode === "live") !== livemode
+    || (input.timing !== undefined && (!["now", "period-end"].includes(input.timing)
+      || (input.timing === "now" && input.operationKind !== "plan-transition")))
+    || (input.timing === "period-end" && (input.resetBillingCycle === true || input.endTrial === true || input.preserveTrial === true || input.resume === true))
+    || (input.scheduleId !== undefined && (input.timing !== "period-end" || !validScheduleId(input.scheduleId)))
+    || (input.operationKind === "seat-convergence" && input.timing === "period-end" && input.scheduleId === undefined)
+    || (input.releaseScheduleId !== undefined && (input.timing !== "period-end" || !validScheduleId(input.releaseScheduleId)))
+    || (input.scheduleId !== undefined && input.releaseScheduleId !== undefined)
+    || (input.sourceQuantity !== undefined && (!Number.isInteger(input.sourceQuantity) || input.sourceQuantity < 1 || input.sourceQuantity > 999_999))
     || (input.resetBillingCycle !== undefined && typeof input.resetBillingCycle !== "boolean")
     || (input.resetBillingCycle === true && input.operationKind !== "plan-transition")
     || !["plan-transition", "seat-convergence"].includes(input.operationKind)
@@ -515,6 +627,48 @@ function attestManagedSubscription(
   attestManagedItem(items.data[0], input, acceptedPriceIds, requireTarget);
 }
 
+/**
+ * The schedule created from a Subscription copies the provider's current phase,
+ * so attest that copy against the retrieved tuple and not against counts staged
+ * after the provider read.
+ */
+function attestCreatedSchedule(schedule: LooseRecord, input: LooseRecord, item: LooseRecord) {
+  const phase = schedule?.phases?.[0];
+  if (schedule?.object !== "subscription_schedule" || !validScheduleId(schedule.id)
+    || schedule.customer !== input.customerId || schedule.subscription !== input.subscriptionId
+    || schedule.livemode !== (input.mode === "live") || schedule.status !== "active"
+    || schedule.end_behavior !== "release" || !Array.isArray(schedule.phases) || schedule.phases.length !== 1
+    || phase?.start_date !== item.current_period_start || phase?.end_date !== item.current_period_end) {
+    throw providerFailure(false);
+  }
+  attestPhaseItem(phase, item.price.id, item.quantity);
+}
+
+/** Phase items carry either an expanded Price object or a bare Price ID across API versions. */
+function attestSchedulePhases(schedule: LooseRecord, input: LooseRecord, status: string,
+  currentQuantity: number, periodStart: number, periodEnd: number) {
+  const phases = schedule?.phases;
+  if (schedule?.object !== "subscription_schedule" || !validScheduleId(schedule.id)
+    || schedule.customer !== input.customerId || schedule.subscription !== input.subscriptionId
+    || schedule.livemode !== (input.mode === "live") || schedule.status !== status
+    || schedule.end_behavior !== "release" || !Array.isArray(phases) || phases.length !== 2) throw providerFailure(false);
+  const [currentPhase, targetPhase] = phases;
+  // The current phase ends where the target phase begins: the attested period end.
+  if (currentPhase?.start_date !== periodStart || currentPhase?.end_date !== periodEnd
+    || targetPhase?.start_date !== periodEnd || targetPhase?.proration_behavior !== "none") throw providerFailure(false);
+  attestPhaseItem(currentPhase, input.sourcePriceId, currentQuantity);
+  attestPhaseItem(targetPhase, input.targetPriceId, input.targetQuantity);
+}
+
+function attestPhaseItem(phase: LooseRecord, expectedPriceId: string, expectedQuantity: number) {
+  const items = phase?.items;
+  if (!Array.isArray(items) || items.length !== 1) throw providerFailure(false);
+  const priceId = typeof items[0]?.price === "string" ? items[0].price : items[0]?.price?.id;
+  if (!validPriceId(priceId) || priceId !== expectedPriceId || items[0]?.quantity !== expectedQuantity) {
+    throw providerFailure(false);
+  }
+}
+
 function attestManagedItem(item: LooseRecord, input: LooseRecord, acceptedPriceIds: Set<string>, requireTarget: boolean) {
   const price = item?.price;
   // A multi-currency Price keeps its default currency in price.currency and
@@ -543,6 +697,10 @@ function validSubscriptionId(value: any) {
 
 function validSubscriptionItemId(value: any) {
   return typeof value === "string" && /^si_[A-Za-z0-9_]{1,240}$/.test(value);
+}
+
+function validScheduleId(value: any) {
+  return typeof value === "string" && /^sub_sched_[A-Za-z0-9_]{1,240}$/.test(value);
 }
 
 function validPriceId(value: any) {

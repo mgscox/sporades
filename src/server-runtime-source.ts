@@ -102,6 +102,7 @@ import {
   expireTeamBillingPlanPreview,
   TEAM_BILLING_PLAN_TRANSITION_JOB,
   TEAM_BILLING_SEAT_CONVERGENCE_JOB,
+  cancelScheduledTeamBillingPlanTransition,
   performTeamBillingPlanTransition,
   performTeamBillingSeatConvergence,
   repairTeamBillingDesiredStateAtStartup,
@@ -1029,6 +1030,10 @@ export async function openDevDatabase(
         ...(input.resume === true ? { resume: true } : {}),
         ...(input.endTrial === true ? { endTrial: true } : {}),
         ...(input.preserveTrial === true ? { preserveTrial: true } : {}),
+        ...(input.timing ? { timing: input.timing } : {}),
+        ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}),
+        ...(input.releaseScheduleId ? { releaseScheduleId: input.releaseScheduleId } : {}),
+        ...(input.sourceQuantity !== undefined ? { sourceQuantity: input.sourceQuantity } : {}),
       }));
     },
     quiesceTeamBillingProvider: async (context: LooseRecord, input: LooseRecord) => {
@@ -6319,6 +6324,29 @@ export function createWebSocketHub(
             hint: code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency."
               : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch."
               : "Sign in as the current policy-approved billing administrator and retry with a new request identifier.",
+          },
+        });
+      }
+      return;
+    }
+
+    if (message.type === "teamBilling.cancelScheduledPlanTransition") {
+      try {
+        const input = message.input;
+        const data = await cancelScheduledTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId);
+        sendJson(client, { id: message.id ?? null, type: "teamBilling.cancelScheduledPlanTransition.result", data, error: null });
+      } catch (error: any) {
+        const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", "TEAM_BILLING_UNKNOWN_SCHEDULE"].includes(error?.code)
+          ? error.code : "TEAM_BILLING_DENIED";
+        sendJson(client, {
+          id: message.id ?? null,
+          type: "error",
+          data: null,
+          error: {
+            code,
+            message: "Team Billing scheduled plan change is unavailable.",
+            hint: code === "TEAM_BILLING_REQUEST_CONFLICT" ? "A plan change is not currently scheduled for this Team."
+              : "Sign in as the current policy-approved Team billing administrator and retry with a new request identifier.",
           },
         });
       }

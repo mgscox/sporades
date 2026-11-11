@@ -98,6 +98,23 @@ Changes since v0.9.47.
   cancellation and an anchored replacement Subscription. A durable paid-through
   latch survives restart; old-currency balances refuse safely (#371). Public
   types and the Stripe fake include the new operation and currency rules.
+- Add period-end Team Billing plan changes through Stripe Subscription
+  Schedules (#368). `authorize` may return `timing: "period-end"`; the durable
+  desired state gains a `scheduled` status and a new
+  `teamBilling.cancelScheduledPlanTransition` command releases the schedule.
+  Seat and usage quantity writes route through `subscriptionSchedules.update`
+  while a runtime-owned schedule is attached, including its remaining final
+  phase after the target applies; foreign schedules block managed
+  work with `TEAM_BILLING_UNKNOWN_SCHEDULE`; erasure releases every attached
+  schedule before cancelling its Subscription. A trialling Subscription never
+  rides a schedule: `timing: "period-end"` falls back to an immediate switch
+  that keeps the trial, as documented. Explicit `resume: true` also switches
+  immediately, with or without a scheduled cancellation, clearing cancellation
+  in the same provider update. Schedule phases pin the Subscription's
+  attested period dates; entering the final phase is not release, and
+  cancelling after the boundary applied the target fails safely. The Stripe
+  fake models the schedule subset with attested phase dates, phase transition
+  on `clock.advance`, and release correlation.
 
 - Team Billing plan switches during trials preserve the trial by default. Server-only
   `transitions.endTrial` can end it immediately; Portal configuration attestation

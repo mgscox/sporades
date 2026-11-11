@@ -420,7 +420,7 @@ export type TeamBillingPortalResult =
   | { state: "expired" | "superseded"; teamId: string; requestId: string }
   | { state: "failed"; teamId: string; requestId: string; reason: "authority-changed" | "unavailable" };
 
-/** `resume: true` clears a scheduled cancellation in the same provider update. */
+/** `resume: true` switches immediately, overriding period-end timing, and clears a scheduled cancellation in the same provider update. */
 export type TeamBillingPlanTransitionRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval; resume?: boolean; currency?: string; quoteId?: string };
 /** Names only a catalogue target; timing, quantity and proration are server-owned. */
 export type TeamBillingPlanPreviewRequest = { teamId: string; requestId: string; productKey: string; interval?: TeamBillingInterval };
@@ -437,6 +437,13 @@ export type TeamBillingPlanTransitionResult =
   | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
   | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "quote-invalid" | "authority-changed" | "payment-action-required" | "currency-mismatch" | "provider-state-ambiguous" | "unavailable"; paymentAction?: TeamBillingPaymentAction };
 
+/** Releases the runtime-owned schedule of a period-end plan change; the current plan keeps running. */
+export type TeamBillingCancelScheduledPlanTransitionRequest = { teamId: string; requestId: string };
+export type TeamBillingCancelScheduledPlanTransitionResult =
+  | { state: "pending"; teamId: string; requestId: string; productKey: string; requestedAt: string }
+  | { state: "completed" | "superseded"; teamId: string; requestId: string; productKey: string }
+  | { state: "failed"; teamId: string; requestId: string; productKey: string; reason: "authority-changed" | "provider-state-ambiguous" | "unavailable" };
+
 export type TeamBillingErasureRequest = { teamId: string; requestId: string };
 export type TeamBillingErasureResult =
   | { state: "pending"; teamId: string; requestId: string; requestedAt: string }
@@ -450,6 +457,8 @@ export type TeamBillingApi = {
   openPortal(input: TeamBillingPortalRequest): Promise<SporadesResult<TeamBillingPortalResult>>;
   previewPlanTransition(input: TeamBillingPlanPreviewRequest): Promise<SporadesResult<TeamBillingPlanPreviewResult>>;
   requestPlanTransition(input: TeamBillingPlanTransitionRequest): Promise<SporadesResult<TeamBillingPlanTransitionResult>>;
+  /** Releases the schedule of a `period-end` plan change; the current plan keeps running until it settles. */
+  cancelScheduledPlanTransition(input: TeamBillingCancelScheduledPlanTransitionRequest): Promise<SporadesResult<TeamBillingCancelScheduledPlanTransitionResult>>;
   /** Proves provider quiescence before the app performs its separate local Team deletion transaction. */
   prepareErasure(input: TeamBillingErasureRequest): Promise<SporadesResult<TeamBillingErasureResult>>;
 };

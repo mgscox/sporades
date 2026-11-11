@@ -23,6 +23,9 @@ const ENDPOINTS: Array<[string, RegExp, StripeFakeOperation]> = [
   ["POST", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.update"],
   ["POST", /^\/v1\/invoices\/create_preview$/, "invoices.createPreview"],
   ["DELETE", /^\/v1\/subscriptions\/([^/]+)$/, "subscriptions.cancel"],
+  ["POST", /^\/v1\/subscription_schedules$/, "subscriptionSchedules.create"],
+  ["POST", /^\/v1\/subscription_schedules\/([^/]+)$/, "subscriptionSchedules.update"],
+  ["POST", /^\/v1\/subscription_schedules\/([^/]+)\/release$/, "subscriptionSchedules.release"],
   ["GET", /^\/v1\/prices\/([^/]+)$/, "prices.retrieve"],
   ["GET", /^\/v1\/customers\/([^/]+)$/, "customers.retrieve"],
 ];
@@ -136,6 +139,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const pageSize = integer(options.pageSize ?? 100, 100);
   const catalogue = copy(options.catalogue);
   const sessions = new Map<string, Obj>(); const customers = new Map<string, Obj>(); const subscriptions = new Map<string, Obj>();
+  const schedules = new Map<string, Obj>();
   const portalSessions = new Map<string, Obj>();
   const setupIntents = new Map<string, Obj>();
   const invoices = new Map<string, Obj>();
@@ -264,7 +268,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       subscription.trial_end = end;
     }
     subscription.status = status;
-    if (["canceled", "incomplete_expired"].includes(status)) { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; subscription.latest_invoice = null; }
+    if (["canceled", "incomplete_expired"].includes(status)) { subscription.cancel_at_period_end = false; subscription.cancel_at = null; subscription.pending_update = null; subscription.latest_invoice = null;
+      if (subscription.schedule) { const schedule = schedules.get(subscription.schedule); if (schedule) schedule.status = "canceled"; } }
     return subscriptionEvent(subscription);
   }
   async function setQuantity(subscriptionId: string, quantity: number) {
@@ -340,6 +345,46 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     subscription.cancel_at_period_end = cancel;
     subscription.cancel_at = cancel ? subscription.items.data[0].current_period_end : null;
     return subscriptionEvent(subscription);
+  }
+  // Schedules model the managed period-end subset: exactly one current phase
+  // plus one future phase, released at the boundary. Cancelling the attached
+  // Subscription also cancels the Schedule, matching Stripe's own behaviour.
+  function liveSchedule(scheduleId: string) {
+    const schedule = get(schedules, scheduleId);
+    if (schedule.status !== "active") fail("Schedule is not active.", 404, "resource_missing");
+    return schedule;
+  }
+  function schedulePhases(p: Obj, subscription: Obj) {
+    // Form-encoded arrays arrive as index-keyed objects, like every other list parameter.
+    // A managed schedule must pin its first phase to the Subscription's attested
+    // period, so the fake refuses an implicit boundary.
+    exactKeys(p.phases, ["0", "1"]);
+    const item = subscription.items.data[0];
+    const parsed: Obj[] = [];
+    for (const index of ["0", "1"]) {
+      const phase = p.phases[index];
+      exactKeys(phase, index === "0" ? ["items", "start_date", "end_date"] : ["items", "start_date"],
+        index === "1" ? ["proration_behavior"] : []);
+      requireValue(index === "0" || phase.proration_behavior === "none");
+      exactKeys(phase.items, ["0"]); exactKeys(phase.items[0], ["price", "quantity"]);
+      const itemPrice = price(phase.items[0].price, subscription.currency);
+      const quantity = integer(phase.items[0].quantity);
+      let start_date: number;
+      let end_date: number;
+      if (index === "0") {
+        start_date = integer(phase.start_date, 253_402_300_799);
+        end_date = integer(phase.end_date, 253_402_300_799);
+        requireValue(start_date === item.current_period_start && end_date === item.current_period_end,
+          "The current phase must end at the Subscription's attested period end.");
+      } else {
+        start_date = integer(phase.start_date, 253_402_300_799);
+        requireValue(start_date === parsed[0].end_date, "The target phase must begin at the attested period end.");
+        end_date = teamBillingIntervalEnd(start_date, itemPrice.recurring.interval, itemPrice.recurring.interval_count);
+      }
+      parsed.push({ items: [{ price: itemPrice, quantity }], start_date, end_date,
+        ...(index === "1" ? { proration_behavior: "none" } : {}) });
+    }
+    return parsed;
   }
   function configuration(configId: string) {
     const entry = catalogue.portalConfigurations.find((entry) => entry.id === configId);
@@ -503,6 +548,53 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         exactKeys(p, [], ["prorate", "invoice_now"]);
         requireValue((p.prorate === undefined || p.prorate === "false") && (p.invoice_now === undefined || p.invoice_now === "false"));
         return setStatus(resourceId, "canceled");
+      case "subscriptionSchedules.create": {
+        exactKeys(p, ["from_subscription"]);
+        const subscription = liveSubscription(p.from_subscription);
+        requireValue(subscription.schedule == null, "Subscription already has a schedule.");
+        const item = subscription.items.data[0];
+        const scheduleId = id("sub_sched");
+        const schedule = { id: scheduleId, object: "subscription_schedule", livemode: false,
+          customer: subscription.customer, subscription: subscription.id, status: "active", end_behavior: "release",
+          released_at: null, released_subscription: null,
+          phases: [{ items: [{ price: copy(item.price), quantity: item.quantity }],
+            start_date: item.current_period_start, end_date: item.current_period_end }] };
+        schedules.set(scheduleId, schedule);
+        subscription.schedule = scheduleId;
+        await subscriptionEvent(subscription);
+        return copy(schedule);
+      }
+      case "subscriptionSchedules.update": {
+        exactKeys(p, ["phases", "end_behavior"]);
+        requireValue(p.end_behavior === "release");
+        const schedule = liveSchedule(resourceId);
+        const subscription = liveSubscription(schedule.subscription);
+        schedule.end_behavior = "release";
+        schedule.phases = schedulePhases(p, subscription);
+        // Editing the current phase's items applies to the Subscription immediately.
+        const current = schedule.phases[0].items[0]; const item = subscription.items.data[0];
+        if (item.price.id !== current.price.id || item.quantity !== current.quantity) {
+          applyPrice(subscription, current.price, current.quantity);
+          await subscriptionEvent(subscription);
+        }
+        return copy(schedule);
+      }
+      case "subscriptionSchedules.release": {
+        exactKeys(p, []);
+        const schedule = liveSchedule(resourceId);
+        schedule.status = "released";
+        schedule.released_at = now;
+        // Stripe clears `subscription` and records the detached Subscription in
+        // `released_subscription` when a schedule releases it.
+        schedule.released_subscription = schedule.subscription;
+        const subscription = subscriptions.get(schedule.subscription);
+        schedule.subscription = null;
+        if (subscription && !["canceled", "incomplete_expired"].includes(subscription.status) && subscription.schedule === resourceId) {
+          subscription.schedule = null;
+          await subscriptionEvent(subscription);
+        }
+        return copy(schedule);
+      }
     }
   }
   const apiServer = createServer(serialized(async (request, response) => {
@@ -617,6 +709,29 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       for (const session of sessions.values()) if (session.status === "open" && session.expires_at <= now) await expire(session.id);
       for (const sub of subscriptions.values()) if (!["canceled", "incomplete_expired"].includes(sub.status) && sub.cancel_at_period_end && sub.cancel_at <= now) await setStatus(sub.id, "canceled");
       for (const sub of subscriptions.values()) if (sub.status === "trialing" && sub.trial_end <= now) await fake.subscriptions.renew(sub.id);
+      // A due future phase lands at its boundary: entering the final phase is
+      // not the same as completing the schedule, which releases it later.
+      for (const schedule of schedules.values()) {
+        if (schedule.status !== "active") continue;
+        const subscription = subscriptions.get(schedule.subscription);
+        if (!subscription || ["canceled", "incomplete_expired"].includes(subscription.status)) { schedule.status = "canceled"; continue; }
+        let entered = false;
+        while (schedule.phases.length > 1 && schedule.phases[0].end_date <= now) {
+          schedule.phases = [schedule.phases[1]];
+          const target = schedule.phases[0].items[0];
+          applyPrice(subscription, target.price, target.quantity);
+          entered = true;
+        }
+        if (entered) await subscriptionEvent(subscription);
+        if (schedule.phases.length === 1 && schedule.phases[0].end_date <= now) {
+          schedule.status = "released";
+          schedule.released_at = now;
+          schedule.released_subscription = subscription.id;
+          schedule.subscription = null;
+          if (subscription.schedule === schedule.id) subscription.schedule = null;
+          await subscriptionEvent(subscription);
+        }
+      }
       for (const sub of subscriptions.values()) if (sub.status === "active" && sub.billing_cycle_anchor && sub.items.data[0].current_period_end <= now) {
         const anchor = sub.items.data[0].current_period_end;
         const item = sub.items.data[0]; const currency = sub.currency ?? item.price.currency;
@@ -659,10 +774,10 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
       clear() { faults.length = 0; },
     },
     requests: () => copy(requests),
-    state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()],
+    state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()], schedules: [...schedules.values()],
       checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices: [...invoices.values()], events: eventLog }),
     reset() {
-      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); portalSessions.clear(); invoices.clear(); pendingProrations.clear(); idempotency.clear(); lastCreated.clear();
+      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); schedules.clear(); portalSessions.clear(); invoices.clear(); pendingProrations.clear(); idempotency.clear(); lastCreated.clear();
       eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };

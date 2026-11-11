@@ -1245,6 +1245,15 @@ teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", produc
 teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", productKey: "agency", prorationDate: 1 });
 // @ts-expect-error Browser preview inputs cannot select a charge policy.
 teamBilling.previewPlanTransition({ teamId: "team", requestId: "request", productKey: "agency", timing: "now" });
+teamBilling.cancelScheduledPlanTransition({ teamId: "team", requestId: "request" }).then(result => {
+  if (result.data?.state === "pending") result.data.requestedAt.toUpperCase();
+  if (result.data?.state === "completed") result.data.productKey.toUpperCase();
+  if (result.data?.state === "failed") result.data.reason.toUpperCase();
+});
+// @ts-expect-error Schedule cancellation requires an explicit Team.
+teamBilling.cancelScheduledPlanTransition({ requestId: "request" });
+// @ts-expect-error Schedule cancellation never accepts a provider Schedule identifier.
+teamBilling.cancelScheduledPlanTransition({ teamId: "team", requestId: "request", scheduleId: "sub_sched_private" });
 teamBilling.prepareErasure({
   teamId: "00000000-0000-4000-8000-000000000000",
   requestId: "44444444-4444-4444-8444-444444444444",

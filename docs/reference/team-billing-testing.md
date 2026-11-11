@@ -147,6 +147,13 @@ returned. The in-memory state belongs to one fake and lasts until `reset()` or
 | `clock.advance(seconds)` | Moves forward, expiring due Checkouts and pending updates (`customer.subscription.pending_update_expired`), applying scheduled cancellations, converting due trials to active, and billing due paid periods, including anchored replacements. |
 | `requests()`, `state()`, `reset()` | Inspects the request log/state or restores the initial empty state and catalogue. |
 
+Managed Subscription Schedules copy the Subscription's current phase with its
+`start_date` and `end_date`. `subscriptionSchedules.update` requires the first
+phase to pin both dates to the Subscription's attested period; the future phase
+starts at that `end_date`. Advancing to the boundary enters the final phase and
+keeps the schedule attached; advancing to the end of that phase releases it
+(`status: "released"`, `subscription: null`, and `released_subscription` set).
+
 Team Billing catalogue products declared with `trialDays` use trial Checkout through the real
 provider boundary. `checkout.complete` produces `payment_status: "no_payment_required"`
 and a `trialing` Subscription with Unix `trial_start` and `trial_end`. Advance
