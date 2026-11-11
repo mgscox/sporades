@@ -59,6 +59,7 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
             id: any;
             state: "cancelled" | "safely-closed";
         }>[];
+        schedules: readonly Readonly<LooseRecord>[];
     }>>;
 }>;
 export {};

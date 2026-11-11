@@ -102,6 +102,13 @@ export function createTeamBillingTables(adapter) {
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "resume", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "endTrial", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "preserveTrial", "INTEGER"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "timing", "TEXT"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "providerScheduleId", "TEXT"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "releaseSchedule", "INTEGER"),
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "providerScheduleId", "TEXT"),
+        // Durable ownership of a runtime-created Schedule survives intent settlement
+        // so the remaining phase can still accept seat and usage writes.
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "ownedScheduleId", "TEXT"),
     ]);
 }
 export function normalizeTeamBillingDefinition(value) {
@@ -246,7 +253,8 @@ async function admitTeamBillingReader(database, transaction, auth, teamId) {
         operation: "read", teamId, teamRole: membership.role,
     }));
     if (!decision || typeof decision !== "object" || Array.isArray(decision)
-        || Object.keys(decision).join(",") !== "allow" || decision.allow !== true)
+        || Object.keys(decision).some((key) => !["allow", "timing"].includes(key)) || decision.allow !== true
+        || (decision.timing !== undefined && !["now", "period-end"].includes(decision.timing)))
         throw teamBillingDenied();
 }
 /**
@@ -722,7 +730,8 @@ export async function admitTeamBillingActor(database, transaction, auth, input) 
         ...(input.fromInterval == null ? {} : { fromInterval: input.fromInterval }),
     }));
     if (!decision || typeof decision !== "object" || Array.isArray(decision)
-        || Object.keys(decision).join(",") !== "allow" || decision.allow !== true)
+        || Object.keys(decision).some((key) => !["allow", "timing"].includes(key)) || decision.allow !== true
+        || (decision.timing !== undefined && !["now", "period-end"].includes(decision.timing)))
         throw teamBillingDenied();
     return Object.freeze({ admitted: true });
 }
@@ -744,7 +753,7 @@ export async function safeTeamBillingProjection(transaction, definition, teamId,
         return latch;
     const sql = transaction.dialect.sql;
     const desired = await transaction.prepare(sql("SELECT [kind], [targetProductKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
-    if (desired && ["queued", "running", "awaiting-observation"].includes(desired.status)) {
+    if (desired && ["queued", "running", "awaiting-observation", "scheduled"].includes(desired.status)) {
         const requestedAt = canonicalTimestamp(desired.createdAt);
         if (!requestedAt)
             return Object.freeze({ state: "attention-required", teamId, reason: "provider-state-ambiguous" });

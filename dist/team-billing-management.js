@@ -8,7 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { teamBillingIntervalEnd, teamBillingTransitionRefusal } from "./team-billing-subscription-semantics.js";
 import { validTeamBillingHostedInvoiceUrl } from "./team-billing-payment-action.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
-import { assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
+import { admitTeamBillingActor, assertTeamBillingErasureInactive, teamBillingPrice, teamBillingPriceById } from "./team-billing-runtime.js";
 import { readTeamBillingQuantity, readTeamBillingUsageCount, teamBillingQuantityPolicyFingerprint } from "./team-billing-quantity.js";
 export const TEAM_BILLING_PLAN_PREVIEW_JOB = "_sporades.team-billing-plan-preview";
 export const TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB = "_sporades.team-billing-plan-preview-expiry";
@@ -33,7 +33,8 @@ export async function previewTeamBillingPlanTransition(database, auth, input) {
         throw denied();
     let enqueued = false;
     const result = await inTransaction(database, async (transaction) => {
-        await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
+        if (!await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey, price.interval))
+            throw denied();
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         await assertCurrencyHandoverInactive(transaction, teamId);
         const repeated = await transaction.prepare(transaction.dialect.sql("SELECT * FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
@@ -142,7 +143,8 @@ export async function performTeamBillingPlanPreview(database, context, payload, 
             const price = product && teamBillingPriceById(modeBinding(database, product), operation.providerPriceId);
             if (!snapshot || !price)
                 throw invalidQuote();
-            await admitPlanTransition(database, transaction, auth, operation.teamId, operation.productKey, price.interval);
+            if (!await tryAdmitPlanTransition(database, transaction, auth, operation.teamId, operation.productKey, price.interval))
+                throw denied();
             const resolved = await resolvePlanTarget(database, transaction, operation.teamId, operation.productKey, price, false, undefined, snapshot.effectiveAt);
             if (quote.snapshot !== JSON.stringify(resolved))
                 throw invalidQuote();
@@ -207,11 +209,11 @@ export async function performTeamBillingPlanPreview(database, context, payload, 
         throw error;
     }
 }
-async function resolvePlanTarget(database, transaction, teamId, productKey, price, resume = false, currency, effectiveAt = nowSeconds(database)) {
+async function resolvePlanTarget(database, transaction, teamId, productKey, price, resume = false, currency, effectiveAt = nowSeconds(database), ownedScheduleId = null) {
     await assertTeamBillingErasureInactive(database, transaction, teamId);
     await assertCurrencyHandoverInactive(transaction, teamId);
     const subscription = await currentSubscription(transaction, teamId);
-    const refusal = transitionRefusal(subscription, resume);
+    const refusal = transitionRefusal(subscription, resume, ownedScheduleId);
     if (refusal)
         throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
     const definition = database.teamBillingDefinition;
@@ -278,7 +280,9 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         throw denied();
     let enqueued = false;
     const result = await inTransaction(database, async (transaction) => {
-        await admitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
+        const admission = await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey, price.interval);
+        if (!admission)
+            throw denied();
         await assertTeamBillingErasureInactive(database, transaction, teamId);
         await assertCurrencyHandoverInactive(transaction, teamId);
         const sql = transaction.dialect.sql;
@@ -293,15 +297,35 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
             return planOperationResult(database, teamId, requestId, productKey, repeated);
         }
         const quote = quoteId === undefined ? null : await quoteForConfirmation(database, transaction, auth, teamId, productKey, price, resume, quoteId);
+        const subscription = await currentSubscription(transaction, teamId);
+        // Trials and explicit resumes use the immediate path so trial handling
+        // and cancellation clearing stay in the same Subscription update.
+        const timing = admission.timing === "period-end" && subscription.state !== "trialing" && resume !== true
+            ? "period-end" : "now";
+        // Latest-wins: a new period-end request rewrites the already-attached
+        // runtime-owned schedule instead of refusing it as foreign.
+        const previous = await desiredForTeam(transaction, teamId);
+        const previousScheduleId = timing === "period-end" && previous?.kind === "plan-transition" && previous.status === "scheduled"
+            && previous.timing === "period-end" && previous.releaseSchedule !== 1
+            && (subscription.hasSchedule !== 1 || subscription.providerScheduleId === previous.providerScheduleId)
+            ? previous.providerScheduleId : null;
+        // Durable ownership keeps a runtime-created Schedule available to plan and
+        // seat writes after the target settles into its final phase.
+        const ownedScheduleId = previousScheduleId ?? (timing === "period-end" && previous?.releaseSchedule !== 1
+            ? ownedScheduleFor(subscription) : null);
         const effectiveAt = quote ? JSON.parse(quote.snapshot).effectiveAt : nowSeconds(database);
-        const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, resume === true, currency, effectiveAt);
-        const { subscription, quantity, endTrial, preserveTrial, resetBillingCycle } = resolved;
+        const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, resume === true, currency, effectiveAt, ownedScheduleId);
+        const { quantity, endTrial, preserveTrial, resetBillingCycle } = resolved;
+        if (quote && timing !== "now")
+            throw invalidQuote();
         if (quote && quote.snapshot !== JSON.stringify(resolved))
             throw invalidQuote();
         const operationId = randomUUID();
         const now = nowIso(database);
         const staged = await stageDesired(transaction, database, {
-            teamId, kind: "plan-transition", operationId, endTrial, preserveTrial, resetBillingCycle,
+            teamId, kind: "plan-transition", operationId, endTrial, preserveTrial,
+            resetBillingCycle: timing === "now" ? resetBillingCycle : 0, timing,
+            ...(ownedScheduleId ? { providerScheduleId: ownedScheduleId } : {}),
             targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null,
             targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
         }, quote !== null);
@@ -321,6 +345,52 @@ export async function requestTeamBillingPlanTransition(database, auth, teamId, r
         await enqueueIntent(database, transaction, staged);
         enqueued = true;
         return Object.freeze({ state: "pending", teamId, requestId, productKey, requestedAt: now });
+    });
+    if (enqueued)
+        scheduleAfterOwnedTransaction(database);
+    return result;
+}
+/** Releases the runtime-owned schedule of a scheduled period-end plan change. */
+export async function cancelScheduledTeamBillingPlanTransition(database, auth, teamId, requestId) {
+    if (!TEAM_ID_PATTERN.test(String(teamId ?? "")) || !TEAM_ID_PATTERN.test(String(requestId ?? "")))
+        throw denied();
+    let enqueued = false;
+    const result = await inTransaction(database, async (transaction) => {
+        await admitTeamBillingActor(database, transaction, auth, { operation: "plan-transition", teamId });
+        await assertTeamBillingErasureInactive(database, transaction, teamId);
+        await assertCurrencyHandoverInactive(transaction, teamId);
+        const sql = transaction.dialect.sql;
+        const subscription = await currentSubscription(transaction, teamId);
+        const repeated = await transaction.prepare(sql("SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
+        if (repeated) {
+            if (repeated.kind !== "plan-transition")
+                throw conflict();
+            return planOperationResult(database, teamId, requestId, repeated.productKey ?? subscription.productKey, repeated);
+        }
+        const desired = await desiredForTeam(transaction, teamId);
+        const schedulable = desired?.kind === "plan-transition" && desired.status === "scheduled"
+            && desired.timing === "period-end" && desired.providerScheduleId != null && desired.releaseSchedule !== 1
+            && (subscription.hasSchedule !== 1 || subscription.providerScheduleId === desired.providerScheduleId);
+        // Nothing is scheduled to cancel. A foreign schedule also refuses here
+        // because it is not the runtime's own change to release.
+        if (!schedulable)
+            throw conflict();
+        const now = nowIso(database);
+        await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
+            "WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')")).run(now, teamId);
+        const operationId = randomUUID();
+        await transaction.prepare(sql("INSERT INTO [sporades_team_billing_operations] " +
+            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerSubscriptionId], [currency]) " +
+            "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?)")).run(operationId, requestId, teamId, auth.userId, subscription.productKey, operationIdempotency(database, operationId), now, now, subscription.mode, subscription.quantity, subscription.providerPriceId, subscription.providerSubscriptionId, subscription.currency ?? null);
+        const staged = await stageDesired(transaction, database, {
+            teamId, kind: desired.kind, operationId, targetProductKey: desired.targetProductKey,
+            endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId,
+            targetQuantity: Number(desired.targetQuantity), effectiveAt: nowSeconds(database), resume: desired.resume,
+            timing: desired.timing, providerScheduleId: desired.providerScheduleId, releaseSchedule: 1,
+        });
+        await enqueueIntent(database, transaction, staged);
+        enqueued = true;
+        return Object.freeze({ state: "pending", teamId, requestId, productKey: subscription.productKey, requestedAt: now });
     });
     if (enqueued)
         scheduleAfterOwnedTransaction(database);
@@ -352,17 +422,39 @@ async function stageTeamBillingCountChange(database, teamId, effectiveAt, quanti
             return Object.freeze({ staged: false });
         const quantity = await targetQuantity(database, transaction, teamId, product);
         const existing = await desiredForTeam(transaction, teamId);
-        if (existing?.kind === "plan-transition" && (!force || existing.status !== "awaiting-observation"))
+        // While a runtime-owned schedule is attached, a count change re-stages the
+        // scheduled transition so the new quantity lands in every schedule phase.
+        const reschedulesScheduled = existing?.kind === "plan-transition" && existing.status === "scheduled"
+            && existing.timing === "period-end" && existing.releaseSchedule !== 1
+            && (subscription.hasSchedule !== 1 || subscription.providerScheduleId === existing.providerScheduleId);
+        if (existing?.kind === "plan-transition" && !reschedulesScheduled
+            && (!force || existing.status !== "awaiting-observation"))
             return Object.freeze({ staged: false, reason: "plan-transition-active" });
         if (!force && !existing && subscription.quantity === quantity)
             return Object.freeze({ staged: false });
+        const targetProduct = existing?.kind === "plan-transition"
+            ? database.teamBillingDefinition?.catalogue?.[existing.targetProductKey] : product;
+        // A fixed future quantity deduplicates the target tuple while the accepted
+        // count still changes; the current schedule phase must be restaged too.
+        const restagesCurrentPhase = reschedulesScheduled && Number(subscription.quantity) !== quantity;
+        // After the target phase applies, durable ownership is the only remaining
+        // record of the Schedule, so its final phase still accepts the new count.
+        const ownedScheduleId = ownedScheduleFor(subscription);
+        const schedulesSeat = ownedScheduleId !== null
+            && (existing ? existing.kind === "seat-convergence" && existing.timing === "period-end" && existing.releaseSchedule !== 1
+                : true);
         const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
             teamId, kind: existing.kind, operationId: existing.operationId, targetProductKey: existing.targetProductKey,
-            endTrial: existing.endTrial, preserveTrial: existing.preserveTrial, targetPriceId: existing.targetPriceId, targetQuantity: Number(existing.targetQuantity), effectiveAt, resume: existing.resume,
+            endTrial: existing.endTrial, preserveTrial: existing.preserveTrial, targetPriceId: existing.targetPriceId,
+            targetQuantity: reschedulesScheduled && targetProduct
+                ? await targetQuantity(database, transaction, teamId, targetProduct) : Number(existing.targetQuantity),
+            effectiveAt, resume: existing.resume, timing: existing.timing ?? null,
+            providerScheduleId: existing.providerScheduleId ?? null, releaseSchedule: 0,
         } : {
             teamId, kind: "seat-convergence", operationId: null, targetProductKey: subscription.productKey,
             targetQuantity: quantity, effectiveAt,
-        }, force);
+            ...(schedulesSeat ? { timing: "period-end", providerScheduleId: ownedScheduleId } : {}),
+        }, force || restagesCurrentPhase);
         let generationId = staged.activeJobGenerationId ?? null;
         if (staged.enqueue) {
             generationId = await enqueueIntent(database, transaction, staged);
@@ -461,7 +553,12 @@ async function performDesired(database, _context, payload, kind) {
             && billingCurrencyAmount(price, subscription.currency) === undefined)
             return attention(transaction, database, desired, "CURRENCY_MISMATCH");
         if (kind === "plan-transition") {
-            const refusal = transitionRefusal(subscription, desired.resume === 1);
+            // A failed create-or-update attempt may have attached the runtime's own
+            // schedule without persisting its id; the provider proves ownership by
+            // replaying the intent's stable create key.
+            const recoveringSchedule = desired.timing === "period-end" && desired.releaseSchedule !== 1
+                && desired.providerScheduleId == null && desired.providerAttemptedAt != null;
+            const refusal = transitionRefusal(subscription, desired.resume === 1, desired.providerScheduleId ?? null, recoveringSchedule);
             if (refusal) {
                 return attention(transaction, database, desired, refusal);
             }
@@ -489,7 +586,9 @@ async function performDesired(database, _context, payload, kind) {
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind, operationId: desired.operationId, targetProductKey: desired.targetProductKey,
                     endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database), resume: desired.resume,
-                    resetBillingCycle: subscription.state !== "trialing" && longerInterval(teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.interval, price.interval, nowSeconds(database)) ? 1 : 0,
+                    resetBillingCycle: desired.timing !== "period-end" && subscription.state !== "trialing" && longerInterval(teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.interval, price.interval, nowSeconds(database)) ? 1 : 0,
+                    timing: desired.timing ?? null, providerScheduleId: desired.providerScheduleId ?? null,
+                    releaseSchedule: desired.releaseSchedule === 1 ? 1 : 0,
                 });
                 await enqueueIntent(database, transaction, replacement);
                 return { superseded: true, dispatch: true };
@@ -498,6 +597,15 @@ async function performDesired(database, _context, payload, kind) {
         else {
             if (!["trialing", "active", "past-due"].includes(subscription.state))
                 return attention(transaction, database, desired, "PROVIDER_STATE_AMBIGUOUS");
+            // Only the Schedule API may write a scheduled Subscription. A durable
+            // runtime-owned schedule (including its final phase after the target
+            // applied) is ours to update; every other attached schedule is foreign.
+            const ownedScheduleId = ownedScheduleFor(subscription);
+            const usesOwnedSchedule = desired.timing === "period-end" && desired.releaseSchedule !== 1
+                && ownedScheduleId !== null && desired.providerScheduleId === ownedScheduleId;
+            if (subscription.hasSchedule === 1 && !usesOwnedSchedule) {
+                return attention(transaction, database, desired, "TEAM_BILLING_UNKNOWN_SCHEDULE");
+            }
             const targetProductKey = subscription.productKey;
             const currentProduct = database.teamBillingDefinition?.catalogue?.[targetProductKey];
             if (!isCountedProduct(currentProduct))
@@ -507,6 +615,7 @@ async function performDesired(database, _context, payload, kind) {
                 || (binding.prices && subscription.providerPriceId !== desired.targetPriceId)) {
                 const replacement = await stageDesired(transaction, database, {
                     teamId: desired.teamId, kind, operationId: null, targetProductKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+                    ...(usesOwnedSchedule ? { timing: "period-end", providerScheduleId: ownedScheduleId } : {}),
                 });
                 await enqueueIntent(database, transaction, replacement);
                 return { superseded: true, dispatch: true };
@@ -519,8 +628,16 @@ async function performDesired(database, _context, payload, kind) {
         if (!claimed)
             throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
         await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'running', [providerAttemptedAt] = COALESCE([providerAttemptedAt], ?), [safeFailureCode] = NULL, [updatedAt] = ? WHERE [intentId] = ?")).run(nowIso(database), nowIso(database), desired.intentId);
+        // While the runtime owns the attached schedule, the source quantity is read
+        // now so a count change lands in the current phase as well as the target.
+        const sourceQuantity = desired.timing === "period-end" && desired.releaseSchedule !== 1
+            ? await targetQuantity(database, transaction, desired.teamId, database.teamBillingDefinition.catalogue[subscription.productKey])
+            : undefined;
+        const acknowledgedStatus = desired.kind === "plan-transition" && desired.timing === "period-end" && desired.releaseSchedule !== 1
+            ? "scheduled" : "awaiting-observation";
         return {
             desired: { ...desired },
+            acknowledgedStatus,
             provider: {
                 teamId: desired.teamId,
                 mode: subscription.mode,
@@ -542,6 +659,13 @@ async function performDesired(database, _context, payload, kind) {
                 resume: desired.resume === 1,
                 ...(desired.endTrial === 1 ? { endTrial: true } : {}),
                 ...(desired.preserveTrial === 1 ? { preserveTrial: true } : {}),
+                ...(desired.timing === "period-end" ? {
+                    timing: "period-end",
+                    ...(sourceQuantity !== undefined ? { sourceQuantity } : {}),
+                    ...(desired.releaseSchedule === 1
+                        ? { releaseScheduleId: desired.providerScheduleId ?? undefined }
+                        : desired.providerScheduleId ? { scheduleId: desired.providerScheduleId } : {}),
+                } : {}),
             },
         };
     });
@@ -551,6 +675,7 @@ async function performDesired(database, _context, payload, kind) {
         return { superseded: true };
     if (snapshot.denied)
         throw denied();
+    let providerScheduleAcknowledgement;
     try {
         if (typeof database.updateTeamBillingSubscription !== "function")
             throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
@@ -562,6 +687,10 @@ async function performDesired(database, _context, payload, kind) {
             await releaseAfterFailure(database, snapshot.desired, claimToken, { retryable: false, code: "PAYMENT_ACTION_REQUIRED" }, paymentAction);
             return { failed: true, safeFailureCode: "PAYMENT_ACTION_REQUIRED" };
         }
+        if (providerResult?.scheduleId !== undefined && (typeof providerResult.scheduleId !== "string"
+            || !/^sub_sched_[A-Za-z0-9_]{1,240}$/.test(providerResult.scheduleId)))
+            throw coded("Team Billing provider returned an invalid acknowledgement.", "TEAM_BILLING_PROVIDER_REJECTED");
+        providerScheduleAcknowledgement = providerResult?.scheduleId;
     }
     catch (error) {
         const classified = classifyProviderError(database, error);
@@ -578,11 +707,16 @@ async function performDesired(database, _context, payload, kind) {
         if (!ownedLane || !current || current.activeJobGenerationId !== snapshot.desired.activeJobGenerationId
             || current.operationId !== snapshot.desired.operationId || current.status !== "running")
             return false;
-        const updated = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'awaiting-observation', [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ? " +
+        const updated = await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [status] = ?, [providerAcknowledgedAt] = ?, [safeFailureCode] = NULL, [updatedAt] = ?, [providerScheduleId] = COALESCE(?, [providerScheduleId]) " +
             "WHERE [intentId] = ? AND [activeJobGenerationId] = ? AND [status] = 'running' " +
-            "AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))")).run(nowIso(database), nowIso(database), current.intentId, snapshot.desired.activeJobGenerationId, snapshot.desired.operationId, snapshot.desired.operationId);
+            "AND ([operationId] = ? OR ([operationId] IS NULL AND CAST(? AS TEXT) IS NULL))")).run(snapshot.acknowledgedStatus ?? "awaiting-observation", nowIso(database), nowIso(database), providerScheduleAcknowledgement ?? null, current.intentId, snapshot.desired.activeJobGenerationId, snapshot.desired.operationId, snapshot.desired.operationId);
         if (Number(updated?.changes ?? updated?.changesCount ?? 0) !== 1)
             return false;
+        const durableScheduleId = providerScheduleAcknowledgement
+            ?? (snapshot.desired.timing === "period-end" && Number(snapshot.desired.releaseSchedule ?? 0) !== 1
+                ? snapshot.desired.providerScheduleId : null);
+        if (typeof durableScheduleId === "string")
+            await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [ownedScheduleId] = ?, [updatedAt] = ? WHERE [teamId] = ? AND [providerSubscriptionId] = ?")).run(durableScheduleId, nowIso(database), snapshot.desired.teamId, snapshot.provider.providerSubscriptionId);
         if (current.operationId)
             await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [updatedAt] = ? WHERE [id] = ?")).run(nowIso(database), current.operationId);
         return true;
@@ -597,10 +731,45 @@ export async function settleVerifiedTeamBillingTarget(database, accepted) {
     let enqueued = false;
     const result = await inTransaction(database, async (transaction) => {
         const sql = transaction.dialect.sql;
-        const subscription = await transaction.prepare(sql("SELECT [providerSubscriptionId], [providerPriceId], [state] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?")).get(accepted.teamId, accepted.subscriptionId);
+        const subscription = await transaction.prepare(sql("SELECT [providerSubscriptionId], [providerPriceId], [productKey], [quantity], [state], [hasSchedule], [providerScheduleId], [ownedScheduleId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [providerSubscriptionId] = ?")).get(accepted.teamId, accepted.subscriptionId);
         if (!subscription)
             return { settled: false };
         const desired = await desiredForTeam(transaction, accepted.teamId);
+        if (desired?.releaseSchedule === 1) {
+            // A released schedule leaves the current plan untouched; only the
+            // detached schedule plus the cancellation's saved original tuple settles
+            // the cancel. The boundary may have applied the target before the release
+            // Job ran, so compare the detached Subscription with what the cancel
+            // promised to preserve, including interval-only changes.
+            const operation = desired.operationId ? await transaction.prepare(sql("SELECT [productKey], [quantity], [providerPriceId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(desired.operationId) : null;
+            const original = operation?.providerPriceId
+                ? { productKey: operation.productKey, quantity: Number(operation.quantity),
+                    priceId: operation.providerPriceId, subscriptionId: operation.providerSubscriptionId ?? null }
+                : null;
+            const preserved = original !== null
+                && subscription.productKey === original.productKey
+                && Number(subscription.quantity) === original.quantity
+                && subscription.providerPriceId === original.priceId
+                && (original.subscriptionId === null || original.subscriptionId === subscription.providerSubscriptionId)
+                && subscription.hasSchedule !== 1;
+            if (!preserved) {
+                // The boundary won or the plan drifted: never report a cancellation that
+                // no longer describes the Subscription's current tuple.
+                if (["queued", "running", "awaiting-observation"].includes(desired.status)) {
+                    await transaction.prepare(sql("UPDATE [sporades_team_billing_desired_state] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_DRIFT', [updatedAt] = ? WHERE [intentId] = ?")).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
+                    if (desired.operationId)
+                        await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_DRIFT', [updatedAt] = ? WHERE [id] = ?")).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+                    await transaction.prepare(sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?")).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
+                }
+                return { settled: false, drift: true };
+            }
+            await transaction.prepare(sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
+            await transaction.prepare(sql("UPDATE [sporades_team_billing_subscriptions] SET [ownedScheduleId] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [providerSubscriptionId] = ?")).run(accepted.occurredAt ?? nowIso(database), accepted.teamId, accepted.subscriptionId);
+            await transaction.prepare(sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?")).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
+            if (desired.operationId)
+                await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?")).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+            return { settled: true };
+        }
         if (!desired) {
             const product = database.teamBillingDefinition?.catalogue?.[accepted.productKey];
             const current = product?.quantity?.kind === "usage" ? await optionalCurrentSubscription(transaction, accepted.teamId) : null;
@@ -621,9 +790,11 @@ export async function settleVerifiedTeamBillingTarget(database, accepted) {
                 if (billableQuantity !== accepted.quantity) {
                     if (desired.operationId)
                         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [id] = ?")).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+                    const ownedScheduleId = ownedScheduleFor(subscription);
                     const replacement = await stageDesired(transaction, database, {
                         teamId: accepted.teamId, kind: "seat-convergence", operationId: null,
                         targetProductKey: accepted.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+                        ...(ownedScheduleId ? { timing: "period-end", providerScheduleId: ownedScheduleId } : {}),
                     });
                     await enqueueIntent(database, transaction, replacement);
                     enqueued = true;
@@ -663,7 +834,7 @@ export async function settleVerifiedTeamBillingTarget(database, accepted) {
 export async function repairTeamBillingDesiredState(database) {
     let queued = 0;
     await inTransaction(database, async (transaction) => {
-        const subscriptions = await transaction.prepare(transaction.dialect.sql("SELECT [teamId], [productKey], [quantity], [providerPriceId], [state] FROM [sporades_team_billing_subscriptions] WHERE [replacedBy] IS NULL AND [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]")).all();
+        const subscriptions = await transaction.prepare(transaction.dialect.sql("SELECT [teamId], [productKey], [quantity], [providerPriceId], [state], [hasSchedule], [providerScheduleId], [ownedScheduleId] FROM [sporades_team_billing_subscriptions] WHERE [replacedBy] IS NULL AND [state] IN ('trialing', 'active', 'past-due') AND [terminalLatch] = 0 ORDER BY [teamId]")).all();
         for (const candidate of subscriptions) {
             try {
                 await assertCurrencyHandoverInactive(transaction, candidate.teamId);
@@ -680,6 +851,10 @@ export async function repairTeamBillingDesiredState(database) {
                 continue;
             const desired = await desiredForTeam(transaction, subscription.teamId);
             if (desired) {
+                // A scheduled change waits for its phase boundary; repair must not
+                // rewrite or recreate the acknowledged schedule.
+                if (desired.status === "scheduled")
+                    continue;
                 if (desired.targetProductKey === subscription.productKey && Number(desired.targetQuantity) === Number(subscription.quantity)
                     && (!desired.targetPriceId || desired.targetPriceId === subscription.providerPriceId)
                     && (!desired.endTrial || subscription.state !== "trialing")) {
@@ -687,9 +862,11 @@ export async function repairTeamBillingDesiredState(database) {
                     if (isCountedProduct(product)) {
                         const billableQuantity = await targetQuantity(database, transaction, subscription.teamId, product);
                         if (billableQuantity !== Number(subscription.quantity)) {
+                            const ownedScheduleId = ownedScheduleFor(subscription);
                             const replacement = await stageDesired(transaction, database, {
                                 teamId: subscription.teamId, kind: "seat-convergence", operationId: null,
                                 targetProductKey: subscription.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+                                ...(ownedScheduleId ? { timing: "period-end", providerScheduleId: ownedScheduleId } : {}),
                             });
                             await enqueueIntent(database, transaction, replacement);
                             queued += 1;
@@ -712,9 +889,11 @@ export async function repairTeamBillingDesiredState(database) {
             const billableQuantity = await targetQuantity(database, transaction, subscription.teamId, product);
             if (billableQuantity === Number(subscription.quantity))
                 continue;
+            const ownedScheduleId = ownedScheduleFor(subscription);
             const staged = await stageDesired(transaction, database, {
                 teamId: subscription.teamId, kind: "seat-convergence", operationId: null,
                 targetProductKey: subscription.productKey, targetQuantity: billableQuantity, effectiveAt: nowSeconds(database),
+                ...(ownedScheduleId ? { timing: "period-end", providerScheduleId: ownedScheduleId } : {}),
             });
             await enqueueIntent(database, transaction, staged);
             queued += 1;
@@ -767,12 +946,16 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     const binding = modeBinding(database, database.teamBillingDefinition.catalogue[input.targetProductKey]);
     const targetPriceId = input.targetPriceId ?? (input.kind === "seat-convergence" && binding.prices
         ? (await currentSubscription(transaction, input.teamId)).providerPriceId : null);
-    input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0, preserveTrial: input.preserveTrial === true || input.preserveTrial === 1 ? 1 : 0 };
+    input = { ...input, targetPriceId, resetBillingCycle: input.resetBillingCycle ?? 0, endTrial: input.endTrial === true || input.endTrial === 1 ? 1 : 0, preserveTrial: input.preserveTrial === true || input.preserveTrial === 1 ? 1 : 0,
+        timing: input.timing === "period-end" ? "period-end" : null, providerScheduleId: typeof input.providerScheduleId === "string" ? input.providerScheduleId : null,
+        releaseSchedule: input.releaseSchedule === true || input.releaseSchedule === 1 ? 1 : 0 };
     const existing = await desiredForTeam(transaction, input.teamId);
     const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey
         && (existing.preserveTrial ?? 0) === input.preserveTrial && (existing.endTrial ?? 0) === input.endTrial && (existing.targetPriceId ?? null) === input.targetPriceId
         && (Number(existing.targetQuantity) === input.targetQuantity || ((existing.resetBillingCycle === 1 || existing.endTrial === 1 || existing.preserveTrial === 1) && existing.providerAttemptedAt))
-        && Number(existing.resume ?? 0) === Number(input.resume ?? 0);
+        && Number(existing.resume ?? 0) === Number(input.resume ?? 0)
+        && (existing.timing ?? null) === input.timing && (existing.providerScheduleId ?? null) === input.providerScheduleId
+        && Number(existing.releaseSchedule ?? 0) === input.releaseSchedule;
     if (unchanged) {
         const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string"
             && input.operationId !== existing.operationId;
@@ -786,11 +969,11 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
     const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
     const now = nowIso(database);
     if (existing) {
-        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [endTrial] = ?, [preserveTrial] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAttemptedAt] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now, now, input.teamId);
+        await transaction.prepare(transaction.dialect.sql("UPDATE [sporades_team_billing_desired_state] SET [intentId] = ?, [kind] = ?, [operationId] = ?, [targetProductKey] = ?, [targetPriceId] = ?, [targetQuantity] = ?, [effectiveAt] = ?, [resetBillingCycle] = ?, [endTrial] = ?, [preserveTrial] = ?, [idempotencyKey] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAttemptedAt] = NULL, [providerAcknowledgedAt] = NULL, [activeJobGenerationId] = NULL, [resume] = ?, [timing] = ?, [providerScheduleId] = ?, [releaseSchedule] = ?, [createdAt] = ?, [updatedAt] = ? WHERE [teamId] = ?")).run(intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, input.timing, input.providerScheduleId, input.releaseSchedule, now, now, input.teamId);
     }
     else {
-        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [resetBillingCycle], [endTrial], [preserveTrial], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [createdAt], [updatedAt]) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, now, now);
+        await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_desired_state] ([teamId], [intentId], [kind], [operationId], [targetProductKey], [targetPriceId], [targetQuantity], [effectiveAt], [resetBillingCycle], [endTrial], [preserveTrial], [idempotencyKey], [status], [safeFailureCode], [providerAcknowledgedAt], [activeJobGenerationId], [resume], [timing], [providerScheduleId], [releaseSchedule], [createdAt], [updatedAt]) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, NULL, NULL, ?, ?, ?, ?, ?, ?)")).run(input.teamId, intentId, input.kind, input.operationId, input.targetProductKey, input.targetPriceId, input.targetQuantity, input.effectiveAt, input.resetBillingCycle, input.endTrial, input.preserveTrial, idempotencyKey, input.resume ?? 0, input.timing, input.providerScheduleId, input.releaseSchedule, now, now);
     }
     await ensureLane(transaction, input.teamId, database);
     return { ...input, intentId, idempotencyKey, status: "queued", enqueue: true };
@@ -811,10 +994,6 @@ async function enqueueIntent(database, transaction, desired, availableAt) {
     await callback(transaction, { intentId: desired.intentId, generationId }, `team-billing-management:${desired.intentId}:${generationId}`, availableAt);
     return generationId;
 }
-async function admitPlanTransition(database, transaction, auth, teamId, productKey, interval) {
-    if (!await tryAdmitPlanTransition(database, transaction, auth, teamId, productKey, interval))
-        throw denied();
-}
 async function tryAdmitPlanTransition(database, transaction, auth, teamId, productKey, interval) {
     if (!auth?.userId || auth.isAuthenticated !== true || auth.isGuest === true)
         return false;
@@ -832,7 +1011,11 @@ async function tryAdmitPlanTransition(database, transaction, auth, teamId, produ
         operation: "plan-transition", teamId, teamRole: "admin", productKey, ...(interval ? { interval } : {}),
         ...(source ? { fromProductKey: source.productKey, ...(source.interval ? { fromInterval: source.interval } : {}) } : {}),
     }));
-    return decision?.allow === true;
+    if (!decision || typeof decision !== "object" || Array.isArray(decision)
+        || Object.keys(decision).some((key) => !["allow", "timing"].includes(key)) || decision.allow !== true
+        || (decision.timing !== undefined && !["now", "period-end"].includes(decision.timing)))
+        return null;
+    return decision;
 }
 async function actorForOperation(transaction, operationId) {
     if (typeof operationId !== "string")
@@ -848,8 +1031,13 @@ async function currentSubscription(transaction, teamId) {
         throw attentionRequired();
     return rows[0];
 }
-function transitionRefusal(subscription, resume) {
-    return teamBillingTransitionRefusal(subscription.state, !resume && subscription.cancelAtPeriodEnd === 1, subscription.hasSchedule === 1);
+function transitionRefusal(subscription, resume, ownedScheduleId = null, recovering = false) {
+    // `recovering` covers a period-end intent whose own create succeeded but whose
+    // acknowledgement was lost: the provider verifies the attached schedule against
+    // that intent's stable create key before writing to it.
+    const foreignSchedule = subscription.hasSchedule === 1 && !recovering
+        && (ownedScheduleId === null || (subscription.providerScheduleId ?? null) !== ownedScheduleId);
+    return teamBillingTransitionRefusal(subscription.state, !resume && subscription.cancelAtPeriodEnd === 1, foreignSchedule);
 }
 async function optionalCurrentSubscription(transaction, teamId) {
     try {
@@ -858,6 +1046,12 @@ async function optionalCurrentSubscription(transaction, teamId) {
     catch {
         return null;
     }
+}
+/** The attached Schedule id the runtime itself created and can still write to. */
+function ownedScheduleFor(subscription) {
+    return subscription?.hasSchedule === 1 && typeof subscription.ownedScheduleId === "string"
+        && subscription.ownedScheduleId.length > 0 && subscription.providerScheduleId === subscription.ownedScheduleId
+        ? subscription.ownedScheduleId : null;
 }
 async function desiredForTeam(transaction, teamId) {
     return transaction.prepare(transaction.dialect.sql("SELECT * FROM [sporades_team_billing_desired_state] WHERE [teamId] = ?")).get(teamId);
@@ -952,9 +1146,11 @@ function safeCode(value) {
 }
 function validProviderAcknowledgement(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || !Object.keys(value).every((key) => ["ok", "outcome", "paymentAction"].includes(key)))
+        || !Object.keys(value).every((key) => ["ok", "outcome", "paymentAction", "scheduleId"].includes(key)))
         return false;
     if (value.ok !== true || !["acknowledged", "payment-action-required"].includes(value.outcome))
+        return false;
+    if (value.scheduleId !== undefined && (typeof value.scheduleId !== "string" || !/^sub_sched_[A-Za-z0-9_]{1,240}$/.test(value.scheduleId)))
         return false;
     return value.paymentAction === undefined
         ? true : value.outcome === "payment-action-required" && validPaymentAction(value.paymentAction);

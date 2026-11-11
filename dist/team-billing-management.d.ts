@@ -16,6 +16,8 @@ export declare function performTeamBillingPlanPreview(database: LooseRecord, con
     superseded?: undefined;
 }>;
 export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any, resume?: any, currency?: any, quoteId?: any): Promise<any>;
+/** Releases the runtime-owned schedule of a scheduled period-end plan change. */
+export declare function cancelScheduledTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any): Promise<any>;
 /** Called after a membership transaction commits. It performs no provider I/O. */
 export declare function stageTeamBillingMembershipChange(database: LooseRecord, teamId: any, effectiveAt?: number): Promise<any>;
 /** Repair only an already-associated usage Subscription; quarantined evidence grants no entitlement. */

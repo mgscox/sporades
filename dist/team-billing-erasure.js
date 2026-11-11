@@ -131,7 +131,8 @@ export async function performTeamBillingErasure(database, context, payload) {
             const digest = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
             await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_erasure_tombstones] ([erasureKey], [evidenceDigest], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?)")).run(current.erasureKey, digest, canonical.providerObservedAt, now(database));
             for (const entry of [...canonical.checkouts.map((item) => ({ ...item, kind: "checkout" })),
-                ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" }))]) {
+                ...canonical.subscriptions.map((item) => ({ ...item, kind: "subscription" })),
+                ...canonical.schedules.map((item) => ({ ...item, kind: "schedule" }))]) {
                 await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
             }
             for (const table of [
@@ -268,9 +269,9 @@ async function inTransaction(database, callback) {
 }
 function validateEvidence(value, expected) {
     if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0subscriptions"
+        || Object.keys(value).sort().join("\0") !== "checkouts\0ok\0outcome\0providerObservedAt\0schedules\0subscriptions"
         || value.ok !== true || value.outcome !== "quiesced" || !canonicalTimestamp(value.providerObservedAt)
-        || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions))
+        || !Array.isArray(value.checkouts) || !Array.isArray(value.subscriptions) || !Array.isArray(value.schedules))
         throw unavailable();
     const checkouts = value.checkouts.map((entry) => {
         if (!entry || typeof entry !== "object" || Array.isArray(entry)
@@ -286,13 +287,22 @@ function validateEvidence(value, expected) {
             throw unavailable();
         return { id: entry.id, state: entry.state };
     }).sort(byId);
+    const SCHEDULE_ID = /^sub_sched_[A-Za-z0-9_]{1,240}$/;
+    const schedules = value.schedules.map((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)
+            || Object.keys(entry).sort().join("\0") !== "id\0state" || !SCHEDULE_ID.test(entry.id)
+            || !["released", "canceled", "safely-closed"].includes(entry.state))
+            throw unavailable();
+        return { id: entry.id, state: entry.state };
+    }).sort(byId);
     if (new Set(checkouts.map((entry) => entry.id)).size !== checkouts.length
         || new Set(subscriptions.map((entry) => entry.id)).size !== subscriptions.length
+        || new Set(schedules.map((entry) => entry.id)).size !== schedules.length
         || checkouts.length < expected.checkoutSessionIds.length + (expected.checkoutRecoveries?.length ?? 0)
         || expected.checkoutSessionIds.some((id) => !checkouts.some((entry) => entry.id === id))
         || expected.subscriptionIds.some((id) => !subscriptions.some((entry) => entry.id === id)))
         throw unavailable();
-    return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions };
+    return { providerObservedAt: value.providerObservedAt, checkouts, subscriptions, schedules };
 }
 function providerIdempotency(database, key) {
     return `sporades-team-billing-erasure-${createHash("sha256").update(`${database.capsuleIdentity ?? "capsule"}\0${key}`).digest("hex")}`;

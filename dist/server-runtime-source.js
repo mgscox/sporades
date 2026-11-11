@@ -46,7 +46,7 @@ import { readCurrentUserPreferences, updateCurrentUserPreferences, } from "./use
 import { countAcceptedTeamMembers, countTeamAdmins, countTeamMembers, createAdditionalTeam, createCurrentUserTeamsApi, createPrivilegedTeamsApi, createTeamJoinLink, deleteCurrentUserTeam, demoteTeamMember, flushTeamSecurityEvents, inspectTeamJoinLink, joinCurrentUserTeam, leaveCurrentUserTeam, listCurrentUserTeams, listTeamJoinLinks, listTeamMembers, normalizeTeamApplicationRoles, promoteTeamMember, removeTeamMember, renameCurrentUserTeam, resolveTeamJoinLinkConfig, revokeTeamJoinLink, updateTeamMemberApplicationRoles, validateTeamJoinLink } from "./teams-runtime.js";
 import { TEAM_BILLING_CHECKOUT_JOB, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, TEAM_BILLING_PORTAL_EXPIRY_JOB, TEAM_BILLING_PORTAL_JOB, TEAM_BILLING_PORTAL_MAX_ATTEMPTS, createPrivilegedTeamBillingApi, expireTeamBillingCheckout, expireTeamBillingPortal, normalizeTeamBillingDefinition, performTeamBillingCheckout, performTeamBillingPortal, readCurrentUserTeamBilling, safeTeamBillingProjection, settleExhaustedTeamBillingCheckoutJob, startTeamBillingCheckout, startTeamBillingPortal, teamBillingErasureObjectKey, } from "./team-billing-runtime.js";
 import { applyVerifiedTeamBillingObservation } from "./team-billing-convergence.js";
-import { TEAM_BILLING_PLAN_PREVIEW_JOB, TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB, previewTeamBillingPlanTransition, performTeamBillingPlanPreview, expireTeamBillingPlanPreview, TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, repairTeamBillingPlanPreviewExpiries, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, prepareTeamBillingUsageChange, } from "./team-billing-management.js";
+import { TEAM_BILLING_PLAN_PREVIEW_JOB, TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB, previewTeamBillingPlanTransition, performTeamBillingPlanPreview, expireTeamBillingPlanPreview, TEAM_BILLING_PLAN_TRANSITION_JOB, TEAM_BILLING_SEAT_CONVERGENCE_JOB, cancelScheduledTeamBillingPlanTransition, performTeamBillingPlanTransition, performTeamBillingSeatConvergence, repairTeamBillingDesiredStateAtStartup, repairTeamBillingPlanPreviewExpiries, requestTeamBillingPlanTransition, settleExhaustedTeamBillingManagementJob, stageTeamBillingMembershipChange, prepareTeamBillingUsageChange, } from "./team-billing-management.js";
 import { TEAM_BILLING_ERASURE_JOB, createCurrentUserTeamBillingErasureApi, performTeamBillingErasure, prepareTeamBillingErasure, repairTeamBillingErasureStateAtStartup, settleExhaustedTeamBillingErasureJob, } from "./team-billing-erasure.js";
 // Batch 8. Nine names, which is what the one function of that domain still in this file
 // (`routeEndpoint`), plus `readEndpointBody`, `openDevDatabase` and `createWebSocketHub`, resolve.
@@ -870,6 +870,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 ...(input.resume === true ? { resume: true } : {}),
                 ...(input.endTrial === true ? { endTrial: true } : {}),
                 ...(input.preserveTrial === true ? { preserveTrial: true } : {}),
+                ...(input.timing ? { timing: input.timing } : {}),
+                ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}),
+                ...(input.releaseScheduleId ? { releaseScheduleId: input.releaseScheduleId } : {}),
+                ...(input.sourceQuantity !== undefined ? { sourceQuantity: input.sourceQuantity } : {}),
             }));
         },
         quiesceTeamBillingProvider: async (context, input) => {
@@ -6114,6 +6118,29 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null, options =
                         hint: code === "TEAM_BILLING_CURRENCY_MISMATCH" ? "Choose a Price supporting the existing subscription currency."
                             : code === "TEAM_BILLING_MANAGED_TRANSITION_NOT_REQUIRED" ? "Open the configured Customer Portal for a compatible quantity-policy switch."
                                 : "Sign in as the current policy-approved billing administrator and retry with a new request identifier.",
+                    },
+                });
+            }
+            return;
+        }
+        if (message.type === "teamBilling.cancelScheduledPlanTransition") {
+            try {
+                const input = message.input;
+                const data = await cancelScheduledTeamBillingPlanTransition(database, client.session.auth, input?.teamId, input?.requestId);
+                sendJson(client, { id: message.id ?? null, type: "teamBilling.cancelScheduledPlanTransition.result", data, error: null });
+            }
+            catch (error) {
+                const code = ["TEAM_BILLING_REQUEST_CONFLICT", "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS", "TEAM_BILLING_UNKNOWN_SCHEDULE"].includes(error?.code)
+                    ? error.code : "TEAM_BILLING_DENIED";
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        code,
+                        message: "Team Billing scheduled plan change is unavailable.",
+                        hint: code === "TEAM_BILLING_REQUEST_CONFLICT" ? "A plan change is not currently scheduled for this Team."
+                            : "Sign in as the current policy-approved Team billing administrator and retry with a new request identifier.",
                     },
                 });
             }

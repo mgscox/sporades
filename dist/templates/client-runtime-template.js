@@ -212,6 +212,9 @@ export const teamBilling = {
   requestPlanTransition(input) {
     return connect().teamBillingRequestPlanTransition(input);
   },
+  cancelScheduledPlanTransition(input) {
+    return connect().teamBillingCancelScheduledPlanTransition(input);
+  },
   prepareErasure(input) {
     return connect().teamBillingPrepareErasure(input);
   },
@@ -1654,6 +1657,7 @@ function createConnection() {
     teamBillingStartCurrencyHandover(input) { return request("teamBilling.startCurrencyHandover", { input }); },
     teamBillingPreviewPlanTransition(input) { return request("teamBilling.previewPlanTransition", { input }); },
     teamBillingRequestPlanTransition(input) { return request("teamBilling.requestPlanTransition", { input }); },
+    teamBillingCancelScheduledPlanTransition(input) { return request("teamBilling.cancelScheduledPlanTransition", { input }); },
     teamBillingPrepareErasure(input) { return request("teamBilling.prepareErasure", { input }); },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
