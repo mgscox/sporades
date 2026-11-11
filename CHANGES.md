@@ -86,8 +86,11 @@ Changes since v0.9.47.
   work with `TEAM_BILLING_UNKNOWN_SCHEDULE`; erasure releases every attached
   schedule before cancelling its Subscription. A trialling Subscription never
   rides a schedule: `timing: "period-end"` falls back to an immediate switch
-  that keeps the trial, as documented. The Stripe fake models the
-  schedule subset with phase transition on `clock.advance`.
+  that keeps the trial, as documented. Schedule phases pin the Subscription's
+  attested period dates; entering the final phase is not release, and
+  cancelling after the boundary applied the target fails safely. The Stripe
+  fake models the schedule subset with attested phase dates, phase transition
+  on `clock.advance`, and release correlation.
 
 - Team Billing plan switches during trials preserve the trial by default. Server-only
   `transitions.endTrial` can end it immediately; Portal configuration attestation

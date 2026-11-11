@@ -863,10 +863,14 @@ transition instead of the default `"now"`. The server owns the decision; the
 browser never sends a timing. A period-end transition does not touch the
 Subscription's items directly: Sporades creates a Subscription Schedule
 (`from_subscription`), updates it with the current phase (the exact current
-Price and quantity) plus one future phase (the target Price and quantity,
-`proration_behavior: "none"`) and `end_behavior: "release"`. Stripe applies the
+Price and quantity, plus the Subscription's attested `start_date` and
+`end_date`) and one future phase (the target Price and quantity,
+`proration_behavior: "none"`) that begins exactly at that period end, with
+`end_behavior: "release"`. Stripe applies the
 future phase at the period boundary even while the Capsule is down, which is
-why Schedules are used instead of a runtime timer. The durable desired state
+why Schedules are used instead of a runtime timer. Entering the final phase is
+not the same as completing the schedule: the Subscription stays on the schedule
+for that phase and is released when it ends. The durable desired state
 gains a `scheduled` status: provider acknowledgement grants no entitlement,
 and settlement waits for verified Subscription evidence showing the target
 after the boundary. A later period-end request rewrites the pending phase of
@@ -904,9 +908,14 @@ The current plan keeps running to its period end and the target never
 applies. Release happens through `subscriptionSchedules.release` in the same
 serialized provider lane as every other Team Billing write, is idempotent by
 Team, and settles only after verified Subscription evidence shows the schedule
-detached and the current tuple unchanged. Cancelling with nothing scheduled is
-a safe `TEAM_BILLING_REQUEST_CONFLICT`; a foreign schedule refuses the same
-way as other managed work.
+detached and the current tuple unchanged. The runtime correlates Stripe's
+`released_subscription` with the Subscription it guards, and compares the
+detached Subscription with the cancellation operation's saved original Price,
+quantity, and Subscription identity. If the boundary applied the target first
+(including an interval-only change), the cancellation fails safely instead of
+reporting that the original plan kept running. Cancelling with nothing
+scheduled is a safe `TEAM_BILLING_REQUEST_CONFLICT`; a foreign schedule
+refuses the same way as other managed work.
 
 A switch during `trialing` preserves the existing `trial_end` by default,
 including interval changes; the target product's `trialDays` does not start a

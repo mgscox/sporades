@@ -58,6 +58,7 @@ function updateInput(subscription, item, overrides = {}) {
     sourcePriceId: item.price.id, targetPriceId: "price_studio", targetProductId: "prod_studio", targetQuantity: 5,
     prorationDate: Math.floor(Date.now() / 1000), idempotencyKey: "fake-plan-transition-key", operationKind: "plan-transition", ...overrides };
 }
+const periodEndInput = (subscription, item, overrides = {}) => ({ ...updateInput(subscription, item), timing: "period-end", ...overrides });
 const erasure = (overrides = {}) => ({ mode: "sandbox", checkoutSessionIds: [], subscriptionIds: [], idempotencyKey: "fake-quiescence-key", ...overrides });
 const unavailable = (error) => error.code === "TEAM_BILLING_PROVIDER_UNAVAILABLE" && error.retryable;
 
@@ -342,20 +343,35 @@ test("an attached schedule is released at its boundary, owned by the fake and ca
     const updated = await stripe.subscriptionSchedules.update(created.id, {
       end_behavior: "release",
       phases: [
-        { items: [{ price: "price_team", quantity: item.quantity }] },
-        { items: [{ price: "price_studio", quantity: 5 }], proration_behavior: "none" },
+        { items: [{ price: "price_team", quantity: item.quantity }], start_date: item.current_period_start, end_date: periodEnd },
+        { items: [{ price: "price_studio", quantity: 5 }], start_date: periodEnd, proration_behavior: "none" },
       ],
     });
     assert.equal(updated.phases.length, 2);
     assert.equal(updated.phases[0].items[0].price.id, "price_team");
+    assert.equal(updated.phases[0].start_date, item.current_period_start);
+    assert.equal(updated.phases[0].end_date, periodEnd);
+    assert.equal(updated.phases[1].start_date, periodEnd);
     assert.equal(updated.phases[1].items[0].price.id, "price_studio");
     if (resolution === "boundary") {
       await fake.clock.advance(periodEnd - fake.state().now);
+      // Crossing the boundary enters the final phase; that is not a completed schedule.
       const switched = await stripe.subscriptions.retrieve(subscription.id);
-      assert.equal(switched.schedule, null);
+      assert.equal(switched.schedule, created.id);
       assert.equal(switched.items.data[0].price.id, "price_studio");
       assert.equal(switched.items.data[0].quantity, 5);
-      assert.equal(fake.state().schedules.find((entry) => entry.id === created.id).status, "released");
+      const entered = fake.state().schedules.find((entry) => entry.id === created.id);
+      assert.equal(entered.status, "active");
+      assert.equal(entered.phases.length, 1);
+      // Completing the final phase releases it and records the detached Subscription.
+      await fake.clock.advance(entered.phases[0].end_date - fake.state().now);
+      const released = await stripe.subscriptions.retrieve(subscription.id);
+      assert.equal(released.schedule, null);
+      assert.equal(released.items.data[0].price.id, "price_studio");
+      const schedule = fake.state().schedules.find((entry) => entry.id === created.id);
+      assert.equal(schedule.status, "released");
+      assert.equal(schedule.released_subscription, subscription.id);
+      assert.equal(schedule.subscription, null);
     } else {
       // Settles the research open question: cancelling the Subscription while a
       // schedule is attached succeeds and cancels the schedule.
@@ -368,6 +384,60 @@ test("an attached schedule is released at its boundary, owned by the fake and ca
     }
     await fake.events.deliver();
   });
+});
+
+test("a managed period-end schedule pins its phases to the attested subscription period", async (t) => {
+  const f = await fixture(t); const { fake, provider } = f;
+  const { subscription, item } = await paid(f);
+  const result = await provider.updateManagedSubscription(periodEndInput(subscription, item));
+  assert.equal(result.outcome, "acknowledged");
+  assert.match(result.scheduleId, /^sub_sched_/);
+  const request = fake.requests().find((entry) => entry.operation === "subscriptionSchedules.update");
+  assert.equal(request.parameters.phases["0"].start_date, String(item.current_period_start));
+  assert.equal(request.parameters.phases["0"].end_date, String(item.current_period_end));
+  assert.equal(request.parameters.phases["1"].items["0"].price, "price_studio");
+  assert.equal(request.parameters.phases["1"].start_date, String(item.current_period_end));
+  assert.equal(request.parameters.phases["1"].proration_behavior, "none");
+  assert.equal(request.parameters.end_behavior, "release");
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.phases[0].start_date, item.current_period_start);
+  assert.equal(schedule.phases[0].end_date, item.current_period_end);
+  assert.equal(schedule.phases[1].start_date, item.current_period_end);
+});
+
+test("a schedule created before dispatch attests the provider tuple and applies fresh counts", async (t) => {
+  const f = await fixture(t); const { fake, provider } = f;
+  const { subscription, item } = await paid(f);
+  // The source count grew after admission; Stripe's copied phase still has the
+  // provider's quantity, so creation attests that tuple and the phase update
+  // carries the fresh count.
+  assert.equal(item.quantity, 2);
+  await provider.updateManagedSubscription(periodEndInput(subscription, item, { sourceQuantity: 4 }));
+  const request = fake.requests().find((entry) => entry.operation === "subscriptionSchedules.update");
+  assert.equal(request.parameters.phases["0"].items["0"].quantity, "4");
+  assert.equal(fake.subscriptions.get(subscription.id).items.data[0].quantity, 4);
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.phases[0].items[0].quantity, 4);
+  assert.equal(schedule.phases[1].items[0].quantity, 5);
+});
+
+test("a lost phase-update response recovers the schedule its stable create key already made", async (t) => {
+  const f = await fixture(t); const { fake, provider } = f;
+  const { subscription, item } = await paid(f);
+  const managed = periodEndInput(subscription, item, { idempotencyKey: "fake-schedule-recovery-key" });
+  fake.faults.inject({ operation: "subscriptionSchedules.update", status: 503, when: "after" });
+  await assert.rejects(provider.updateManagedSubscription(managed), unavailable);
+  assert.equal(fake.state().schedules.length, 1);
+  const scheduleId = fake.state().schedules[0].id;
+  assert.equal(fake.subscriptions.get(subscription.id).schedule, scheduleId);
+  // Replaying the same intent never rejects its own attached one-phase schedule.
+  const recovered = await provider.updateManagedSubscription(managed);
+  assert.deepEqual(recovered, { ok: true, outcome: "acknowledged", scheduleId });
+  assert.equal(fake.state().schedules.length, 1);
+  // Once acknowledged, the same intent through the owned id stays idempotent.
+  assert.deepEqual(await provider.updateManagedSubscription({ ...managed, scheduleId }),
+    { ok: true, outcome: "acknowledged", scheduleId });
+  assert.equal(fake.state().schedules.length, 1);
 });
 
 test("literal loopback, sandbox-only authentication, exact API version and unsupported calls fail closed", async (t) => {

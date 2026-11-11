@@ -51,26 +51,15 @@ export async function requestTeamBillingPlanTransition(
       return planOperationResult(database, teamId, requestId, productKey, repeated);
     }
     const subscription = await currentSubscription(transaction, teamId);
-    const refusal = transitionRefusal(subscription, resume === true);
-    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
+    // Resolve the runtime's own attached schedule before refusing a foreign
+    // one: after verified attachment the subscription carries `hasSchedule`.
     const currentProduct = definition.catalogue[subscription.productKey];
     const targetProduct = definition.catalogue[productKey];
-    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
-    if ((currency !== undefined && currency !== subscription.currency)
-      || ((price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency)
-        && billingCurrencyAmount(price, subscription.currency) === undefined)) throw billingCurrencyMismatch();
-    if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
-    const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
-    assertUsageMaximum(targetProduct, quantity);
     // A period-end change rides a Subscription Schedule, but a trial never
     // does: it falls back to the immediate path, which preserves or ends the
     // trial according to the declared policy.
     const timing = admission.timing === "period-end" && subscription.state !== "trialing"
       ? "period-end" as const : "now" as const;
-    const operationId = randomUUID();
-    const now = nowIso(database);
-    const effectiveAt = nowSeconds(database);
-    const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
     // Latest-wins: a new period-end request rewrites the already-attached
     // runtime-owned schedule instead of refusing it as foreign.
     const previous = await desiredForTeam(transaction, teamId);
@@ -78,6 +67,19 @@ export async function requestTeamBillingPlanTransition(
       && previous.timing === "period-end" && previous.releaseSchedule !== 1
       && (subscription.hasSchedule !== 1 || subscription.providerScheduleId === previous.providerScheduleId)
       ? previous.providerScheduleId : null;
+    const refusal = transitionRefusal(subscription, resume === true, ownedScheduleId);
+    if (refusal) throw coded("Team Billing plan transition is unavailable in the current subscription state.", refusal);
+    assertCurrentModeAndCatalogue(database, subscription, currentProduct);
+    if ((currency !== undefined && currency !== subscription.currency)
+      || ((price.currency || teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.currency)
+        && billingCurrencyAmount(price, subscription.currency) === undefined)) throw billingCurrencyMismatch();
+    if (!managedTransitionAllowed(database, subscription, targetProduct, price)) throw transitionNotRequired();
+    const quantity = await targetQuantity(database, transaction, teamId, targetProduct);
+    assertUsageMaximum(targetProduct, quantity);
+    const operationId = randomUUID();
+    const now = nowIso(database);
+    const effectiveAt = nowSeconds(database);
+    const currentInterval = teamBillingPriceById(modeBinding(database, currentProduct), subscription.providerPriceId)?.interval;
     const staged = await stageDesired(transaction, database, {
       teamId, kind: "plan-transition", operationId, endTrial: timing === "now" && subscription.state === "trialing" && definition.transitions?.endTrial === true, targetProductKey: productKey, targetPriceId: price.interval ? price.priceId : null, targetQuantity: quantity, effectiveAt, resume: resume === true ? 1 : 0,
       preserveTrial: timing === "now" && subscription.state === "trialing" && definition.transitions?.endTrial !== true,
@@ -118,7 +120,7 @@ export async function cancelScheduledTeamBillingPlanTransition(
     const sql = transaction.dialect.sql;
     const subscription = await currentSubscription(transaction, teamId);
     const repeated = await transaction.prepare(sql(
-      "SELECT [id], [kind], [productKey], [status], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
+      "SELECT [id], [kind], [productKey], [status], [safeFailureCode], [createdAt] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?",
     )).get(teamId, requestId);
     if (repeated) {
       if (repeated.kind !== "plan-transition") throw conflict();
@@ -137,10 +139,10 @@ export async function cancelScheduledTeamBillingPlanTransition(
     const operationId = randomUUID();
     await transaction.prepare(sql(
       "INSERT INTO [sporades_team_billing_operations] " +
-      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [currency]) " +
-      "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?)",
+      "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerSubscriptionId], [currency]) " +
+      "VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
     )).run(operationId, requestId, teamId, auth.userId, subscription.productKey, operationIdempotency(database, operationId), now, now,
-      subscription.mode, subscription.quantity, subscription.providerPriceId, subscription.currency ?? null);
+      subscription.mode, subscription.quantity, subscription.providerPriceId, subscription.providerSubscriptionId, subscription.currency ?? null);
     const staged = await stageDesired(transaction, database, {
       teamId, kind: desired.kind, operationId, targetProductKey: desired.targetProductKey,
       endTrial: desired.endTrial, preserveTrial: desired.preserveTrial, targetPriceId: desired.targetPriceId,
@@ -184,6 +186,9 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
     if (!force && !existing && subscription.quantity === quantity) return Object.freeze({ staged: false as const });
     const targetProduct = existing?.kind === "plan-transition"
       ? database.teamBillingDefinition?.catalogue?.[existing.targetProductKey] : product;
+    // A fixed future quantity deduplicates the target tuple while the accepted
+    // count still changes; the current schedule phase must be restaged too.
+    const restagesCurrentPhase = reschedulesScheduled && Number(subscription.quantity) !== quantity;
     const staged = await stageDesired(transaction, database, existing?.kind === "plan-transition" ? {
       teamId, kind: existing.kind, operationId: existing.operationId, targetProductKey: existing.targetProductKey,
       endTrial: existing.endTrial, preserveTrial: existing.preserveTrial, targetPriceId: existing.targetPriceId,
@@ -194,7 +199,7 @@ async function stageTeamBillingCountChange(database: LooseRecord, teamId: any, e
     } : {
       teamId, kind: "seat-convergence", operationId: null, targetProductKey: subscription.productKey,
       targetQuantity: quantity, effectiveAt,
-    }, force);
+    }, force || restagesCurrentPhase);
     let generationId = staged.activeJobGenerationId ?? null;
     if (staged.enqueue) {
       generationId = await enqueueIntent(database, transaction, staged);
@@ -286,7 +291,12 @@ async function performDesired(database: LooseRecord, _context: LooseRecord, payl
     if ((price.currency || teamBillingPriceById(modeBinding(database, database.teamBillingDefinition.catalogue[subscription.productKey]), subscription.providerPriceId)?.currency)
       && billingCurrencyAmount(price, subscription.currency) === undefined) return attention(transaction, database, desired, "CURRENCY_MISMATCH");
     if (kind === "plan-transition") {
-      const refusal = transitionRefusal(subscription, desired.resume === 1, desired.providerScheduleId ?? null);
+      // A failed create-or-update attempt may have attached the runtime's own
+      // schedule without persisting its id; the provider proves ownership by
+      // replaying the intent's stable create key.
+      const recoveringSchedule = desired.timing === "period-end" && desired.releaseSchedule !== 1
+        && desired.providerScheduleId == null && desired.providerAttemptedAt != null;
+      const refusal = transitionRefusal(subscription, desired.resume === 1, desired.providerScheduleId ?? null, recoveringSchedule);
       if (refusal) {
         return attention(transaction, database, desired, refusal);
       }
@@ -449,9 +459,39 @@ export async function settleVerifiedTeamBillingTarget(database: LooseRecord, acc
     const desired = await desiredForTeam(transaction, accepted.teamId);
     if (desired?.releaseSchedule === 1) {
       // A released schedule leaves the current plan untouched; only the
-      // detached schedule plus an unchanged current tuple settles the cancel.
-      if (subscription.productKey !== accepted.productKey || Number(subscription.quantity) !== accepted.quantity
-        || subscription.hasSchedule === 1) return { settled: false };
+      // detached schedule plus the cancellation's saved original tuple settles
+      // the cancel. The boundary may have applied the target before the release
+      // Job ran, so compare the detached Subscription with what the cancel
+      // promised to preserve, including interval-only changes.
+      const operation = desired.operationId ? await transaction.prepare(sql(
+        "SELECT [productKey], [quantity], [providerPriceId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+      )).get(desired.operationId) : null;
+      const original = operation?.providerPriceId
+        ? { productKey: operation.productKey, quantity: Number(operation.quantity),
+          priceId: operation.providerPriceId, subscriptionId: operation.providerSubscriptionId ?? null }
+        : null;
+      const preserved = original !== null
+        && subscription.productKey === original.productKey
+        && Number(subscription.quantity) === original.quantity
+        && subscription.providerPriceId === original.priceId
+        && (original.subscriptionId === null || original.subscriptionId === subscription.providerSubscriptionId)
+        && subscription.hasSchedule !== 1;
+      if (!preserved) {
+        // The boundary won or the plan drifted: never report a cancellation that
+        // no longer describes the Subscription's current tuple.
+        if (["queued", "running", "awaiting-observation"].includes(desired.status)) {
+          await transaction.prepare(sql(
+            "UPDATE [sporades_team_billing_desired_state] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_DRIFT', [updatedAt] = ? WHERE [intentId] = ?",
+          )).run(accepted.occurredAt ?? nowIso(database), desired.intentId);
+          if (desired.operationId) await transaction.prepare(sql(
+            "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'PROVIDER_DRIFT', [updatedAt] = ? WHERE [id] = ?",
+          )).run(accepted.occurredAt ?? nowIso(database), desired.operationId);
+          await transaction.prepare(sql(
+            "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?",
+          )).run(accepted.occurredAt ?? nowIso(database), accepted.teamId);
+        }
+        return { settled: false, drift: true };
+      }
       await transaction.prepare(sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [intentId] = ?")).run(desired.intentId);
       await transaction.prepare(sql(
         "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ?",
@@ -739,8 +779,11 @@ async function currentSubscription(transaction: LooseRecord, teamId: string) {
   return rows[0];
 }
 
-function transitionRefusal(subscription: LooseRecord, resume: boolean, ownedScheduleId: string | null = null) {
-  const foreignSchedule = subscription.hasSchedule === 1
+function transitionRefusal(subscription: LooseRecord, resume: boolean, ownedScheduleId: string | null = null, recovering = false) {
+  // `recovering` covers a period-end intent whose own create succeeded but whose
+  // acknowledgement was lost: the provider verifies the attached schedule against
+  // that intent's stable create key before writing to it.
+  const foreignSchedule = subscription.hasSchedule === 1 && !recovering
     && (ownedScheduleId === null || (subscription.providerScheduleId ?? null) !== ownedScheduleId);
   return teamBillingTransitionRefusal(subscription.state, !resume && subscription.cancelAtPeriodEnd === 1, foreignSchedule);
 }

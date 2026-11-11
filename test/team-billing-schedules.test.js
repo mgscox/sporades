@@ -14,6 +14,7 @@ import { startTeamBillingCheckout, readCurrentUserTeamBilling } from '../dist/te
 import { prepareTeamBillingErasure } from '../dist/team-billing-erasure.js';
 import {
   requestTeamBillingPlanTransition, cancelScheduledTeamBillingPlanTransition, stageTeamBillingMembershipChange, repairTeamBillingDesiredState,
+  performTeamBillingPlanTransition,
 } from '../dist/team-billing-management.js';
 
 const SCHEDULE_TEST = { periodEnd: true, counted: false };
@@ -38,14 +39,24 @@ test('a period-end downgrade keeps the current plan until the boundary, then swi
   assert.equal(schedule.end_behavior, 'release');
   assert.equal(subscription.schedule, schedule.id);
   assert.equal((await f.read()).state, 'pending', 'provider acknowledgement grants no entitlement');
-  await fake.clock.advance(subscription.items.data[0].current_period_end - fake.state().now);
+  const periodEnd = subscription.items.data[0].current_period_end;
+  await fake.clock.advance(periodEnd - fake.state().now);
   await f.deliver();
   const read = await f.read();
   assert.equal(read.state, 'active');
   assert.equal(read.productKey, 'offered');
   assert.equal(read.interval, 'month:1');
   assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, requestId, 'offered', 'month:1')).state, 'completed');
+  // Entering the final phase is not the same as completing the schedule: it
+  // stays attached until its final phase ends.
+  const entered = fake.state().schedules.at(-1);
+  assert.equal(entered.status, 'active');
+  assert.equal(entered.phases.length, 1);
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, schedule.id);
+  await fake.clock.advance(entered.phases[0].end_date - fake.state().now);
+  await f.deliver();
   assert.equal(fake.state().schedules.at(-1).status, 'released');
+  assert.equal(fake.state().schedules.at(-1).released_subscription, subscriptionId);
   assert.equal(fake.subscriptions.get(subscriptionId).schedule, null);
 });
 
@@ -149,6 +160,10 @@ test('a later period-end request replaces the pending phase of the same schedule
   await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
   await f.drain();
   const schedulesBefore = fake.requests().filter(r => r.operation === 'subscriptionSchedules.create').length;
+  // Verified attachment records the runtime's own schedule on the Subscription
+  // row; the next request must resolve that ownership before refusing.
+  await f.deliver();
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, fake.state().schedules.at(-1).id);
   await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'year:1');
   await f.drain();
   assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.create').length, schedulesBefore, 'no second schedule is created');
@@ -209,12 +224,105 @@ test('repair never rewrites an acknowledged schedule, and erasure leaves no live
   await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1'), { code: 'TEAM_BILLING_DENIED' });
 });
 
+test('seat growth before the first dispatch still schedules the fresh count', async t => {
+  const f = await fixture(t, { ...SCHEDULE_TEST, counted: true });
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1')).state, 'pending');
+  // A member joins before the Job runs: Stripe's copied phase still has the
+  // provider's quantity, so creation attests that tuple and the phase update
+  // applies the fresh count.
+  const now = new Date().toISOString();
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'early-seat', 'member', ?)").run(teamId, now);
+  await f.drain();
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.status, 'active');
+  assert.equal(schedule.phases.length, 2);
+  assert.equal(schedule.phases[0].items[0].quantity, 2);
+  assert.equal(schedule.phases[1].items[0].quantity, 2);
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].quantity, 2);
+});
+
+test('a count change is restaged even when the fixed future quantity is unchanged', async t => {
+  const f = await fixture(t, {
+    ...SCHEDULE_TEST,
+    quantities: { basic: { kind: 'team-members' }, offered: { kind: 'fixed', value: 1 } },
+  });
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  await f.deliver();
+  const writesBefore = fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length;
+  const now = new Date().toISOString();
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'second-seat', 'member', ?)").run(teamId, now);
+  assert.equal((await stageTeamBillingMembershipChange(database, teamId)).staged, true);
+  await f.drain();
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length, writesBefore + 1,
+    'the unchanged future quantity alone must not hide the current-phase write');
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.phases[0].items[0].quantity, 2, 'the current phase bills the accepted count');
+  assert.equal(schedule.phases[1].items[0].quantity, 1, 'the fixed future quantity is unchanged');
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].quantity, 2);
+});
+
+test('a lost phase-update acknowledgement is retried against the same schedule', async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  fake.faults.inject({ operation: 'subscriptionSchedules.update', status: 503, when: 'after' });
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  const failed = database.adapter.prepare(
+    "SELECT [intentId], [activeJobGenerationId], [status], [providerScheduleId], [providerAttemptedAt] FROM [sporades_team_billing_desired_state]",
+  ).get();
+  assert.equal(failed.status, 'queued', 'a retryable provider failure keeps the durable intent');
+  assert.equal(failed.providerScheduleId, null, 'ownership was never persisted');
+  assert.notEqual(failed.providerAttemptedAt, null);
+  const scheduleId = fake.state().schedules.at(-1).id;
+  // Verified attachment arrives before the retry, exactly as a real webhook would.
+  await f.deliver();
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, scheduleId);
+  assert.deepEqual(await performTeamBillingPlanTransition(database, {},
+    { intentId: failed.intentId, generationId: failed.activeJobGenerationId }), { providerAcknowledged: true });
+  const acknowledged = database.adapter.prepare(
+    "SELECT [status], [providerScheduleId] FROM [sporades_team_billing_desired_state]",
+  ).get();
+  assert.equal(acknowledged.status, 'scheduled');
+  assert.equal(acknowledged.providerScheduleId, scheduleId);
+  assert.equal(fake.state().schedules.length, 1, 'the retry never creates a second schedule');
+});
+
+test('cancelling after the target phase applied fails safely instead of reporting completion', async t => {
+  for (const [productKey, interval, appliedPriceId] of [
+    ['offered', 'month:1', 'price_offered_month'],
+    ['basic', 'year:1', 'price_basic_year'],
+  ]) {
+    const f = await fixture(t, SCHEDULE_TEST);
+    const { database, actor, teamId, fake, subscriptionId } = f;
+    await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), productKey, interval);
+    await f.drain();
+    await f.deliver();
+    const cancelRequestId = randomUUID();
+    assert.equal((await cancelScheduledTeamBillingPlanTransition(database, actor, teamId, cancelRequestId)).state, 'pending');
+    // The boundary applies the target before the cancellation Job runs.
+    await fake.clock.advance(fake.subscriptions.get(subscriptionId).items.data[0].current_period_end - fake.state().now);
+    await f.deliver();
+    assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].price.id, appliedPriceId);
+    await f.drain();
+    const result = await cancelScheduledTeamBillingPlanTransition(database, actor, teamId, cancelRequestId);
+    assert.equal(result.state, 'failed', `${productKey} ${interval} must not report a completed cancellation`);
+    assert.equal(result.reason, 'provider-state-ambiguous');
+    const read = await f.read();
+    assert.equal(read.state, 'active');
+    assert.equal(read.productKey, productKey);
+    assert.equal(read.interval, interval);
+  }
+});
+
 async function fixture(t, options = SCHEDULE_TEST) {
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-schedules-'));
   const teamId = randomUUID();
   const offered = new Set(['basic', 'offered']);
   const catalogue = Object.fromEntries(['basic', 'offered'].map(key => [key, {
-    quantity: options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }, ...(options.trialDays ? { trialDays: options.trialDays } : {}), stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
+    quantity: options.quantities?.[key] ?? (options.counted ? { kind: 'team-members' } : { kind: 'fixed', value: 1 }), ...(options.trialDays ? { trialDays: options.trialDays } : {}), stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, {
       productId: `prod_${mode === 'live' ? 'live_' : ''}${key}`, portalConfigurationId: `bpc_${mode}_${key}`,
       prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month` }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year` } },
     }])),
