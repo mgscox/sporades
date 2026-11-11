@@ -879,10 +879,12 @@ never rides a schedule: `timing: "period-end"` falls back to `"now"` and
 `authorize` cannot defer a trialling switch.
 
 An attached schedule the runtime itself created (through the durable intent)
-is owned and never blocks its own transition or seat work. Any other attached
-schedule, such as one created in the Stripe Dashboard, is foreign: it does not
-change entitlement, which still follows the current items, but it makes new
-managed transitions and seat/usage quantity writes refuse
+is owned and never blocks its own transition or seat work. Ownership is
+recorded on the Subscription as well as the durable intent, so it survives the
+intent's settlement at the target boundary. Any other attached schedule, such
+as one created in the Stripe Dashboard, is foreign: it does not change
+entitlement, which still follows the current items, but it makes new managed
+transitions and seat/usage quantity writes refuse
 `TEAM_BILLING_UNKNOWN_SCHEDULE`. Convergence records the subscription's
 `schedule` correlation privately with the rest of the provider facts.
 
@@ -891,9 +893,11 @@ usage quantity writes must not use `subscriptions.update`: direct edits would
 be overwritten when the next phase is entered. They are routed through
 `subscriptionSchedules.update`, restaging the scheduled transition so the new
 count lands in both the current phase (billed immediately) and the future
-phase (the target Price with the new quantity). Verified evidence of the
-current phase settles nothing; only boundary evidence of the target settles
-the scheduled operation.
+phase (the target Price with the new quantity). After the target applies, the
+schedule still owns its remaining final phase, so the same routing updates
+that phase and a new period-end request rewrites the schedule rather than
+being refused. Verified evidence of the current phase settles nothing; only
+boundary evidence of the target settles the scheduled operation.
 
 Use `cancelScheduledPlanTransition` to release the runtime-owned schedule of a
 scheduled period-end change:

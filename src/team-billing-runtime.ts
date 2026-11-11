@@ -127,6 +127,9 @@ export function createTeamBillingTables(adapter: LooseRecord) {
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "providerScheduleId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "releaseSchedule", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "providerScheduleId", "TEXT"),
+    // Durable ownership of a runtime-created Schedule survives intent settlement
+    // so the remaining phase can still accept seat and usage writes.
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "ownedScheduleId", "TEXT"),
   ]);
 }
 

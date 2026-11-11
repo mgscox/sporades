@@ -85,10 +85,95 @@ test('cancelScheduledPlanTransition releases the schedule and restores the origi
   assert.equal(fake.state().schedules.at(-1).status, 'active');
 });
 
+test('the websocket cancel command returns the documented conflict when nothing is scheduled', async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const result = await f.request({
+    type: 'teamBilling.cancelScheduledPlanTransition',
+    input: { teamId: f.teamId, requestId: randomUUID() },
+  });
+  assert.equal(result.error?.code, 'TEAM_BILLING_REQUEST_CONFLICT');
+  assert.equal(f.fake.requests().filter(r => r.operation === 'subscriptionSchedules.release').length, 0);
+});
+
+test('seat changes after the target phase applies update the remaining schedule phase', async t => {
+  const f = await fixture(t, { ...SCHEDULE_TEST, counted: true });
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  await f.deliver();
+  const scheduleId = fake.subscriptions.get(subscriptionId).schedule;
+  await fake.clock.advance(fake.subscriptions.get(subscriptionId).items.data[0].current_period_end - fake.state().now);
+  await f.deliver();
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].price.id, 'price_offered_month');
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, scheduleId, 'the schedule remains attached for its final phase');
+  assert.equal(fake.state().schedules.at(-1).phases.length, 1);
+  assert.equal(database.adapter.prepare("SELECT COUNT(*) AS [count] FROM [sporades_team_billing_desired_state]").get().count, 0,
+    'the settled target leaves durable ownership rather than a desired-state row');
+  // Nothing is scheduled after the target applied: cancel is the documented
+  // conflict and never releases the final phase out from under the plan.
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, actor, teamId, randomUUID()), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, scheduleId);
+  const writesBefore = fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length;
+  const now = new Date().toISOString();
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'late-seat', 'member', ?)").run(teamId, now);
+  assert.equal((await stageTeamBillingMembershipChange(database, teamId)).staged, true);
+  await f.drain();
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length, writesBefore + 1);
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].quantity, 2, 'the accepted member is billed immediately');
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.status, 'active');
+  assert.equal(schedule.phases[0].items[0].price.id, 'price_offered_month');
+  assert.equal(schedule.phases[0].items[0].quantity, 2, 'the remaining final phase carries the new count');
+  const desired = database.adapter.prepare(
+    "SELECT [status], [safeFailureCode], [timing], [providerScheduleId] FROM [sporades_team_billing_desired_state]",
+  ).get();
+  assert.equal(desired.status, 'awaiting-observation');
+  assert.equal(desired.safeFailureCode, null, 'an owned final phase never reports TEAM_BILLING_UNKNOWN_SCHEDULE');
+  assert.equal(desired.timing, 'period-end');
+  assert.equal(desired.providerScheduleId, scheduleId);
+  await f.deliver();
+  assert.equal((await f.read()).quantity, 2);
+  // A later seat change keeps using the schedule and never gets stuck.
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, 'later-seat', 'member', ?)").run(teamId, now);
+  assert.equal((await stageTeamBillingMembershipChange(database, teamId)).staged, true);
+  await f.drain();
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].quantity, 3);
+  assert.equal(fake.state().schedules.at(-1).phases[0].items[0].quantity, 3);
+  await f.deliver();
+  assert.equal((await f.read()).quantity, 3);
+});
+
+test('a period-end plan change after the target applies rewrites the remaining schedule', async t => {
+  const f = await fixture(t, SCHEDULE_TEST);
+  const { database, actor, teamId, fake, subscriptionId } = f;
+  await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1');
+  await f.drain();
+  await f.deliver();
+  const scheduleId = fake.subscriptions.get(subscriptionId).schedule;
+  await fake.clock.advance(fake.subscriptions.get(subscriptionId).items.data[0].current_period_end - fake.state().now);
+  await f.deliver();
+  assert.equal(fake.subscriptions.get(subscriptionId).schedule, scheduleId);
+  assert.equal(fake.subscriptions.get(subscriptionId).items.data[0].price.id, 'price_offered_month');
+  const writesBefore = fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length;
+  assert.equal((await requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'basic', 'month:1')).state, 'pending');
+  await f.drain();
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.update').length, writesBefore + 1, 'the owned schedule is rewritten, not refused');
+  assert.equal(fake.requests().filter(r => r.operation === 'subscriptionSchedules.create').length, 1, 'no replacement schedule is created');
+  const schedule = fake.state().schedules.at(-1);
+  assert.equal(schedule.phases[0].items[0].price.id, 'price_offered_month');
+  assert.equal(schedule.phases[1].items[0].price.id, 'price_basic_month');
+  await fake.clock.advance(fake.subscriptions.get(subscriptionId).items.data[0].current_period_end - fake.state().now);
+  await f.deliver();
+  const read = await f.read();
+  assert.equal(read.state, 'active');
+  assert.equal(read.productKey, 'basic');
+  assert.equal(read.interval, 'month:1');
+});
+
 test('cancelling without a scheduled change refuses, and a foreign schedule blocks transitions', async t => {
   const f = await fixture(t, SCHEDULE_TEST);
   const { database, actor, teamId, fake, subscriptionId } = f;
-  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, actor, teamId, randomUUID()), { code: 'TEAM_BILLING_DENIED' });
+  await assert.rejects(cancelScheduledTeamBillingPlanTransition(database, actor, teamId, randomUUID()), { code: 'TEAM_BILLING_REQUEST_CONFLICT' });
   await fake.subscriptions.setSchedule(subscriptionId, 'sub_sched_foreign_dashboard');
   await f.deliver();
   await assert.rejects(requestTeamBillingPlanTransition(database, actor, teamId, randomUUID(), 'offered', 'month:1'), { code: 'TEAM_BILLING_UNKNOWN_SCHEDULE' });
@@ -361,9 +446,10 @@ async function fixture(t, options = SCHEDULE_TEST) {
     });
     const signup = await send({ type: 'auth.signUp', provider: 'email', credentials: { email: 'buyer@example.test', password: 'password-123', name: 'Buyer' } });
     assert.equal(signup.error, null);
-    return { auth: signup.data.auth, ws };
+    return { auth: signup.data.auth, ws, send };
   })();
   const actor = signup.auth;
+  t.after(() => { try { signup.ws.close(); } catch {} });
   const now = new Date().toISOString();
   database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Billing', ?, ?)").run(teamId, now, actor.userId);
   database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(teamId, actor.userId, now);
@@ -373,5 +459,5 @@ async function fixture(t, options = SCHEDULE_TEST) {
   const completed = await fake.checkout.complete(fake.state().checkouts[0].id);
   await deliver();
   assert.equal((await readCurrentUserTeamBilling(database, actor, teamId)).state, options.trialDays ? 'trialing' : 'active');
-  return { database, actor, teamId, fake, drain, deliver, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };
+  return { database, actor, teamId, fake, drain, deliver, request: signup.send, subscriptionId: completed.subscription, read: () => readCurrentUserTeamBilling(database, actor, teamId) };
 }

@@ -82,7 +82,8 @@ Changes since v0.9.47.
   desired state gains a `scheduled` status and a new
   `teamBilling.cancelScheduledPlanTransition` command releases the schedule.
   Seat and usage quantity writes route through `subscriptionSchedules.update`
-  while a runtime-owned schedule is attached; foreign schedules block managed
+  while a runtime-owned schedule is attached, including its remaining final
+  phase after the target applies; foreign schedules block managed
   work with `TEAM_BILLING_UNKNOWN_SCHEDULE`; erasure releases every attached
   schedule before cancelling its Subscription. A trialling Subscription never
   rides a schedule: `timing: "period-end"` falls back to an immediate switch
