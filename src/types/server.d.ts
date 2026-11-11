@@ -826,7 +826,7 @@ export type TeamBillingAuthorityInput = {
   productKey?: string;
   interval?: TeamBillingInterval;
   currency?: string;
-  /** Verified source of a plan-transition, resolved under the Team lifecycle lock. */
+  /** Verified source of a plan-transition or its preview, resolved under the Team lifecycle lock. Both use operation: "plan-transition". */
   fromProductKey?: string;
   fromInterval?: TeamBillingInterval;
   /** Verified source currency for a currency handover; currency is the requested target. */

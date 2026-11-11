@@ -119,6 +119,40 @@ async function fixture(t, counted = false, includeOther = false) {
   };
 }
 
+for (const stage of ['queued', 'ready', 'expired by poll', 'expired after restart', 'expired after upgrading an older preview']) {
+  test(`a plan preview permits currency handover when ${stage}`, async t => {
+    const f = await fixture(t, false, true);
+    const input = { teamId: f.teamId, requestId: randomUUID(), productKey: 'other', interval: 'month:1' };
+    const preview = () => f.send({ type: 'teamBilling.previewPlanTransition', input });
+    assert.equal((await preview()).data.state, 'pending');
+    if (stage !== 'queued') {
+      await f.drain();
+      const { data: quote } = await preview();
+      assert.equal(quote.state, 'ready');
+      if (stage.startsWith('expired')) {
+        if (stage === 'expired after upgrading an older preview') {
+          f.database.adapter.prepare("DELETE FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-plan-preview-expiry'").run();
+        }
+        if (stage !== 'expired by poll') await f.restart();
+        f.database.clock = { ...f.database.clock, now: () => new Date(quote.expiresAt) };
+        if (stage === 'expired by poll') assert.equal((await preview()).data.state, 'expired');
+        else await f.drain();
+        const retained = f.database.adapter.prepare(
+          "SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?",
+        ).get(quote.quoteId);
+        assert.equal(retained.status, 'expired');
+        assert.equal(f.database.adapter.prepare(
+          "SELECT [operationId] FROM [sporades_team_billing_quotes] WHERE [operationId] = ?",
+        ).get(quote.quoteId), undefined);
+        assert.equal((await preview()).data.state, 'expired');
+      }
+    }
+    const handover = await f.start();
+    assert.equal(handover.error, null);
+    assert.equal(handover.data.state, 'pending');
+  });
+}
+
 test('GBP to EUR handover settles from verified evidence and permits later managed plan changes', async t => {
   const f = await fixture(t, false, true);
   const before = await f.read();

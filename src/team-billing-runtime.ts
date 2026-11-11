@@ -19,6 +19,8 @@ import { lockTeamLifecycle } from "./teams-runtime.js";
 type LooseRecord = Record<string, any>;
 
 export const TEAM_BILLING_PRODUCT_MAX = 32;
+// Shared by queries that inspect in-flight billing writes across operation kinds.
+export const TEAM_BILLING_READ_ONLY_KINDS_SQL = "'plan-preview'";
 export const TEAM_BILLING_CHECKOUT_JOB = "_sporades.team-billing-checkout";
 export const TEAM_BILLING_CHECKOUT_EXPIRY_JOB = "_sporades.team-billing-checkout-expiry";
 export const TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS = 4;
@@ -84,6 +86,12 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [sourceSubscriptionId] TEXT NOT NULL, [sourceSnapshot] TEXT NOT NULL, " +
       "[anchor] TEXT NOT NULL, [phase] TEXT NOT NULL, [setupSessionId] TEXT NULL, [latchUntil] TEXT NULL, [cancelDispatched] INTEGER NOT NULL DEFAULT 0, [attemptToken] TEXT NULL)"
     )),
+    () => adapter.exec(sql(
+      "CREATE TABLE IF NOT EXISTS [sporades_team_billing_quotes] (" +
+      "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [snapshot] TEXT NOT NULL, " +
+      "[result] TEXT NULL, [expiresAt] TEXT NOT NULL, [consumedBy] TEXT NULL)"
+    )),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "quoteId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", "replacedBy", "TEXT"),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_provider_lanes] (" +
@@ -680,7 +688,8 @@ export async function expireTeamBillingPortal(database: LooseRecord, _context: L
 
 /** Reconciles a runtime-owned Checkout operation when its final claimed Job lease expires after a process crash. */
 export async function settleExhaustedTeamBillingCheckoutJob(transaction: LooseRecord, handler: any, payloadJson: any, now: string) {
-  const kind = handler === TEAM_BILLING_CHECKOUT_JOB ? "checkout" : handler === TEAM_BILLING_PORTAL_JOB ? "portal" : null;
+  const kind = handler === TEAM_BILLING_CHECKOUT_JOB ? "checkout" : handler === TEAM_BILLING_PORTAL_JOB ? "portal"
+    : handler === "_sporades.team-billing-plan-preview" ? "plan-preview" : null;
   if (!kind || typeof payloadJson !== "string") return;
   let payload: any;
   try { payload = JSON.parse(payloadJson); } catch { return; }
@@ -774,7 +783,7 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
   }
   const operation = await transaction.prepare(sql(
     "SELECT [kind], [productKey], [createdAt] FROM [sporades_team_billing_operations] " +
-    "WHERE [teamId] = ? AND [kind] <> 'currency-handover' AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1",
+    `WHERE [teamId] = ? AND [kind] NOT IN ('currency-handover', ${TEAM_BILLING_READ_ONLY_KINDS_SQL}) AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation') ORDER BY [createdAt] DESC, [id] DESC LIMIT 1`,
   )).get(teamId);
   if (operation) {
     const requestedAt = canonicalTimestamp(operation.createdAt);

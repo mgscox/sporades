@@ -21,6 +21,19 @@ const operationId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const periodStart = 1_787_952_000;
 const periodEnd = 1_790_630_400;
 
+test("a preview operation cannot associate a provider quarantine with its Team", async () => {
+  const fixture = await openFixture();
+  try {
+    fixture.adapter.prepare("UPDATE [sporades_team_billing_operations] SET [kind] = 'plan-preview' WHERE [id] = ?").run(operationId);
+    const event = subscriptionEvent("evt_preview_correlation", "customer.subscription.created", { operationId });
+    assert.deepEqual(await applyVerifiedTeamBillingObservation(fixture.database, event), { applied: false, quarantined: true });
+    const row = fixture.adapter.prepare("SELECT [teamId] FROM [sporades_team_billing_observations] WHERE [providerEventId] = ?").get(event.providerEventId);
+    assert.equal(row.teamId, null);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("late provider events matching an erasure identity tombstone cannot recreate entitlement", async () => {
   const fixture = await openFixture();
   try {
