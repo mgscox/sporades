@@ -1,7 +1,21 @@
 type LooseRecord = Record<string, any>;
+export declare const TEAM_BILLING_PLAN_PREVIEW_JOB = "_sporades.team-billing-plan-preview";
+export declare const TEAM_BILLING_PLAN_PREVIEW_EXPIRY_JOB = "_sporades.team-billing-plan-preview-expiry";
 export declare const TEAM_BILLING_PLAN_TRANSITION_JOB = "_sporades.team-billing-plan-transition";
 export declare const TEAM_BILLING_SEAT_CONVERGENCE_JOB = "_sporades.team-billing-seat-convergence";
-export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any, resume?: any, currency?: any): Promise<any>;
+/** Preview is an ordinary durable short Job; polling never performs provider I/O. */
+export declare function previewTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, input: any): Promise<any>;
+export declare function expireTeamBillingPlanPreview(database: LooseRecord, _context: LooseRecord, payload: any): Promise<null>;
+/** Recover previews written before expiry Jobs were scheduled, or left overdue at shutdown. */
+export declare function repairTeamBillingPlanPreviewExpiries(database: LooseRecord): Promise<void>;
+export declare function performTeamBillingPlanPreview(database: LooseRecord, context: LooseRecord, payload: any, attempt?: number): Promise<{
+    superseded: boolean;
+    ready?: undefined;
+} | {
+    ready: boolean;
+    superseded?: undefined;
+}>;
+export declare function requestTeamBillingPlanTransition(database: LooseRecord, auth: LooseRecord, teamId: any, requestId: any, productKey: any, interval?: any, resume?: any, currency?: any, quoteId?: any): Promise<any>;
 /** Called after a membership transaction commits. It performs no provider I/O. */
 export declare function stageTeamBillingMembershipChange(database: LooseRecord, teamId: any, effectiveAt?: number): Promise<any>;
 /** Repair only an already-associated usage Subscription; quarantined evidence grants no entitlement. */

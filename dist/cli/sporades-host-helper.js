@@ -314,6 +314,7 @@ async function drainUncooperativeHostHelpers(target) {
             emptySince = null;
             emptyScans = 0;
         }
+        await fakeManagedRouteLockPause("SPORADES_FAKE_HOST_UPGRADE_DRAIN_SCAN_PAUSE_MS");
         assertHostHelperDrainDeadline(deadline);
         await delay(25);
     }
@@ -5983,8 +5984,33 @@ async function cleanupManagedRouteProtocolArtifacts(lockFile) {
         }
     }
 }
+const fakeManagedRouteLockGateVisits = new Map();
+// Test hook. A positive integer sleeps for that many milliseconds. The value "gate" instead holds
+// the helper at this point until the test releases it: the helper writes
+// `<SPORADES_FAKE_HOST_PAUSE_GATE_DIR>/<name>.<visit>.entered` and waits for the matching
+// `.release` file, so a test acts while the helper is provably inside the window, however slow
+// the machine is. A `<name>.open` file lets every later visit of that pause pass straight through.
 async function fakeManagedRouteLockPause(name) {
     const raw = process.env[name];
+    if (raw === "gate") {
+        const gateDirectory = process.env.SPORADES_FAKE_HOST_PAUSE_GATE_DIR;
+        if (!gateDirectory)
+            throw new Error(`${name}=gate requires SPORADES_FAKE_HOST_PAUSE_GATE_DIR.`);
+        if (await pathExists(path.join(gateDirectory, `${name}.open`)))
+            return;
+        const visit = (fakeManagedRouteLockGateVisits.get(name) ?? 0) + 1;
+        fakeManagedRouteLockGateVisits.set(name, visit);
+        const gate = path.join(gateDirectory, `${name}.${visit}`);
+        await writeFile(`${gate}.entered`, `${process.pid}\n`, { mode: 0o600 });
+        // Hang backstop only: a test that never releases the gate fails loudly instead of hanging.
+        const deadline = Date.now() + 120_000;
+        while (!(await pathExists(`${gate}.release`))) {
+            if (Date.now() >= deadline)
+                throw new Error(`${name} gate ${visit} was never released.`);
+            await delay(10);
+        }
+        return;
+    }
     if (raw && /^[1-9][0-9]*$/.test(raw)) {
         await delay(Math.min(Number(raw), 60_000));
     }

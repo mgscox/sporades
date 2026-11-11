@@ -1,6 +1,6 @@
 import { applyCurrencySetup } from "./team-billing-currency-handover.js";
 import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
-import { teamBillingPriceById } from "./team-billing-runtime.js";
+import { teamBillingPriceById, TEAM_BILLING_READ_ONLY_KINDS_SQL } from "./team-billing-runtime.js";
 // Transaction-pure convergence of verified Stripe facts into runtime-owned Team
 // Billing state. This module deliberately never owns a transaction: the Stripe
 // consequence runner supplies the already-serialized adapter as `database.adapter`.
@@ -391,7 +391,7 @@ async function inferTeamId(tx, event) {
     const object = event?.raw?.data?.object;
     const operationId = object?.client_reference_id ?? object?.metadata?.sporades_team_billing_operation;
     if (UUID.test(String(operationId ?? ""))) {
-        const row = await tx.prepare(tx.dialect.sql("SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(operationId);
+        const row = await tx.prepare(tx.dialect.sql(`SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] NOT IN (${TEAM_BILLING_READ_ONLY_KINDS_SQL})`)).get(operationId);
         if (row?.teamId)
             return row.teamId;
     }

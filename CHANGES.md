@@ -1,5 +1,21 @@
 # Changes
 
+## v0.9.51 - 2026-11-11
+
+Changes since v0.9.50.
+
+### 🚀 Features
+
+- Add durable Team Billing plan-change previews (#395) (486659c8).
+
+### 🐛 Bug Fixes
+
+- Drop node's aggregate counts once resource exhaustion is declared (#399) (f8701a78).
+
+### 📦 Packaging
+
+- Replace fake-pause timing windows with release gates (#398) (76c83b04).
+
 ## v0.9.50 - 2026-11-10
 
 Changes since v0.9.49.

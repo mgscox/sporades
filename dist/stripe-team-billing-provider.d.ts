@@ -31,6 +31,14 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
         sessionId: any;
         url: any;
     }>>;
+    previewManagedSubscription(input: LooseRecord): Promise<Readonly<{
+        currency: string;
+        amountDueNow: number;
+        nextInvoiceAmount: number;
+        nextInvoiceAt: string;
+        creditCarriedForward: number;
+        sourceFingerprint: string;
+    }>>;
     updateManagedSubscription(input: LooseRecord): Promise<Readonly<{
         ok: true;
         outcome: "acknowledged";
