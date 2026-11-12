@@ -88,6 +88,109 @@ reservation. Repair the reported lock cleanup problem, then retry registration
 to complete recovery. Unregister and delete reject Capsules with pending
 registration recovery; complete that recovery first, then tear down normally.
 
+## Publish a new Capsule: verification points
+
+The sequence is register, seal Server env, push, then verify. Several of those
+steps report success while the thing they configure is not actually working, so
+check each one by behaviour.
+
+### Verify DNS away from the development machine
+
+A dev box behind a VPN resolver, an exit node or an HTTP proxy can hold a stale
+negative answer for a record that is published correctly. The local resolver
+returns nothing, `curl` reports a 502 from the proxy or an SSL `unexpected eof`,
+and the zone looks broken when it is not. Query a public resolver directly and
+fetch the site with the address pinned:
+
+```sh
+curl -s -H "accept: application/dns-json" \
+  "https://cloudflare-dns.com/dns-query?name=app.example&type=A"
+curl -s --resolve app.example:443:EDGE_IP https://app.example/ -o /dev/null -w "%{http_code}"
+```
+
+Unset any `*_PROXY` variables for the second call. If those two succeed, the
+site is live and only the local resolver is wrong.
+
+### Read the boot log before declaring mail or support ready
+
+A release declares the Server env keys it requires. If any are missing the
+container logs `env.required.missing` and names them exactly; the app then boots
+with that feature silently unavailable. Key names are not guessable — a
+plausible `SMTP2GO_USERNAME` is not the key, and the runtime wants
+`SMTP2GO_SMTP_USERNAME` — so push, then read:
+
+```sh
+docker logs CAPSULE_CONTAINER 2>&1 | grep env.required.missing
+```
+
+`sporades env export` produces a transfer artifact under the project keypair; it
+installs nothing. Prove a secret is live by behaviour — a delivered message, an
+accepted event — not by the export command exiting 0.
+
+### Opt in to observability in `sporades.json`
+
+Error reporting is a top-level `observability` key in `sporades.json`:
+
+```json
+{ "observability": { "errors": { "protocol": "sentry", "dsnEnv": "ERROR_DSN", "client": true } } }
+```
+
+The same key in `app.config.json` is accepted and ignored, and
+`sporades host services connect SUBNAME` then answers `project-not-opted-in`
+with no further explanation. Place `connect` with the subname and no flags; it
+creates the project, seals the DSN and asks for a push. Creating the project by
+hand first leaves a duplicate that the API key may not be allowed to delete.
+
+Sealed DSNs do not appear in `docker inspect` or `printenv`. Read the
+`observability` block from the capsule's `current/sporades.json`, then prove the
+DSN with a synthetic store POST.
+
+### Analytics needs the script tag in the app
+
+`connect` seals the error DSN only. The template ships the analytics script
+element commented out in `index.html`; publish it with the dashboard URL and the
+website id, or the page loads with no measurement at all:
+
+```html
+<script defer nonce="%SPORADES_NONCE%" src="https://analytics.example/script.js" data-website-id="WEBSITE_ID"></script>
+```
+
+### Prefer the provider API to the panel
+
+Both mail providers can be configured without a browser, which keeps the steps
+repeatable and auditable.
+
+MXroute's REST API is `https://api.mxroute.com/` — no version prefix — and every
+request carries `X-API-Key`, `X-Server` and `X-Username`. Adding a domain needs
+proof of ownership first: `GET /verification-key` returns a `_da-verify-<hash>`
+name and the value `domain-verified` to publish as a TXT, and only then does
+`POST /domains` accept the domain. `GET /domains/<domain>/dns` returns the
+records to publish. Its DKIM value arrives with literal double quotes around
+it — strip them before writing the record, or verification fails with the record
+present and correct-looking. Create mailboxes with
+`POST /domains/<domain>/email-accounts`.
+
+SMTP2GO uses `/v3/` endpoints with the key in the JSON body: `domain/add`
+returns the per-domain DKIM and return-path names, `domain/verify` reports
+`dkim_verified` and `rpath_verified`, and `users/smtp/add` creates the sending
+user. Response envelopes differ between endpoints, so re-list rather than trust
+a create response.
+
+Finish mail setup with a real round trip: authenticate SMTP over TLS, send from
+the new mailbox to itself, read it back over IMAP, then delete the test message.
+
+### Check the product key against the code
+
+`billing.products.<key>` accepts any key, but authorisation code and client
+handlers often compare against one literal (`productKey !== "pro"`). A config
+key that does not match renders a correct pricing page and refuses every
+checkout with no configuration error. Grep `server/` and `client/` for the
+literal before binding Stripe IDs.
+
+Placeholder legal values are also a gate: a `legal` block that still reads
+"Replace with entity name" keeps billing dormant however complete the Stripe
+wiring is, because a buyer must be able to identify who they contracted with.
+
 ## Read a Hosted Capsule's database
 
 `sporades host db list|dump|query` runs the same read-only inspection as
