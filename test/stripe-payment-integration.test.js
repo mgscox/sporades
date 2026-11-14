@@ -289,6 +289,67 @@ test("subscription Checkout uses the same narrow operation with explicit server-
   assert.equal(providerRequest.body.get("line_items[0][quantity]"), "3");
   assert.equal(providerRequest.body.get("customer"), null);
   assert.equal(providerRequest.body.get("metadata"), null);
+  assert.equal(providerRequest.body.get("subscription_data[trial_period_days]"), null);
+  assert.equal(providerRequest.body.get("payment_method_collection"), null);
+  assert.equal(providerRequest.body.get("payment_method_types[0]"), null);
+});
+
+test("subscription trials explicitly collect a card even when nothing is due", async () => {
+  const requests = [];
+  await withStripeFake(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    requests.push({ headers: request.headers, body: new URLSearchParams(body) });
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ id: "cs_test_trial", mode: "subscription", livemode: false,
+      url: "https://checkout.stripe.com/c/pay/cs_test_trial" }));
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({ enabled: true, config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" }, apiBaseUrl });
+    for (const trialDays of [1, 14, 90]) {
+      const result = await integration.createCheckoutSession({ ...checkoutInput(`intent-trial-${trialDays}`), mode: "subscription", trialDays });
+      assert.deepEqual(result, { ok: true, sessionId: "cs_test_trial", url: "https://checkout.stripe.com/c/pay/cs_test_trial" });
+      assert.equal(Object.isFrozen(result), true);
+    }
+  });
+  assert.equal(requests.length, 3);
+  for (const [index, { headers, body }] of requests.entries()) {
+    assert.equal(body.get("subscription_data[trial_period_days]"), String([1, 14, 90][index]));
+    assert.equal(body.get("payment_method_collection"), "always");
+    assert.equal(body.get("payment_method_types[0]"), "card");
+    assert.equal(headers["stripe-version"], "2026-08-26.dahlia");
+    assert.equal(headers["idempotency-key"], `capsule:checkout:user-1:intent-trial-${[1, 14, 90][index]}`);
+    assert.deepEqual([...body.keys()].sort(), ["mode", "line_items[0][price]", "line_items[0][quantity]", "success_url", "cancel_url", "client_reference_id",
+      "subscription_data[trial_period_days]", "payment_method_collection", "payment_method_types[0]"].sort());
+  }
+});
+
+test("invalid trials and raw Stripe options fail before provider access", async () => {
+  let requests = 0;
+  await withStripeFake((_request, response) => {
+    requests += 1;
+    response.writeHead(500).end();
+  }, async (apiBaseUrl) => {
+    const integration = createStripePaymentIntegration({ enabled: true, config: enabledConfig,
+      env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" }, apiBaseUrl });
+    const subscription = { ...checkoutInput(), mode: "subscription" };
+    for (const input of [
+      ...[undefined, null, false, true, "14", 0, -1, 1.5, 91, NaN, Infinity, {}, []].map((trialDays) => ({ ...subscription, trialDays })),
+      { ...checkoutInput(), trialDays: 14 },
+      { ...subscription, mode: "setup", trialDays: 14 },
+      { ...subscription, trialDays: 14, subscription_data: { trial_period_days: 365 } },
+      { ...subscription, trialDays: 14, payment_method_collection: "if_required" },
+      { ...subscription, trialDays: 14, payment_method_types: ["sepa_debit"] },
+      { ...subscription, trialDays: 14, trialEnd: 2_000_000_000 },
+    ]) {
+      await assert.rejects(integration.createCheckoutSession(input), (error) => {
+        assert.equal(error.code, "STRIPE_CHECKOUT_INPUT_INVALID");
+        assert.equal(error.retryable, false);
+        return true;
+      });
+    }
+  });
+  assert.equal(requests, 0);
 });
 
 test("Customer Portal sends one server-resolved Customer and returns a narrow validated redirect", async () => {

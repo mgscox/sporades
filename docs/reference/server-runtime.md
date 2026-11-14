@@ -920,6 +920,60 @@ exact `https://billing.stripe.com/p/session/...` authority. Provider timeouts,
 cancellation, retries, permanent rejection, and malformed responses follow the
 same bounded and redacted Job policy.
 
+### Card-collecting subscription trials
+
+User-level `createCheckoutSession` accepts one additional server-owned option:
+`trialDays`, an integer from 1 through 90, only with `mode: "subscription"`.
+Omit the property for ordinary Checkout; an explicitly supplied `undefined`,
+`null`, string, fraction, or out-of-range number fails with non-retryable
+`STRIPE_CHECKOUT_INPUT_INVALID` before provider access. `payment` and `setup`
+cannot use this option; user-level setup Checkout remains unsupported. Extra
+keys, including raw Stripe options, are rejected.
+
+Inside the Capsule's authorized durable Checkout Job, select the Price and trial
+duration from the server Catalogue after checking eligibility:
+
+```ts
+const result = await stripe.createCheckoutSession({
+  mode: "subscription",
+  priceId: "price_server_owned_monthly",
+  quantity: 1,
+  trialDays: 14,
+  successPath: "/billing/success",
+  cancelPath: "/billing/cancel",
+  idempotencyKey: "capsule:checkout:user:intent-trial-123",
+  businessReference: "intent-trial-123",
+});
+```
+
+The integration sends `subscription_data.trial_period_days`, explicitly sets
+`payment_method_collection: "always"`, and restricts `payment_method_types` to
+`["card"]`. This collects a card even when the trial has zero due at Checkout;
+it does not charge the recurring Price until the trial ends. Omitting
+`trialDays` sends none of these extra provider fields and preserves existing
+payment-method selection. The result remains `{ ok: true, sessionId, url }`.
+Use the same business idempotency key and the same server-owned inputs across
+retries; changing trial terms is a new business intent.
+
+Capsule server code owns Catalogue authority, current-user authorization,
+trial eligibility, duplicate-trial policy, and entitlements. Trial Checkout
+creates a Subscription, so browser return and Checkout completion alone must
+not grant access. Use verified Stripe events for idempotent consequences and
+later subscription changes. Card identity reads are separate work in
+[#406](https://github.com/mgscox/sporades/issues/406); detecting a duplicate card
+after completion happens after the Subscription exists. The Capsule must own
+the refusal and cancellation consequence and keep any identity token out of
+browser-visible payment Job state. This user-level option does not reserve or
+consume Team Billing's built-in per-Team trial allowance.
+
+The [loopback fake](./team-billing-testing.md#user-level-trial-checkout) verifies
+the protocol subset locally. Real Stripe `2026-08-26.dahlia` still requires a
+human sandbox check: confirm a zero-amount trial requires a card, completes
+without a charge, and creates the expected trialing Subscription with a saved
+payment method. See [Stripe's free-trial guide](https://docs.stripe.com/payments/checkout/free-trials).
+
+### Verified Stripe callbacks
+
 Enabled `verifyWebhookEvent` accepts only an exact `Uint8Array` body copy and
 the unmodified `Stripe-Signature` header. The official Stripe verifier checks
 the signature and its five-minute timestamp tolerance before JSON parsing. A

@@ -47,6 +47,10 @@ The repository currently includes:
   the explicit server-owned one-time or recurring subscription mode after
   commit, exposes bounded actor-scoped progress, retries transient failure,
   redacts permanent failure, and returns only a validated Stripe-hosted redirect.
+  Server-owned subscription Checkout may opt into integer `trialDays` from 1
+  through 90, requiring card collection even with zero due at Checkout. The
+  Capsule owns eligibility, duplicate-trial policy and entitlements; omission
+  preserves ordinary Checkout and no user-level setup mode is exposed.
   An independently authorized linked actor can also select an opaque Capsule
   billing holder that Capsule policy resolves to an existing Stripe Customer;
   a durable Customer Portal Job then returns only a validated short-lived

@@ -240,6 +240,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
       ...(session.currency ? { currency: session.currency } : {}),
       status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, billing_mode: { type: input.billingMode ?? "flexible" }, billing_cycle_anchor: now, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
+      ...(session.payment_method_collection === "always" ? { default_payment_method: id("pm") } : {}),
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
@@ -416,13 +417,26 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
             url: `https://checkout.stripe.com/c/pay/${sessionId}` };
           sessions.set(sessionId, session); return copy(session);
         }
-        exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
+        const foundation = !Object.hasOwn(p, "metadata");
+        if (foundation) {
+          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id"], ["subscription_data", "payment_method_collection", "payment_method_types"]);
+          if (p.subscription_data) {
+            exactKeys(p.subscription_data, ["trial_period_days"]);
+            integer(p.subscription_data.trial_period_days, 90);
+            requireValue(p.payment_method_collection === "always");
+            exactKeys(p.payment_method_types, ["0"]); requireValue(p.payment_method_types[0] === "card");
+          } else {
+            requireValue(p.payment_method_collection === undefined && p.payment_method_types === undefined);
+          }
+        } else {
+          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
+          exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
+          if (p.subscription_data.trial_period_days !== undefined) integer(p.subscription_data.trial_period_days, 90);
+          exactKeys(p.subscription_data.metadata, ["sporades_team_billing_operation"]);
+          requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation
+            && p.client_reference_id === p.subscription_data.metadata.sporades_team_billing_operation);
+        }
         requireValue(p.mode === "subscription"); exactKeys(p.line_items, ["0"]); exactKeys(p.line_items[0], ["price", "quantity"]);
-        exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
-        if (p.subscription_data.trial_period_days !== undefined) integer(p.subscription_data.trial_period_days, 90);
-        exactKeys(p.subscription_data.metadata, ["sporades_team_billing_operation"]);
-        requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation
-          && p.client_reference_id === p.subscription_data.metadata.sporades_team_billing_operation);
         if (p.customer) get(customers, p.customer);
         const { entry } = catalogueEntry(p.line_items[0].price);
         const itemPrice = price(p.line_items[0].price, p.currency);
@@ -431,9 +445,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         const sessionId = id("cs_test");
         const session = { id: sessionId, object: "checkout.session", mode: "subscription", status: "open", livemode: false,
           ...(sessionCurrency ? { currency: sessionCurrency, amount_total: sessionAmount! * integer(p.line_items[0].quantity) } : {}),
+          ...(foundation && p.subscription_data?.trial_period_days ? { amount_total: 0 } : {}),
+          ...(foundation && p.subscription_data ? { payment_method_collection: "always", payment_method_types: ["card"] } : {}),
           url: `https://checkout.stripe.com/c/pay/${sessionId}`, customer: p.customer ?? null, subscription: null,
           success_url: p.success_url, cancel_url: p.cancel_url, client_reference_id: p.client_reference_id,
-          expires_at: integer(p.expires_at, 253_402_300_799), metadata: copy(p.metadata), subscription_data: copy(p.subscription_data),
+          expires_at: foundation ? now + 86400 : integer(p.expires_at, 253_402_300_799), metadata: copy(p.metadata ?? {}),
+          subscription_data: { ...copy(p.subscription_data ?? {}), metadata: copy(p.subscription_data?.metadata ?? {}) },
           line_items: { object: "list", has_more: false, data: [{ price: itemPrice, quantity: integer(p.line_items[0].quantity) }] } };
         sessions.set(sessionId, session); return copy(session);
       }

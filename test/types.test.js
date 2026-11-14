@@ -377,6 +377,14 @@ validateTeamBillingPriceEvidence({ catalogue: {}, mode: "production", evidence: 
 const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
 const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 const subscriptionCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:subscription", businessReference: "subscription-123" });
+const trialCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, trialDays: 14, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:trial", businessReference: "trial-123" });
+void trialCheckout;
+// @ts-expect-error Trial days belong only to subscription Checkout.
+enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, trialDays: 14, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:trial", businessReference: "trial-123" });
+// @ts-expect-error Trial duration is numeric; runtime also bounds it to integer 1–90.
+enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, trialDays: "14", successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:trial", businessReference: "trial-123" });
+// @ts-expect-error Callers cannot disable trial card collection.
+enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, trialDays: 14, payment_method_collection: "if_required", successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:trial", businessReference: "trial-123" });
 const customerPortal: Promise<StripeCustomerPortalSessionResult> = enabledStripe.createCustomerPortalSession({ customerId: "cus_server_owned", returnPath: "/account/billing", idempotencyKey: "capsule:portal:user:intent" });
 const verifiedEvent: Promise<VerifiedStripeEvent> = enabledStripe.verifyWebhookEvent({ bodyBytes: new Uint8Array(), signature: "t=1,v1=fixture" });
 void checkout;

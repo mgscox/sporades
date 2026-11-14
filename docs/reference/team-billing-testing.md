@@ -190,6 +190,44 @@ Job payload. `events.emit(type, object, { created? })` creates a fresh Event ID
 for malformed-evidence quarantine or unknown-event tests. The fake's event clock
 moves forward per object; signatures always use the real wall clock.
 
+## User-level trial Checkout
+
+The same fake accepts the exact user-level `createCheckoutSession` subscription
+request, including the optional [card-collecting trial](./server-runtime.md#card-collecting-subscription-trials).
+Pass `fake.origin` explicitly as the integration's `apiBaseUrl`; the Dev origin
+override applies only to runtime-owned Team Billing. Use fixture Sealed Server
+env and a valid enabled configuration with `requestTimeoutMs` of at least 1000.
+With `stripe` as that enabled integration and a matching fake Catalogue Price:
+
+```ts
+const checkout = await stripe.createCheckoutSession({
+  mode: "subscription", priceId: "price_team_monthly", quantity: 1,
+  trialDays: 14, successPath: "/billing/success", cancelPath: "/billing/cancel",
+  businessReference: "user-trial-intent-123",
+  idempotencyKey: "capsule:checkout:user:trial-intent-123",
+});
+const completed = await fake.checkout.complete(checkout.sessionId);
+const subscription = fake.subscriptions.get(completed.subscription);
+// completed.payment_status === "no_payment_required"
+// subscription.status === "trialing"
+// subscription.default_payment_method is a fake pm_ identity.
+await fake.clock.advance(14 * 86400);
+// Await the Capsule's verified Subscription consequence before granting access.
+```
+
+The fake requires the exact `subscription_data.trial_period_days` (1–90),
+`payment_method_collection: "always"`, and `payment_method_types: ["card"]`
+request combination. Trial Sessions have zero `amount_total`; completion
+creates a trialing Subscription with a saved payment-method identity and emits
+the ordinary signed Checkout/Subscription events without a paid invoice.
+Ordinary subscription Checkout omits those extra request fields. Existing
+idempotency replay, faults and CLI controls apply to both shapes.
+
+This models card collection without card entry or authentication UI. A human
+must still check actual zero-amount card collection, saved payment method and
+trial conversion against Stripe `2026-08-26.dahlia`. Card identity retrieval
+and duplicate-card policy are separate from this trial protocol subset.
+
 ## Faults, retries and erasure
 
 ```ts
