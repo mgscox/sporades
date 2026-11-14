@@ -7,6 +7,7 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   enabled: true;
   secretKeyEnv: string;
   webhookSecretEnv: string;
+  cardIdentityKeyEnv?: string;
   publicOrigin: string;
   callbackPath: string;
   apiVersion: typeof STRIPE_API_VERSION;
@@ -52,7 +53,7 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
   if (stripe.enabled !== true) {
     fail("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
   }
-  const unknownKeys = Object.keys(stripe).filter((key) => !(ENABLED_KEYS as readonly string[]).includes(key));
+  const unknownKeys = Object.keys(stripe).filter((key) => key !== "cardIdentityKeyEnv" && !(ENABLED_KEYS as readonly string[]).includes(key));
   if (unknownKeys.length > 0) {
     fail("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
   }
@@ -64,6 +65,11 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
   if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
     fail("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
+  if (stripe.cardIdentityKeyEnv !== undefined && (!isServerEnvReference(stripe.cardIdentityKeyEnv)
+    || [stripe.secretKeyEnv, stripe.webhookSecretEnv].includes(stripe.cardIdentityKeyEnv))) {
+    fail("Invalid card identity Server env reference.", "Use a distinct uppercase Sealed Server env name for payments.stripe.cardIdentityKeyEnv.");
+  }
+  if ("cardIdentityKeyEnv" in stripe && stripe.cardIdentityKeyEnv === undefined) fail("Invalid card identity Server env reference.", "Omit cardIdentityKeyEnv or name a dedicated Sealed Server secret.");
   validatePublicOrigin(stripe.publicOrigin);
   const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
   if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
@@ -83,6 +89,7 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
       enabled: true,
       secretKeyEnv: stripe.secretKeyEnv,
       webhookSecretEnv: stripe.webhookSecretEnv,
+      ...(stripe.cardIdentityKeyEnv === undefined ? {} : { cardIdentityKeyEnv: stripe.cardIdentityKeyEnv }),
       publicOrigin: stripe.publicOrigin,
       callbackPath,
       apiVersion: STRIPE_API_VERSION,
@@ -103,6 +110,12 @@ export function validateStripePaymentsRuntimeConfig(payments: unknown, serverEnv
   }
   if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
     fail("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  if (normalized.stripe.cardIdentityKeyEnv !== undefined) {
+    const key = serverEnv?.[normalized.stripe.cardIdentityKeyEnv];
+    if (typeof key !== "string" || !key.trim() || Buffer.byteLength(key, "utf8") < 32 || Buffer.byteLength(key, "utf8") > 4096) {
+      fail("Card identity key is unavailable or invalid.", `Set ${normalized.stripe.cardIdentityKeyEnv} in Sealed Server env to a dedicated random secret with at least 32 bytes of entropy (maximum 4096 UTF-8 bytes).`);
+    }
   }
   return normalized;
 }

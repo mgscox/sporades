@@ -13,8 +13,9 @@ export async function dispatchVerifiedStripeEvent(
   event: LooseRecord,
   subscription?: LooseRecord,
 ) {
+  const { __sporadesProviderPayloadDigest: _digest, ...publicEvent } = event;
   const deliveredEvent = Object.freeze({
-    ...event,
+    ...publicEvent,
     raw: deepFreezeVerifiedJson(event.raw),
   });
   if (subscription?.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
@@ -22,4 +23,13 @@ export async function dispatchVerifiedStripeEvent(
   }
   await subscription.handler(ctx, deliveredEvent);
   return Object.freeze({ delivered: true, providerEventId: event.providerEventId, type: event.type });
+}
+
+/** Card provider identity never belongs in a durable callback Job, including expanded events. */
+export function redactStripeCardEvidence(value: any): any {
+  if (typeof value === "string" && /^pm_[A-Za-z0-9_]+$/.test(value)) return null;
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(redactStripeCardEvidence);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "fingerprint")
+    .map(([key, child]) => [key, redactStripeCardEvidence(child)]));
 }

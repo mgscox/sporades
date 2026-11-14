@@ -726,7 +726,8 @@ test("packaged CLI prints isolated origins, accepts only stdin secrets, and shar
   }
   const provider = createStripeTeamBillingProvider({ config, env, apiBaseUrl: data.origin });
   const checkout = await provider.create(input);
-  const complete = await control("checkout.complete", checkout.sessionId);
+  const complete = await control("checkout.complete", checkout.sessionId, { paymentMethod: { type: "card", card: "cli-card" } });
+  assert.equal((await control("state")).paymentMethods[0].card.fingerprint, "cc3f093757130c87");
   assert.equal((await control("events.pending")).length, 2);
   assert.equal((await control("events.deliveries")).length, 0, "manual CLI mode queues transitions for controlled delivery");
   assert.equal((await control("subscriptions.get", complete.subscription)).status, "active");
@@ -749,7 +750,25 @@ test("canonical and generated testing declarations compile the same consumer con
   await writeFile(probe, `
 import { createStripeTeamBillingFake, type StripeFakeFault, type StripeTeamBillingFakeOptions } from "sporades/testing/stripe";
 import { createStripeTeamBillingFake as generatedFactory } from ${JSON.stringify(path.resolve("dist/testing/stripe.js"))};
-import type { TeamBillingDefinition } from "sporades/server";
+import type { TeamBillingDefinition, CurrentUserTeamBillingApi, PrivilegedTeamBillingApi, AtomicStripeConsequenceContext, TeamBillingCardIdentity } from "sporades/server";
+import type { StripeCardIdentityResult } from "sporades/server/stripe";
+import type { StripeCardIdentityResult as GeneratedCardIdentityResult } from ${JSON.stringify(path.resolve("dist/stripe-payment-integration.js"))};
+import { createStripePaymentIntegration } from "sporades/server/stripe";
+import { createStripePaymentIntegration as generatedIntegration } from ${JSON.stringify(path.resolve("dist/stripe-payment-integration.js"))};
+const sameIntegration: typeof generatedIntegration = createStripePaymentIntegration;
+const otherIntegration: typeof createStripePaymentIntegration = generatedIntegration;
+declare const canonicalIdentity: StripeCardIdentityResult;
+const generatedIdentity: GeneratedCardIdentityResult = canonicalIdentity;
+declare const current: CurrentUserTeamBillingApi;
+declare const privileged: PrivilegedTeamBillingApi;
+declare const atomic: AtomicStripeConsequenceContext;
+const identities: Promise<TeamBillingCardIdentity>[] = [current.getCardIdentity("team"), privileged.getCardIdentity("team"), atomic.teamBilling.getCardIdentity("team")];
+import { teamBilling as browserBilling } from "sporades/client";
+// @ts-expect-error Card identity is never a browser capability.
+browserBilling.getCardIdentity("team");
+// @ts-expect-error Card tokens are absent from the browser Team Billing projection.
+const leakedToken = ({} as import("sporades/client").TeamBillingProjection).card;
+void [sameIntegration, otherIntegration, generatedIdentity, identities, leakedToken];
 const portal: NonNullable<TeamBillingDefinition["portal"]> = {
   returnPath: "/billing", prorationBehavior: "always_invoice", billingCycleAnchor: "now",
   scheduleAtPeriodEnd: ["shortening_interval", "decreasing_item_amount"],
@@ -777,7 +796,10 @@ async function guardControls(fake: Awaited<ReturnType<typeof createStripeTeamBil
 }
 const options: StripeTeamBillingFakeOptions = { catalogue: { products: [{ id: "prod_types", prices: [{ id: "price_types", recurring: "month", intervalCount: 3, unitAmount: 1500 }] }], portalConfigurations: [] }, webhookSecret: "whsec_types", webhookTarget: "http://127.0.0.1:5218/webhook", delivery: "manual" };
 const fake = await generated(options);
-await fake.checkout.complete("cs_test_types", { billingMode: "flexible" });
+await fake.checkout.complete("cs_test_types", { billingMode: "flexible", paymentMethod: { type: "card", card: "same-card" } });
+await fake.checkout.complete("cs_test_types", { paymentMethod: { type: "none" } });
+// @ts-expect-error Non-card controls carry no card label.
+await fake.checkout.complete("cs_test_types", { paymentMethod: { type: "sepa_debit", card: "bad" } });
 await fake.events.deliver(undefined, { badSignature: true });
 fake.faults.inject({ operation: "subscriptions.update", status: "paymentActionRequired", count: 1, when: "after" });
 await fake.subscriptions.setQuantity("sub_types", 3);
@@ -967,4 +989,138 @@ for (const billingMode of ["classic", "flexible"]) test(`quarterly renewals reta
     assert.equal(f.fake.requests().filter(r => r.operation === "subscriptions.update").length, writes);
     assert.equal(f.fake.state().invoices.length, invoices, "reset recovery must not charge again after an automatic renewal");
   }
+});
+
+test("card identities are deterministic across customers, reset and trial collection", async t => {
+  const f = await fixture(t);
+  const provider = createStripeTeamBillingProvider({ config: { ...config, cardIdentityKeyEnv: "CARD_KEY" },
+    env: { ...env, CARD_KEY: "0123456789abcdef0123456789abcdef" }, apiBaseUrl: f.fake.origin });
+  const capture = async (card, sequence, trialDays) => {
+    const { session } = await paid(f, { paymentMethod: card }, { idempotencyKey: `card-${sequence}-stable-key`, ...(trialDays ? { trialDays } : {}) });
+    return provider.readSubscriptionCardIdentity({ customerId: session.customer, subscriptionId: session.subscription });
+  };
+  const first = await capture({ type: "card", card: "4242424242424242" }, 1);
+  assert.match(first.card.token, /^[A-Za-z0-9_-]{43}$/); assert.ok(Object.isFrozen(first.card));
+  assert.deepEqual(await capture({ type: "card", card: "4242424242424242" }, 2, 14), first);
+  assert.notDeepEqual(await capture({ type: "card", card: "another-card" }, 3), first);
+  assert.deepEqual(await capture({ type: "sepa_debit" }, 4), { ok: true, card: null });
+  assert.deepEqual(await capture({ type: "none" }, 5, 14), { ok: true, card: null });
+  const fingerprint = f.fake.state().paymentMethods[0].card.fingerprint;
+  f.fake.reset();
+  assert.deepEqual(await capture({ type: "card" }, 6), first);
+  assert.equal(f.fake.state().paymentMethods[0].card.fingerprint, fingerprint);
+  const subscription = f.fake.state().subscriptions[0];
+  await assert.rejects(provider.readSubscriptionCardIdentity({ customerId: "cus_wrong", subscriptionId: subscription.id }), error => !error.retryable);
+  await assert.rejects(f.stripe.subscriptions.retrieve(subscription.id, { expand: ["customer"] }), error => error.code === "sporades_fake_unsupported");
+});
+
+test("Team card identity remains pending until its private durable capture settles", async t => {
+  const dir = await scratch(t);
+  const capsule = { name: "card-capture", schema: {}, teamBilling: { catalogue: {
+    team: { quantity: { kind: "fixed", value: 2 }, trialDays: 14, stripe: {
+      sandbox: { priceId: "price_team" }, live: { priceId: "price_live_team" },
+    } },
+  }, authorize: () => ({ allow: true }) } };
+  let database = await openDevDatabase(path.join(dir, "card.db"), "", { ...env, CARD_KEY: "0123456789abcdef0123456789abcdef" },
+    { name: capsule.name, logs: { jsonlPath: path.join(dir, "capture.jsonl") }, payments: { stripe: { ...config, requestTimeoutMs: 1000, cardIdentityKeyEnv: "CARD_KEY" } } }, capsule,
+    { createStripeTeamBillingProvider, createStripeCallbackEndpoint });
+  t.after(() => database.close());
+  await database.init();
+  await database.__deferJobExecution();
+  const f = await fixture(t);
+  database.stripeApiBaseUrl = f.fake.origin;
+  const { createPrivilegedTeamBillingApi } = await import("../dist/team-billing-runtime.js");
+  const { applyVerifiedTeamBillingObservation } = await import("../dist/team-billing-convergence.js");
+  let api = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: true }));
+  const telemetryRecords = [];
+  const telemetry = { start: row => { telemetryRecords.push(row); return { run: operation => operation(), end: outcome => telemetryRecords.push(outcome) }; }, transition: (...args) => telemetryRecords.push(args) };
+  database.__jobTelemetry = telemetry;
+  const teamIds = [];
+  for (const [index, method] of [{ type: "card" }, { type: "card" }, { type: "card", card: "other" }, { type: "sepa_debit" }].entries()) {
+    const teamId = `22222222-2222-4222-8222-22222222222${index}`;
+    const operationId = `11111111-1111-4111-8111-11111111111${index}`;
+    teamIds.push(teamId);
+    const now = new Date().toISOString();
+    database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Card Team', ?, 'admin')").run(teamId, now);
+    database.adapter.prepare("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity]) VALUES (?, ?, ?, 'admin', 'checkout', 'team', 'ready', ?, ?, ?, 'sandbox', 2)").run(operationId, operationId, teamId, `card-${index}`, now, now);
+    assert.deepEqual(await api.getCardIdentity(teamId), { state: "none" });
+    await paid(f, { paymentMethod: method }, { operationId, businessReference: operationId, idempotencyKey: `e2e-${index}-checkout`, trialDays: 14 });
+    const raw = f.fake.events.pending().at(-2);
+    const event = { provider: "stripe", providerEventId: raw.id, type: raw.type, occurredAt: new Date(raw.created * 1000).toISOString(), livemode: false, objectId: raw.data.object.id, raw };
+    await database.adapter.withTransaction(tx => applyVerifiedTeamBillingObservation({ ...database, adapter: tx, __transactionActive: true }, event));
+    assert.deepEqual(await api.getCardIdentity(teamId), { state: "pending" });
+  }
+  database.__jobStopped = false;
+  await settled(database);
+  const cards = await Promise.all(teamIds.map(id => api.getCardIdentity(id)));
+  assert.ok(cards.every(c => c.state === "captured"));
+  assert.equal(cards[0].card.token, cards[1].card.token);
+  assert.notEqual(cards[0].card.token, cards[2].card.token);
+  assert.equal(cards[3].card, null);
+  const jobs = JSON.stringify(await inspectRuntimeJobs(database.adapter));
+  const logText = await readFile(path.join(dir, "capture.jsonl"), "utf8");
+  const diagnostics = JSON.stringify(database.runtimeDiagnostics);
+  for (const capture of cards.filter(value => value.card)) {
+    assert.ok(!logText.includes(capture.card.token));
+    assert.ok(!JSON.stringify(telemetryRecords).includes(capture.card.token));
+    assert.ok(!diagnostics.includes(capture.card.token));
+  }
+  assert.ok(!jobs.includes(cards[0].card.token));
+  for (const pm of f.fake.state().paymentMethods) {
+    if (pm.card) {
+      assert.ok(!logText.includes(pm.card.fingerprint));
+      assert.ok(!JSON.stringify(telemetryRecords).includes(pm.card.fingerprint));
+      const tables = database.adapter.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+      for (const { name } of tables) assert.ok(!JSON.stringify(database.adapter.prepare(`SELECT * FROM [${name}]`).all()).includes(pm.card.fingerprint), name);
+    }
+  }
+
+  const { createCurrentUserTeamBillingErasureApi } = await import("../dist/team-billing-erasure.js");
+  const holder = { current: { signal: new AbortController().signal } };
+  const auth = { userId: "card-admin", isAuthenticated: true, isGuest: false };
+  database.adapter.prepare("INSERT INTO [sporades_team_memberships] ([teamId], [userId], [role], [createdAt]) VALUES (?, ?, 'admin', ?)").run(teamIds[0], auth.userId, new Date().toISOString());
+  const userApi = createCurrentUserTeamBillingErasureApi(database, auth, () => holder.current, ctx => ctx === holder.current);
+  assert.deepEqual(await userApi.getCardIdentity(teamIds[0]), cards[0]);
+  database.adapter.prepare("UPDATE [sporades_team_memberships] SET [role] = 'member' WHERE [teamId] = ?").run(teamIds[0]);
+  await assert.rejects(userApi.getCardIdentity(teamIds[0]));
+  database.adapter.prepare("UPDATE [sporades_team_memberships] SET [role] = 'admin' WHERE [teamId] = ?").run(teamIds[0]);
+  const authorize = database.runTeamBillingAuthority;
+  database.runTeamBillingAuthority = async () => ({ allow: false });
+  await assert.rejects(userApi.getCardIdentity(teamIds[0]));
+  database.runTeamBillingAuthority = authorize;
+  database.adapter.prepare("DELETE FROM [sporades_team_memberships] WHERE [teamId] = ?").run(teamIds[0]);
+  await assert.rejects(userApi.getCardIdentity(teamIds[0]));
+  holder.current = null;
+  await assert.rejects(userApi.getCardIdentity(teamIds[0]));
+  await assert.rejects(api.getCardIdentity({ bad: true }), { code: "TEAM_BILLING_DENIED" });
+  const missingKeyApi = createPrivilegedTeamBillingApi({ ...database, paymentsConfig: { stripe: {} } }, () => ({ __privilegedRunActive: true }));
+  await assert.rejects(missingKeyApi.getCardIdentity(teamIds[0]), { code: "STRIPE_CARD_IDENTITY_NOT_CONFIGURED" });
+  const dormant = createPrivilegedTeamBillingApi({ ...database, teamBillingDefinition: null }, () => ({ __privilegedRunActive: true }));
+  await assert.rejects(dormant.getCardIdentity(teamIds[0]), { code: "TEAM_BILLING_DENIED" });
+  const inactive = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: false }));
+  await assert.rejects(inactive.getCardIdentity(teamIds[0]), { code: "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE" });
+
+  // Lose both pending work and its Job, then recover using the real runtime startup path.
+  await database.__deferJobExecution();
+  database.adapter.prepare("DELETE FROM [sporades_team_billing_card_identities] WHERE [teamId] = ?").run(teamIds[0]);
+  database.adapter.prepare("DELETE FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-card-identity'").run();
+  await database.close();
+  database = await openDevDatabase(path.join(dir, "card.db"), "", { ...env, CARD_KEY: "0123456789abcdef0123456789abcdef" },
+    { name: capsule.name, logs: { jsonlPath: path.join(dir, "capture.jsonl") }, payments: { stripe: { ...config, requestTimeoutMs: 1000, cardIdentityKeyEnv: "CARD_KEY" } } }, capsule,
+    { createStripeTeamBillingProvider, createStripeCallbackEndpoint });
+  database.stripeApiBaseUrl = f.fake.origin;
+  f.fake.faults.inject({ operation: "subscriptions.retrieve", status: 503 });
+  database.__jobTelemetry = telemetry;
+  await database.init();
+  api = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: true }));
+  await runCurrentUserJobWorker(database);
+  assert.deepEqual(await api.getCardIdentity(teamIds[0]), { state: "pending" });
+  const deadline = Date.now() + 5000;
+  while ((await api.getCardIdentity(teamIds[0])).state === "pending" && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await runCurrentUserJobWorker(database);
+  }
+  assert.equal((await api.getCardIdentity(teamIds[0])).card.token, cards[0].card.token);
+  const capturedJobs = database.adapter.prepare("SELECT * FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-card-identity'").all();
+  assert.ok(!JSON.stringify(capturedJobs).includes(cards[0].card.token));
 });

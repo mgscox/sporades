@@ -1,3 +1,4 @@
+import { readTeamBillingCardIdentity } from "./team-billing-card-identity.js";
 import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
 import { assertCurrencyHandoverInactive, readCurrencyHandoverLatch } from "./team-billing-currency-handover.js";
 import { normalizeModeBinding, teamBillingPrice, teamBillingPriceById, teamBillingPrices } from "./team-billing-prices.js";
@@ -39,6 +40,8 @@ const TEAM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f
 export function createTeamBillingTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
   return chainMaybePromise([
+    () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_card_identities] (" +
+      "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL)")),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] (" +
       "[teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, " +
@@ -882,6 +885,15 @@ export async function safeTeamBillingProjection(transaction: LooseRecord, defini
 /** Bounded provider-free quarantine inspection for an active Privileged callback. */
 export function createPrivilegedTeamBillingApi(database: LooseRecord, contextGetter: () => LooseRecord) {
   return Object.freeze({
+    async getCardIdentity(teamId: any) {
+      assertActivePrivilegedTeamBillingAccess(contextGetter);
+      if (!database.teamBillingDefinition || typeof teamId !== "string" || !TEAM_ID_PATTERN.test(teamId)) throw teamBillingDenied();
+      const exists = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(teamId);
+      if (!exists) throw teamBillingDenied();
+      const result = await readTeamBillingCardIdentity(database, database.adapter, teamId);
+      assertActivePrivilegedTeamBillingAccess(contextGetter);
+      return result;
+    },
     async listQuarantines(options: LooseRecord = {}) {
       const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
       assertActive();

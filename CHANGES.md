@@ -89,6 +89,10 @@ Changes since v0.9.47.
 
 ## Unreleased
 
+- Add server-only keyed card identity reads for completed Checkout and durable
+  Team Billing capture, with private storage, fake card controls and erasure
+  cleanup. Capsules own post-Checkout trial deduplication (#406).
+
 - Add provider-free Team Billing `previewPlanTransition` quotes. Durable previews
   bind confirmation to the same proration date and refuse expired, foreign or
   changed quotes safely. Public types and the Stripe fake include preview support

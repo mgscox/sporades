@@ -31,6 +31,8 @@ const auth = { userId: "erasure-admin", isAuthenticated: true, isGuest: false, p
 test("provider-quiesced erasure returns only local deletion authorization and leaves a provider-free tombstone", async () => {
   const fixture = openFixture();
   try {
+    fixture.sqlite.prepare("INSERT INTO [sporades_team_billing_card_identities] VALUES ('captured-operation', ?, 'generation', 'card', ?, ?)")
+      .run(teamId, "a".repeat(43), "2026-08-24T10:00:00.000Z");
     fixture.sqlite.prepare("INSERT INTO [sporades_team_billing_quotes] ([operationId], [teamId], [snapshot], [expiresAt]) VALUES ('preview-operation', ?, ?, ?)")
       .run(teamId, JSON.stringify({ providerSubscriptionId: "sub_erasure" }), "2026-08-24T10:05:00.000Z");
     const pending = await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId);
@@ -55,6 +57,7 @@ test("provider-quiesced erasure returns only local deletion authorization and le
     assert.deepEqual(await prepareTeamBillingErasure(fixture.database, auth, teamId, requestId), {
       state: "authorized", teamId, requestId,
     });
+    assert.equal(fixture.count("sporades_team_billing_card_identities"), 0);
     assert.equal(fixture.count("sporades_team_billing_customers"), 0);
     assert.equal(fixture.count("sporades_team_billing_subscriptions"), 0);
     assert.equal(fixture.count("sporades_team_billing_operations"), 0);
@@ -627,6 +630,7 @@ function openFixture() {
   for (const statement of [
     "CREATE TABLE [sporades_teams] ([id] TEXT PRIMARY KEY, [name] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_memberships] ([teamId] TEXT NOT NULL, [userId] TEXT NOT NULL, [role] TEXT NOT NULL)",
+    "CREATE TABLE [sporades_team_billing_card_identities] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)",
     "CREATE TABLE [sporades_team_billing_subscriptions] ([id] TEXT PRIMARY KEY, [replacedBy] TEXT NULL, [currency] TEXT NULL, [unitAmount] INTEGER NULL, [teamId] TEXT NOT NULL, [mode] TEXT NOT NULL, [providerSubscriptionId] TEXT NOT NULL UNIQUE, [providerPriceId] TEXT NOT NULL, [providerSubscriptionItemId] TEXT NULL, [productKey] TEXT NOT NULL, [quantity] INTEGER NOT NULL, [state] TEXT NOT NULL, [cancelAtPeriodEnd] INTEGER NOT NULL, [observedAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [terminalLatch] INTEGER NOT NULL DEFAULT 0, [hasSchedule] INTEGER NOT NULL DEFAULT 0, [providerScheduleId] TEXT NULL, [ownedScheduleId] TEXT NULL)",
     "CREATE TABLE [sporades_team_billing_operations] ([id] TEXT PRIMARY KEY, [currency] TEXT NULL, [requestId] TEXT NOT NULL, [teamId] TEXT NOT NULL, [actorUserId] TEXT NOT NULL, [kind] TEXT NOT NULL, [productKey] TEXT NULL, [status] TEXT NOT NULL, [providerObjectId] TEXT NULL, [idempotencyKey] TEXT NOT NULL UNIQUE, [safeFailureCode] TEXT NULL, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL, [mode] TEXT NULL, [quantity] INTEGER NULL, [providerPriceId] TEXT NULL, [providerExpiresAt] INTEGER NULL, [attemptedAt] TEXT NULL, [trialDays] INTEGER NULL, [providerCustomerId] TEXT NULL, [providerSubscriptionId] TEXT NULL, UNIQUE ([teamId], [requestId]))",

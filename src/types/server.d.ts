@@ -844,7 +844,14 @@ export type TeamBillingProjection =
   | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; currentPeriodEnd: string }
   | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
+/** Server-only result; never publish tokens to clients, logs or Job results. */
+export type TeamBillingCardIdentity =
+  | Readonly<{ state: "none" | "pending" }>
+  | Readonly<{ state: "captured"; card: Readonly<{ token: string }> | null; capturedAt: string }>;
+
 export type CurrentUserTeamBillingApi = {
+  /** Current linked Team administrator plus the read policy; provider-free and server-only. */
+  getCardIdentity(teamId: string): Promise<TeamBillingCardIdentity>;
   /** Provider-free verified billing truth for app policy; requires current linked Team membership. */
   get(teamId: string): Promise<TeamBillingProjection>;
   /** Admits only the app's separate local deletion transaction after provider quiescence is durably proven. */
@@ -959,6 +966,8 @@ export type PrivilegedTeamBillingQuarantine = Readonly<{
 }>;
 
 export type PrivilegedTeamBillingApi = {
+  /** Userless server-only card token read; requires an active Privileged callback. */
+  getCardIdentity(teamId: string): Promise<TeamBillingCardIdentity>;
   /** Lists at most 100 provider-free quarantined observations, newest first. */
   listQuarantines(options?: { limit?: number }): Promise<{ quarantines: readonly PrivilegedTeamBillingQuarantine[] }>;
 };
@@ -1309,6 +1318,8 @@ export type AtomicStripeConsequenceContext<Schema extends SchemaDefinition = Sch
   PrivilegedContext<Schema>,
   "app" | "auth" | "signal" | "db" | "env" | "services" | "log" | "rateLimit"
 > & {
+  /** Provider-free card capture state only; capture may still be pending. */
+  teamBilling: Pick<PrivilegedTeamBillingApi, "getCardIdentity">;
   /** Jobs persist with the consequence and are dispatched only after commit. */
   jobs: Pick<JobApi, "enqueue">;
   /** Exact membership count and lifecycle serialization inside the consequence transaction. */

@@ -1,3 +1,4 @@
+import { stageTeamBillingCardIdentity } from "./team-billing-card-identity.js";
 import { applyCurrencySetup } from "./team-billing-currency-handover.js";
 import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
 import { teamBillingPriceById, TEAM_BILLING_READ_ONLY_KINDS_SQL } from "./team-billing-runtime.js";
@@ -61,7 +62,8 @@ export async function applyVerifiedTeamBillingObservation(database: LooseRecord,
     )).get(database.teamBillingErasureObjectKey(event.objectId));
     if (erased) return Object.freeze({ applied: false, erased: true });
   }
-  const digest = safeDigest(event?.raw);
+  const digest = typeof event?.__sporadesProviderPayloadDigest === "string" && /^[a-f0-9]{64}$/.test(event.__sporadesProviderPayloadDigest)
+    ? event.__sporadesProviderPayloadDigest : safeDigest(event?.raw);
   const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
   const occurredAt = canonicalTimestamp(event?.occurredAt);
   const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
@@ -153,6 +155,7 @@ async function applyCheckout(database: LooseRecord, event: LooseRecord, mode: st
     )).run(completed ? "completed" : "expired", object.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
     outcome = "applied";
   }
+  if (completed) await stageTeamBillingCardIdentity(database, operationId);
   return { teamId: operation.teamId, objectId: object.id, rank: 10, outcome };
 }
 
@@ -250,6 +253,7 @@ async function applySubscription(database: LooseRecord, event: LooseRecord, mode
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [replacedBy] = ? WHERE [providerSubscriptionId] = ? AND [teamId] = ?")).run(subscriptionId, handover.sourceSubscriptionId, teamId);
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'completed', [latchUntil] = NULL WHERE [operationId] = ?")).run(operation.id);
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL WHERE [id] = ?")).run(operation.id);
+    await stageTeamBillingCardIdentity(database, operation.id);
     if (product.quantity.kind === "team-members") await stageTeamBillingMembershipChange(
       { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }, teamId,
     );

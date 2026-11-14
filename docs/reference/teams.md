@@ -1206,3 +1206,41 @@ Passing a local stub test certifies **nothing about live Stripe**: it does not
 attest Stripe's sandbox/live API behavior, Dashboard Portal configuration,
 payment methods, tax, SCA, delivery timing, or production readiness. Real Stripe
 acceptance remains a separately authorized human check.
+
+## Server-only card identity
+
+`await ctx.teamBilling.getCardIdentity(teamId)` returns one frozen value:
+
+- `{ state: "none" }`: no completed Checkout in the current payment mode.
+- `{ state: "pending" }`: completed Checkout awaits durable capture.
+- `{ state: "captured", card: { token } | null, capturedAt }`: captured card
+  equality token or a known non-card/no-method result.
+
+Current-user server code needs current linked Team membership, administrator
+authority and the Team Billing `read` policy. Privileged callbacks are userless.
+Atomic Stripe consequence handlers receive only this provider-free read, which
+may still be pending. Dormant Team Billing refuses with `TEAM_BILLING_DENIED`;
+a missing key declaration refuses with `STRIPE_CARD_IDENTITY_NOT_CONFIGURED`.
+The browser client, Team Billing projection, handshake and WebSocket operations
+never expose this method or token.
+
+Set the dedicated optional `payments.stripe.cardIdentityKeyEnv` secret before
+relying on capture. Verified paid or trial Checkout stages a durable private
+capture Job. Provider-free convergence stays inside its atomic fence; the Job
+reads Stripe afterward. Bounded retry failures leave pending state; restart
+repairs missing Jobs and renews pending generations. Currency handover refreshes
+the token after verified replacement Subscription evidence. Portal method
+updates do not refresh in v1: this identifies the card that started billing.
+Provider-safe erasure removes the runtime token with billing rows. Retention of
+any copy in the Capsule's trial ledger belongs to the Capsule.
+
+To deter repeated trials, store tokens under a unique constraint in a private
+Capsule table and decide the consequence. Capture happens after Checkout, so a
+duplicate is detected after the trial Subscription exists. Withhold Capsule
+entitlement and cancel through Portal or erasure; Checkout cannot refuse it in
+advance. Never put the token in browser-visible Job state or results, logs or
+messages. Rotating the dedicated key invalidates previous tokens, with no v1
+dual-key window. Wallets can yield different tokens per device, and tokens are
+not comparable across Capsules or Stripe accounts. A human sandbox check of
+Stripe's expanded fields is required before relying on the model; see
+[ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md).

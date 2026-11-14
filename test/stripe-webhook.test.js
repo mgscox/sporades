@@ -1849,3 +1849,44 @@ test("an expired reserved Stripe Job is recovered by a second Postgres runtime w
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("durable callbacks redact expanded card evidence and envelope PaymentMethod IDs", async () => {
+  let stored, delivered;
+  const endpoint = createStripeCallbackEndpoint({ stripe }, serverEnv);
+  const raw = JSON.parse(stripeEvent("evt_card_redaction", { type: "payment_method.attached", object: {
+    id: "pm_private_callback", object: "payment_method", type: "card", card: { fingerprint: "privatecallbackfingerprint" },
+  } }));
+  const body = JSON.stringify(raw);
+  await endpoint.handler({ request: { bodyBytes: { toUint8Array: () => Buffer.from(body) }, headers: {
+    "stripe-signature": Stripe.webhooks.generateTestHeaderString({ payload: body, secret: webhookSecret }),
+  } }, jobs: { enqueue: async (_name, payload) => { stored = payload; return { id: "job" }; } } });
+  assert.equal(stored.objectId, null);
+  assert.doesNotMatch(JSON.stringify(stored), /pm_private_callback|privatecallbackfingerprint/);
+  assert.match(stored.__sporadesProviderPayloadDigest, /^[a-f0-9]{64}$/);
+  const { dispatchVerifiedStripeEvent } = await import("../dist/stripe-events-runtime.js");
+  await dispatchVerifiedStripeEvent({}, stored, { kind: "stripeEvent", handler: (_ctx, event) => { delivered = event; } });
+  assert.equal("__sporadesProviderPayloadDigest" in delivered, false);
+});
+
+test("atomic card identity reads stay provider-free and expire with their consequence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-atomic-card-"));
+  const teamId = "11111111-1111-4111-8111-111111111111";
+  let retained;
+  const config = { name: "atomic-card", payments: { stripe: { ...stripe, cardIdentityKeyEnv: "CARD_KEY" } } };
+  const capsule = { schema: {}, teamBilling: testTeamBillingDefinition() };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", { ...serverEnv, CARD_KEY: "0123456789abcdef0123456789abcdef" }, config, capsule,
+    { createStripeCallbackEndpoint, createStripeTeamBillingProvider: () => { assert.fail("atomic card reads must not call the provider"); } });
+  try {
+    await database.init();
+    database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Atomic card', ?, 'admin')").run(teamId, new Date().toISOString());
+    const raw = JSON.parse(stripeEvent("evt_atomic_card"));
+    const event = { provider: "stripe", providerEventId: raw.id, type: raw.type, occurredAt: new Date(raw.created * 1000).toISOString(), livemode: false, objectId: raw.data.object.id, raw };
+    await runAtomicStripeConsequence(database, { auth: { userId: "__privileged__" }, signal: new AbortController().signal }, event,
+      declareStripeEvent({ consequence: "atomic" }, async ctx => {
+        retained = ctx.teamBilling;
+        assert.deepEqual(Object.keys(retained), ["getCardIdentity"]);
+        assert.deepEqual(await retained.getCardIdentity(teamId), { state: "none" });
+      }));
+    await assert.rejects(retained.getCardIdentity(teamId), { code: "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE" });
+  } finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
+});

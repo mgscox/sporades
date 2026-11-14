@@ -52,7 +52,7 @@ export type StripeTeamBillingFake = {
   close(): Promise<void>;
   checkout: {
     /** Trial Checkouts create a trialing Subscription with trial_start/trial_end and no payment required. */
-    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible" }): Promise<StripeFakeObject>;
+    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible"; paymentMethod?: { type: "card"; card?: string } | { type: "sepa_debit" | "none" } }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
   portal: {

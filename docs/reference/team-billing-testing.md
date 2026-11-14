@@ -294,3 +294,38 @@ failed invoices and Portal switches preserve it. Unsupported Price currencies
 and incompatible Customer currencies are refused. Omitting currency facts keeps
 existing fixtures unchanged. Fake-backed tests certify the runtime protocol;
 real Stripe regional charging remains a release smoke check.
+
+## Two Teams using the same card
+
+Seal a test-only 32-byte-or-longer `CARD_IDENTITY_KEY` and configure
+`payments.stripe.cardIdentityKeyEnv` to that name. Start both Teams' ordinary
+Checkout flows. With the fake running and their Sessions ready:
+
+```ts
+await fake.checkout.complete(firstSessionId, { paymentMethod: { type: "card", card: "same-card" } });
+await fake.checkout.complete(secondSessionId, { paymentMethod: { type: "card", card: "same-card" } });
+// Deliver the verified callbacks, then let runtime capture Jobs settle.
+await fake.events.deliver();
+// In trusted Capsule server code (poll while pending):
+const first = await ctx.teamBilling.getCardIdentity(firstTeamId);
+const second = await ctx.teamBilling.getCardIdentity(secondTeamId);
+if (first.state === "captured" && second.state === "captured" && first.card && second.card) {
+  if (first.card.token === second.card.token) { /* reject a duplicate in the private trial ledger */ }
+}
+```
+
+Different labels yield different tokens. Omitted `paymentMethod` uses the card
+`4242424242424242`; `{ type: "card" }` does the same. Use
+`{ paymentMethod: { type: "sepa_debit" } }` for a non-card method and
+`{ paymentMethod: { type: "none" } }` for a trial collecting none; both capture
+`card: null`. Fingerprints are deterministic across processes, customers,
+`reset()` and runs. `fake.state().paymentMethods` exposes fake `pm_…` objects and
+raw fake fingerprints only for assertions. The CLI control API accepts the same
+`checkout.complete` options and exposes the same `state` snapshot.
+
+The fake supports only the exact card-read expansions documented in
+[ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md); other reads
+stay `sporades_fake_unsupported`. It certifies Sporades' model, not Stripe's live
+Checkout behavior, wallet equivalence or actual free-trial prevention. Keep
+tokens out of browser-visible Job state and allow for post-Checkout duplicate
+detection. The Capsule owns cancellation and entitlement decisions.

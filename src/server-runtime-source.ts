@@ -1,3 +1,4 @@
+import { TEAM_BILLING_CARD_IDENTITY_JOB, performTeamBillingCardIdentity, repairTeamBillingCardIdentities } from "./team-billing-card-identity.js";
 import { TEAM_BILLING_CURRENCY_HANDOVER_JOB, startTeamBillingCurrencyHandover, performTeamBillingCurrencyHandover, repairTeamBillingCurrencyHandovers } from "./team-billing-currency-handover.js";
 import { snapshotIngressDecision, ingressRefusalJob } from "./file-ingress-refusal.js";
 import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
@@ -863,6 +864,7 @@ export async function openDevDatabase(
       }
       return dispatchVerifiedStripeEvent(context, event, subscription);
     },
+    performTeamBillingCardIdentity: (context: LooseRecord, payload: LooseRecord) => performTeamBillingCardIdentity(database, context, payload),
     performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
       performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
@@ -967,6 +969,8 @@ export async function openDevDatabase(
     mcp,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    enqueueTeamBillingCardIdentityJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CARD_IDENTITY_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true),
     enqueueTeamBillingCheckoutJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
     enqueueTeamBillingCheckoutExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
@@ -1250,6 +1254,7 @@ export async function openDevDatabase(
       if (database.teamBillingDefinition) {
         await repairTeamBillingPlanPreviewExpiries(database);
         await repairTeamBillingCurrencyHandovers(database);
+        await repairTeamBillingCardIdentities(database);
         await repairTeamBillingDesiredStateAtStartup(database);
         await repairTeamBillingErasureStateAtStartup(database);
       }
@@ -4331,6 +4336,8 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   context.jobs = Object.freeze({
     enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
   });
+  const billing = createPrivilegedTeamBillingApi(database, () => holder.current);
+  context.teamBilling = Object.freeze({ getCardIdentity: billing.getCardIdentity.bind(billing) });
   const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
   context.teams = Object.freeze({
     countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
