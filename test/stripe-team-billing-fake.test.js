@@ -84,9 +84,9 @@ for (const enabled of [false, true]) {
       subscription_data: { metadata: { sporades_team_billing_operation: input.operationId } },
     }, { idempotencyKey: input.idempotencyKey });
     const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled } }, env, apiBaseUrl: f.fake.origin });
-    const recovered = await provider.create(input);
+    const recovered = await provider.create({ ...input, taxEnabled: null });
     assert.equal(recovered.sessionId, legacy.id, "upgrade must recover the original Session without starting a new sale");
-    const erased = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [input] }));
+    const erased = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [{ ...input, taxEnabled: null }] }));
     assert.equal(erased.checkouts[0].id, legacy.id);
     assert.equal(erased.checkouts[0].state, "expired");
     assert.equal(f.fake.state().checkouts.length, 1);
@@ -109,7 +109,8 @@ for (const enabled of [true, false]) for (const legacy of [false, true]) {
     const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled } }, env, apiBaseUrl: f.fake.origin });
     const handover = { operationId: input.operationId, customerId: session.customer, sourceSubscriptionId: subscription.id,
       sourcePriceId: item.price.id, sourceItemId: item.id, sourceCurrency: "gbp", sourceQuantity: item.quantity,
-      anchor: item.current_period_end, currency: "eur", priceId: "price_team", quantity: item.quantity, idempotencyKey: "tax-handover" };
+      anchor: item.current_period_end, currency: "eur", priceId: "price_team", quantity: item.quantity, idempotencyKey: "tax-handover",
+      taxEnabled: legacy ? null : enabled };
     if (legacy) await f.stripe.checkout.sessions.create({ mode: "setup", customer: session.customer,
       success_url: "https://billing.example.test/billing", cancel_url: "https://billing.example.test/billing",
       client_reference_id: input.operationId, expires_at: input.providerExpiresAt,
@@ -122,10 +123,15 @@ for (const enabled of [true, false]) for (const legacy of [false, true]) {
     assert.equal(payload.billing_address_collection, enabled && !legacy ? "required" : undefined);
     assert.deepEqual(payload.customer_update, enabled && !legacy ? { address: "auto", name: "auto" } : undefined);
     await f.fake.checkout.complete(setup.sessionId);
-    await provider.replaceCurrencySubscription({ ...handover, setupSessionId: setup.sessionId });
-    const replacement = f.fake.requests().find(r => r.operation === "subscriptions.create").parameters;
-    assert.deepEqual(replacement.automatic_tax, { enabled: String(enabled) });
-    const recovery = { ...input, mode: "setup", customerId: session.customer, successPath: "/billing", cancelPath: "/billing",
+    const replacementInput = { ...handover, setupSessionId: setup.sessionId };
+    f.fake.faults.inject({ operation: "subscriptions.create", status: 500, when: "after" });
+    await assert.rejects(provider.replaceCurrencySubscription(replacementInput), error => error.retryable === true);
+    const restarted = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled: !enabled } }, env, apiBaseUrl: f.fake.origin });
+    await restarted.replaceCurrencySubscription(replacementInput);
+    const replacements = f.fake.requests().filter(r => r.operation === "subscriptions.create");
+    assert.deepEqual(replacements.at(-1).parameters, replacements[0].parameters);
+    assert.deepEqual(replacements[0].parameters.automatic_tax, legacy ? undefined : { enabled: String(enabled) });
+    const recovery = { ...input, taxEnabled: legacy ? null : enabled, mode: "setup", customerId: session.customer, successPath: "/billing", cancelPath: "/billing",
       idempotencyKey: `${handover.idempotencyKey}:setup` };
     const erased = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [recovery] }));
     assert.equal(erased.checkouts[0].id, setup.sessionId);

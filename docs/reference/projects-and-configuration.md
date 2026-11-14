@@ -816,9 +816,13 @@ billing address. Team Checkout also saves the address and name on an existing
 Customer; one-time Checkout creates a Customer. Currency handover collects these
 details in setup Checkout and sets automatic tax on the replacement Subscription,
 because setup mode only saves a payment method and cannot calculate tax.
-Team Checkout retries and erasure recovery can recover a Session issued before
-this upgrade by replaying its original envelope after an idempotency mismatch;
-they retain the same key and never change the issued Session's tax decision.
+Team Checkout and currency handover record their tax decision with the durable
+operation before provider work. Retries, erasure recovery, setup Checkout, and
+replacement Subscriptions reuse that decision after a restart, even if project
+tax configuration changes. New operations use the new decision. Operations
+admitted by the released pre-tax runtime retain their original taxless request
+shape, including queued operations that have not dispatched. Recovery retains
+the same idempotency key and does not probe alternative tax envelopes.
 For Capsule-owned Checkout Jobs using `sporades/server/stripe`, drain or
 reconcile pending requests before upgrading or changing the tax flag. Changing
 configuration does not retax existing Sessions or Subscriptions.

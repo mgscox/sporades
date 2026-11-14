@@ -565,8 +565,10 @@ failed reasons are `authority-changed`, `customer-balance-nonzero`, and
 no overlapping active currencies, non-prorated cancellation, anchored charging,
 webhook order and restart recovery. Real Stripe acceptance remains a separate
 sandbox/test-clock check. The replacement Subscription applies the explicit
-`payments.stripe.tax.enabled` decision. When enabled, setup Checkout collects tax IDs and saves the billing
-address and name. Stripe account setup and registrations remain operator-owned.
+`payments.stripe.tax.enabled` decision recorded when the handover was admitted.
+Setup and replacement retries retain it across config-changing restarts, as does
+erasure recovery. When enabled, setup Checkout collects tax IDs and saves the
+billing address and name. Stripe account setup and registrations remain operator-owned.
 
 For offline activation validation, use the server-only Stripe export:
 

@@ -21,25 +21,16 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
     telemetry: false,
     ...(provider ?? {}),
   });
-  // The runtime's 23-hour Checkout expiry precedes Stripe's 24-hour key retention.
-  async function createCheckoutSession(params: Stripe.Checkout.SessionCreateParams, requestOptions: Stripe.RequestOptions) {
-    try { return await stripe.checkout.sessions.create(params, requestOptions); }
-    catch (error) {
-      if (!(error instanceof Stripe.errors.StripeIdempotencyError)) throw error;
-      const { automatic_tax, tax_id_collection, billing_address_collection, customer_update, ...legacy } = params;
-      return stripe.checkout.sessions.create(legacy, requestOptions);
-    }
-  }
   return Object.freeze({
     async create(input: LooseRecord) {
       validateInput(input);
       throwIfAborted(options.signal);
       let session: LooseRecord;
       try {
-        session = await createCheckoutSession({
+        session = await stripe.checkout.sessions.create({
           mode: "subscription",
-          automatic_tax: { enabled: config.tax.enabled },
-          ...checkoutTaxDetails(config.tax.enabled, input.customerId),
+          ...automaticTax(input, config.tax.enabled),
+          ...checkoutTaxDetails(taxEnabledForRequest(input, config.tax.enabled), input.customerId),
           ...(input.currency ? { currency: input.currency } : {}),
           line_items: [{ price: input.priceId, quantity: input.quantity }],
           success_url: new URL(input.successPath, config.publicOrigin).toString(),
@@ -69,10 +60,10 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       try {
         await preflightCurrencyHandover(stripe, input, config.livemode);
-        const session = await createCheckoutSession({
+        const session = await stripe.checkout.sessions.create({
           mode: "setup", customer: input.customerId,
           // Setup cannot calculate tax; save the details for the replacement Subscription.
-          ...checkoutTaxDetails(config.tax.enabled, input.customerId),
+          ...checkoutTaxDetails(taxEnabledForRequest(input, config.tax.enabled), input.customerId),
           success_url: new URL(input.successPath, config.publicOrigin).toString(),
           cancel_url: new URL(input.cancelPath, config.publicOrigin).toString(),
           client_reference_id: input.operationId, expires_at: input.providerExpiresAt,
@@ -110,7 +101,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
           throwIfAborted(options.signal);
           const created = await stripe.subscriptions.create({
             customer: input.customerId, currency: input.currency,
-            automatic_tax: { enabled: config.tax.enabled },
+            ...automaticTax(input, config.tax.enabled),
             items: [{ price: input.priceId, quantity: input.quantity }],
             default_payment_method: setup.payment_method,
             billing_cycle_anchor: input.anchor, proration_behavior: "none",
@@ -412,17 +403,17 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       for (const recovery of input.checkoutRecoveries ?? []) {
         let recovered: LooseRecord;
         try {
-          recovered = await createCheckoutSession(recovery.mode === "setup" ? {
+          recovered = await stripe.checkout.sessions.create(recovery.mode === "setup" ? {
             mode: "setup", customer: recovery.customerId,
-            ...checkoutTaxDetails(config.tax.enabled, recovery.customerId),
+            ...checkoutTaxDetails(taxEnabledForRequest(recovery, config.tax.enabled), recovery.customerId),
             success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
             cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
             client_reference_id: recovery.operationId, expires_at: recovery.providerExpiresAt,
             metadata: { sporades_team_billing_operation: recovery.operationId },
           } : {
             mode: "subscription",
-            automatic_tax: { enabled: config.tax.enabled },
-            ...checkoutTaxDetails(config.tax.enabled, recovery.customerId),
+            ...automaticTax(recovery, config.tax.enabled),
+            ...checkoutTaxDetails(taxEnabledForRequest(recovery, config.tax.enabled), recovery.customerId),
             ...(recovery.currency ? { currency: recovery.currency } : {}),
             line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
             success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
@@ -853,9 +844,10 @@ function throwProviderOperationFailure(error: any): never {
 
 function validateInput(input: LooseRecord) {
   const required = ["businessReference", "cancelPath", "idempotencyKey", "mode", "operationId", "priceId", "productKey", "providerExpiresAt", "quantity", "successPath", "teamId"];
-  const keys = Object.keys(input ?? {}).filter((key) => !["customerId", "currency", "trialDays"].includes(key)).sort();
+  const keys = Object.keys(input ?? {}).filter((key) => !["customerId", "currency", "trialDays", "taxEnabled"].includes(key)).sort();
   if (!input || typeof input !== "object" || Array.isArray(input) || keys.join("\0") !== required.sort().join("\0")
     || (input.currency !== undefined && !validBillingCurrency(input.currency))
+    || !validTaxDecision(input.taxEnabled)
     || input.mode !== "subscription" || !validUuid(input.operationId) || input.businessReference !== input.operationId
     || !validUuid(input.teamId) || typeof input.productKey !== "string"
     || typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,249}$/.test(input.priceId)
@@ -996,8 +988,10 @@ function billingCycleAnchorNow(apiVersion: string): any {
 
 function validateCurrencyHandover(input: LooseRecord, setup: boolean) {
   const keys = ["operationId", "customerId", "sourceSubscriptionId", "sourcePriceId", "sourceItemId", "sourceCurrency", "sourceQuantity", "anchor", "currency", "priceId", "quantity", "idempotencyKey",
-    ...(setup ? ["successPath", "cancelPath", "providerExpiresAt"] : ["setupSessionId"])].sort();
+    ...(setup ? ["successPath", "cancelPath", "providerExpiresAt"] : ["setupSessionId"]),
+    ...(input?.taxEnabled === undefined ? [] : ["taxEnabled"])].sort();
   if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join() !== keys.join()
+    || !validTaxDecision(input.taxEnabled)
     || !validUuid(input.operationId) || !validCustomerId(input.customerId) || !validSubscriptionId(input.sourceSubscriptionId)
     || !validPriceId(input.sourcePriceId) || !validSubscriptionItemId(input.sourceItemId) || !validPriceId(input.priceId)
     || !validBillingCurrency(input.sourceCurrency) || !validBillingCurrency(input.currency) || input.currency === input.sourceCurrency
@@ -1042,10 +1036,23 @@ function throwCurrencyProviderFailure(error: any): never {
   throwProviderOperationFailure(error);
 }
 
-function checkoutTaxDetails(enabled: boolean, customerId?: string) {
+function checkoutTaxDetails(enabled: boolean | null, customerId?: string) {
   return enabled ? {
     tax_id_collection: { enabled: true },
     billing_address_collection: "required" as const,
     ...(customerId ? { customer_update: { address: "auto" as const, name: "auto" as const } } : {}),
   } : {};
+}
+
+function validTaxDecision(value: unknown) {
+  return value === undefined || value === null || typeof value === "boolean";
+}
+
+function taxEnabledForRequest(input: LooseRecord, configured: boolean): boolean | null {
+  return input.taxEnabled === undefined ? configured : input.taxEnabled;
+}
+
+function automaticTax(input: LooseRecord, configured: boolean) {
+  const enabled = taxEnabledForRequest(input, configured);
+  return enabled === null ? {} : { automatic_tax: { enabled } };
 }
