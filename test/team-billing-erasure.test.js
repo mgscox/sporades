@@ -554,6 +554,7 @@ test("a real runtime restart replaces retained erasure work and converges withou
   const payments = { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://erasure.example.test", callbackPath: "/stripe/webhook",
+    tax: { enabled: false },
     apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
   const capsule = { name: "team-erasure-restart", schema: {}, teamBilling: {
@@ -727,6 +728,7 @@ function testPaymentsConfig() {
   return { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://erasure.example.test", callbackPath: "/stripe/webhook",
+    tax: { enabled: false },
     apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
 }

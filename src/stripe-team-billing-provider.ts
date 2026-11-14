@@ -21,14 +21,25 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
     telemetry: false,
     ...(provider ?? {}),
   });
+  // The runtime's 23-hour Checkout expiry precedes Stripe's 24-hour key retention.
+  async function createCheckoutSession(params: Stripe.Checkout.SessionCreateParams, requestOptions: Stripe.RequestOptions) {
+    try { return await stripe.checkout.sessions.create(params, requestOptions); }
+    catch (error) {
+      if (!(error instanceof Stripe.errors.StripeIdempotencyError)) throw error;
+      const { automatic_tax, tax_id_collection, billing_address_collection, customer_update, ...legacy } = params;
+      return stripe.checkout.sessions.create(legacy, requestOptions);
+    }
+  }
   return Object.freeze({
     async create(input: LooseRecord) {
       validateInput(input);
       throwIfAborted(options.signal);
       let session: LooseRecord;
       try {
-        session = await stripe.checkout.sessions.create({
+        session = await createCheckoutSession({
           mode: "subscription",
+          automatic_tax: { enabled: config.tax.enabled },
+          ...checkoutTaxDetails(config.tax.enabled, input.customerId),
           ...(input.currency ? { currency: input.currency } : {}),
           line_items: [{ price: input.priceId, quantity: input.quantity }],
           success_url: new URL(input.successPath, config.publicOrigin).toString(),
@@ -58,8 +69,10 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       throwIfAborted(options.signal);
       try {
         await preflightCurrencyHandover(stripe, input, config.livemode);
-        const session = await stripe.checkout.sessions.create({
+        const session = await createCheckoutSession({
           mode: "setup", customer: input.customerId,
+          // Setup cannot calculate tax; save the details for the replacement Subscription.
+          ...checkoutTaxDetails(config.tax.enabled, input.customerId),
           success_url: new URL(input.successPath, config.publicOrigin).toString(),
           cancel_url: new URL(input.cancelPath, config.publicOrigin).toString(),
           client_reference_id: input.operationId, expires_at: input.providerExpiresAt,
@@ -97,6 +110,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
           throwIfAborted(options.signal);
           const created = await stripe.subscriptions.create({
             customer: input.customerId, currency: input.currency,
+            automatic_tax: { enabled: config.tax.enabled },
             items: [{ price: input.priceId, quantity: input.quantity }],
             default_payment_method: setup.payment_method,
             billing_cycle_anchor: input.anchor, proration_behavior: "none",
@@ -398,14 +412,17 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
       for (const recovery of input.checkoutRecoveries ?? []) {
         let recovered: LooseRecord;
         try {
-          recovered = await stripe.checkout.sessions.create(recovery.mode === "setup" ? {
+          recovered = await createCheckoutSession(recovery.mode === "setup" ? {
             mode: "setup", customer: recovery.customerId,
+            ...checkoutTaxDetails(config.tax.enabled, recovery.customerId),
             success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
             cancel_url: new URL(recovery.cancelPath, config.publicOrigin).toString(),
             client_reference_id: recovery.operationId, expires_at: recovery.providerExpiresAt,
             metadata: { sporades_team_billing_operation: recovery.operationId },
           } : {
             mode: "subscription",
+            automatic_tax: { enabled: config.tax.enabled },
+            ...checkoutTaxDetails(config.tax.enabled, recovery.customerId),
             ...(recovery.currency ? { currency: recovery.currency } : {}),
             line_items: [{ price: recovery.priceId, quantity: recovery.quantity }],
             success_url: new URL(recovery.successPath, config.publicOrigin).toString(),
@@ -1023,4 +1040,12 @@ async function preflightCurrencyHandover(stripe: Stripe, input: LooseRecord, liv
 function throwCurrencyProviderFailure(error: any): never {
   if (["TEAM_BILLING_CUSTOMER_BALANCE_NONZERO", "TEAM_BILLING_PROVIDER_REJECTED", "TEAM_BILLING_PROVIDER_UNAVAILABLE"].includes(error?.code)) throw error;
   throwProviderOperationFailure(error);
+}
+
+function checkoutTaxDetails(enabled: boolean, customerId?: string) {
+  return enabled ? {
+    tax_id_collection: { enabled: true },
+    billing_address_collection: "required" as const,
+    ...(customerId ? { customer_update: { address: "auto" as const, name: "auto" as const } } : {}),
+  } : {};
 }

@@ -902,7 +902,12 @@ authority.
 
 Complete `enabled: true` options contain the validated project configuration,
 the runtime's Sealed Server env view, and the durable Job AbortSignal. The
-enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
+configuration requires an explicit `tax: { enabled: boolean }` decision.
+Checkout sends this as `automatic_tax.enabled`; enabling it also collects tax
+IDs and requires a billing address. One-time Checkout creates a Customer to
+retain these details. Stripe account setup and active registrations remain
+[operator prerequisites](./projects-and-configuration.md#built-in-stripe-payments-in-blank-capsules).
+The enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
 or `subscription` mode, server-owned Price ID, bounded quantity, trusted
 same-origin return paths, stable business idempotency key, and opaque business
 reference. Both modes use the same provider operation and durable Job; there is

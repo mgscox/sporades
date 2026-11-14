@@ -6,7 +6,7 @@ import Stripe from 'stripe';
 import { createStripeTeamBillingFake } from 'sporades/testing/stripe';
 
 const catalogue = { products: [{ id: 'prod_team', prices: [{ id: 'price_team', recurring: 'month', currency: 'gbp', unitAmount: 1900, currencyOptions: { eur: { unitAmount: 2500 } } }] }], portalConfigurations: [] };
-const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
+const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
 const env = { STRIPE_SECRET_KEY: 'sk_test_handover', STRIPE_WEBHOOK_SECRET: 'whsec_handover' };
 
 for (const resetAtAnchor of [false, true]) test(`fake handover replacement preserves flexible billing and resets ${resetAtAnchor ? 'at' : 'before'} its first paid anchor`, async t => {
