@@ -564,8 +564,11 @@ failed reasons are `authority-changed`, `customer-balance-nonzero`, and
 `TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE`. The fake covers setup, balances,
 no overlapping active currencies, non-prorated cancellation, anchored charging,
 webhook order and restart recovery. Real Stripe acceptance remains a separate
-sandbox/test-clock check. Existing tax configuration remains operator-owned;
-this operation does not enable Stripe Tax or add tax registrations.
+sandbox/test-clock check. The replacement Subscription applies the explicit
+`payments.stripe.tax.enabled` decision recorded when the handover was admitted.
+Setup and replacement retries retain it across config-changing restarts, as does
+erasure recovery. When enabled, setup Checkout collects tax IDs and saves the
+billing address and name. Stripe account setup and registrations remain operator-owned.
 
 For offline activation validation, use the server-only Stripe export:
 

@@ -129535,6 +129535,8 @@ function createTeamBillingTables(adapter) {
     ...["unitAmount", "lastEventRank", "terminalLatch", "hasSchedule"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
+    // NULL preserves the immutable taxless intent of operations admitted before Stripe Tax.
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "taxEnabled", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
@@ -129721,8 +129723,8 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL"
     )).run(now3, teamId);
     await transaction.prepare(sql2(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [currency], [trialDays]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)"
-    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now3, now3, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, currency ?? null, desired.trialDays ?? null);
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [currency], [trialDays], [taxEnabled]) VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)"
+    )).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now3, now3, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, currency ?? null, desired.trialDays ?? null, Number(database.paymentsConfig.stripe.tax.enabled));
     if (typeof database.enqueueTeamBillingCheckoutJob !== "function") throw checkoutUnavailable();
     await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
     enqueued = true;
@@ -129803,7 +129805,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
     providerInput = await database.adapter.withTransaction(async (transaction) => {
       const sql2 = transaction.dialect.sql;
       const operation2 = await transaction.prepare(sql2(
-        "SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [currency], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
+        "SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [currency], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId], [taxEnabled] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
       )).get(operationId);
       if (!operation2 || !["queued", "running", "retrying"].includes(operation2.status)) return null;
       await assertTeamBillingErasureInactive(database, transaction, operation2.teamId);
@@ -129861,6 +129863,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
       )).run(attemptedAt, attemptedAt, operationId);
       return {
         operationId,
+        taxEnabled: operation2.taxEnabled == null ? null : operation2.taxEnabled === 1,
         teamId: operation2.teamId,
         productKey: operation2.productKey,
         mode: "subscription",
@@ -130533,8 +130536,8 @@ async function startTeamBillingCurrencyHandover(db, auth, input) {
     const id2 = randomUUID7();
     const createdAt = now(db);
     await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt]) VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)"
-    )).run(id2, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id2}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1e3) + 23 * 3600);
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt], [taxEnabled]) VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )).run(id2, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id2}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1e3) + 23 * 3600, Number(db.paymentsConfig.stripe.tax.enabled));
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_billing_handovers] ([operationId], [teamId], [sourceSubscriptionId], [sourceSnapshot], [anchor], [phase]) VALUES (?, ?, ?, ?, ?, 'setup')"
     )).run(id2, teamId, source.providerSubscriptionId, JSON.stringify(source), source.currentPeriodEnd);
@@ -130617,6 +130620,7 @@ async function performTeamBillingCurrencyHandover(db, context2, payload, attempt
     });
     const common = {
       operationId: snapshot.id,
+      taxEnabled: snapshot.taxEnabled == null ? null : snapshot.taxEnabled === 1,
       customerId: snapshot.providerCustomerId,
       sourceSubscriptionId: snapshot.sourceSubscriptionId,
       sourcePriceId: snapshot.source.providerPriceId,
@@ -130874,13 +130878,14 @@ async function performTeamBillingErasure(database, context2, payload) {
       "SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]"
     )).all(state.teamId);
     const checkouts = await transaction.prepare(transaction.dialect.sql(
-      "SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] IN ('checkout', 'currency-handover') ORDER BY [providerObjectId], [id]"
+      "SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays], [taxEnabled] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] IN ('checkout', 'currency-handover') ORDER BY [providerObjectId], [id]"
     )).all(state.teamId);
     const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
     if (!["sandbox", "live"].includes(mode) || customer && customer.mode !== mode || subscriptions.some((row) => row.mode !== mode) || checkouts.some((row) => row.mode && row.mode !== mode)) throw unavailable();
     const checkoutSessionIds = checkouts.map((row) => row.providerObjectId).filter(Boolean);
     const checkoutRecoveries = checkouts.filter((row) => row.attemptedAt && !row.providerObjectId).map((row) => ({
       operationId: row.id,
+      taxEnabled: row.taxEnabled == null ? null : row.taxEnabled === 1,
       teamId: state.teamId,
       productKey: row.productKey,
       mode: row.kind === "currency-handover" ? "setup" : "subscription",
@@ -139565,12 +139570,17 @@ export const teamBilling = {
   },
 };
 
-const dormantPayments = Object.freeze({ stripe: Object.freeze({ enabled: false, livemode: null }) });
-const testPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false }) });
-const livePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true }) });
+const taxDisabled = Object.freeze({ enabled: false });
+const taxEnabled = Object.freeze({ enabled: true });
+const dormantPayments = Object.freeze({ stripe: Object.freeze({ enabled: false, livemode: null, tax: taxDisabled }) });
+const testPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false, tax: taxDisabled }) });
+const livePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true, tax: taxDisabled }) });
+const taxedTestPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false, tax: taxEnabled }) });
+const taxedLivePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true, tax: taxEnabled }) });
 
 function paymentState(value) {
-  if (value?.stripe?.enabled !== true || typeof value.stripe.livemode !== "boolean") return dormantPayments;
+  if (value?.stripe?.enabled !== true || typeof value.stripe.livemode !== "boolean" || typeof value.stripe.tax?.enabled !== "boolean") return dormantPayments;
+  if (value.stripe.tax.enabled) return value.stripe.livemode ? taxedLivePayments : taxedTestPayments;
   return value.stripe.livemode ? livePayments : testPayments;
 }
 
@@ -145563,7 +145573,8 @@ var ENABLED_KEYS = [
   "callbackPath",
   "apiVersion",
   "livemode",
-  "requestTimeoutMs"
+  "requestTimeoutMs",
+  "tax"
 ];
 function validatePaymentsConfig(payments) {
   if (payments === void 0) return void 0;
@@ -145596,6 +145607,9 @@ function validatePaymentsConfig(payments) {
   }
   for (const key of ENABLED_KEYS) {
     if (!(key in stripe)) {
+      if (key === "tax") {
+        fail4("Missing Stripe tax configuration.", "Set `payments.stripe.tax` to `{ enabled: true }` or `{ enabled: false }`. Tax must be an explicit decision, never a default.");
+      }
       fail4("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
     }
   }
@@ -145616,6 +145630,9 @@ function validatePaymentsConfig(payments) {
   if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1e3 || stripe.requestTimeoutMs > 3e4) {
     fail4("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
   }
+  if (!isPlainRecord3(stripe.tax) || typeof stripe.tax.enabled !== "boolean" || Object.keys(stripe.tax).some((key) => key !== "enabled")) {
+    fail4("Invalid Stripe tax configuration.", "Set `payments.stripe.tax` to `{ enabled: true }` or `{ enabled: false }` with no other keys.");
+  }
   return {
     stripe: {
       enabled: true,
@@ -145625,7 +145642,8 @@ function validatePaymentsConfig(payments) {
       callbackPath,
       apiVersion: STRIPE_API_VERSION,
       livemode: stripe.livemode,
-      requestTimeoutMs: stripe.requestTimeoutMs
+      requestTimeoutMs: stripe.requestTimeoutMs,
+      tax: { enabled: stripe.tax.enabled }
     }
   };
 }
@@ -156105,7 +156123,8 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
         payments: {
           stripe: {
             enabled: database.paymentsConfig?.stripe.enabled === true,
-            livemode: database.paymentsConfig?.stripe.enabled === true ? database.paymentsConfig.stripe.livemode : null
+            livemode: database.paymentsConfig?.stripe.enabled === true ? database.paymentsConfig.stripe.livemode : null,
+            tax: { enabled: database.paymentsConfig?.stripe.enabled === true && database.paymentsConfig.stripe.tax.enabled }
           }
         }
       },
@@ -159275,7 +159294,7 @@ ${introduction}
 
 This blank Capsule includes a Stripe payment foundation. It remains dormant at \`payments.stripe.enabled: false\` and needs no credentials until you deliberately activate it. Keep Stripe credentials in Sealed Server env with \`sporades env set\`; never put them in source or \`sporades.json\`.
 
-Activation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, and provider timeout. Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.
+Activation is all-or-nothing. Set \`enabled: true\` together with named secret-key and webhook-secret env references, the trusted public Capsule origin, callback path, pinned API version, account mode, provider timeout, and an explicit \`payments.stripe.tax\` decision (\`{ enabled: true }\` or \`{ enabled: false }\`). Hosted public origins require HTTPS; explicit loopback HTTP remains available for Dev.
 
 Start in \`server/payments.ts\`: define each server-owned Price catalogue entry with an explicit one-time \`payment\` or recurring \`subscription\` mode, matching Stripe Price identity, and maximum quantity. Replace the deny-by-default \`authorizeStripeCheckout\` policy only after deciding which linked users or Teams may act. Browser input chooses only a Capsule product key and bounded quantity; it cannot provide provider Price, Customer, mode, metadata, idempotency, or return-origin authority. The mutation atomically persists the intent and enqueues the same idempotent durable Checkout Job for both modes; Stripe network I/O and transient retries happen after commit. \`client/payments.ts\` exposes pending, succeeded, and safely failed progress and redirects only to a validated Stripe-hosted URL.
 
@@ -162565,7 +162584,8 @@ async function createStripeTeamBillingFake(options) {
     switch (operation2) {
       case "checkout.sessions.create": {
         if (p2.mode === "setup") {
-          exactKeys2(p2, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"]);
+          exactKeys2(p2, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"], ["tax_id_collection", "billing_address_collection", "customer_update"]);
+          validateCheckoutTax(p2);
           get(customers, p2.customer);
           exactKeys2(p2.metadata, ["sporades_team_billing_operation"]);
           requireValue(p2.client_reference_id === p2.metadata.sporades_team_billing_operation);
@@ -162584,7 +162604,8 @@ async function createStripeTeamBillingFake(options) {
           sessions.set(sessionId2, session2);
           return copy(session2);
         }
-        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
+        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency", "automatic_tax", "tax_id_collection", "billing_address_collection", "customer_update"]);
+        validateCheckoutTax(p2);
         requireValue(p2.mode === "subscription");
         exactKeys2(p2.line_items, ["0"]);
         exactKeys2(p2.line_items[0], ["price", "quantity"]);
@@ -162671,7 +162692,8 @@ async function createStripeTeamBillingFake(options) {
         }
         return copy(get(customers, resourceId));
       case "subscriptions.create": {
-        exactKeys2(p2, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"]);
+        exactKeys2(p2, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"], ["automatic_tax"]);
+        validateCheckoutTax(p2);
         const customer = get(customers, p2.customer);
         assertCustomerCurrency(customer.id, p2.currency);
         exactKeys2(p2.items, ["0"]);
@@ -163202,6 +163224,22 @@ function flatten(object2, prefix = "") {
     const name2 = prefix ? `${prefix}[${key}]` : key;
     return typeof value === "object" ? flatten(value, name2) : [[name2, String(value)]];
   });
+}
+function validateCheckoutTax(p2) {
+  if (p2.automatic_tax !== void 0) {
+    exactKeys2(p2.automatic_tax, ["enabled"]);
+    requireValue(["true", "false"].includes(p2.automatic_tax.enabled));
+  }
+  if (p2.tax_id_collection !== void 0) {
+    exactKeys2(p2.tax_id_collection, ["enabled"]);
+    requireValue(["true", "false"].includes(p2.tax_id_collection.enabled));
+  }
+  if (p2.billing_address_collection !== void 0) requireValue(["auto", "required"].includes(p2.billing_address_collection));
+  if (p2.customer_update !== void 0) {
+    requireValue(Boolean(p2.customer));
+    exactKeys2(p2.customer_update, [], ["address", "name"]);
+    requireValue(Object.values(p2.customer_update).every((value) => ["auto", "never"].includes(value)));
+  }
 }
 function serialized(handler) {
   let lane = Promise.resolve();

@@ -457,7 +457,8 @@ export async function createStripeTeamBillingFake(options) {
         switch (operation) {
             case "checkout.sessions.create": {
                 if (p.mode === "setup") {
-                    exactKeys(p, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"]);
+                    exactKeys(p, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"], ["tax_id_collection", "billing_address_collection", "customer_update"]);
+                    validateCheckoutTax(p);
                     get(customers, p.customer);
                     exactKeys(p.metadata, ["sporades_team_billing_operation"]);
                     requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation);
@@ -468,7 +469,8 @@ export async function createStripeTeamBillingFake(options) {
                     sessions.set(sessionId, session);
                     return copy(session);
                 }
-                exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
+                exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency", "automatic_tax", "tax_id_collection", "billing_address_collection", "customer_update"]);
+                validateCheckoutTax(p);
                 requireValue(p.mode === "subscription");
                 exactKeys(p.line_items, ["0"]);
                 exactKeys(p.line_items[0], ["price", "quantity"]);
@@ -543,7 +545,8 @@ export async function createStripeTeamBillingFake(options) {
                 }
                 return copy(get(customers, resourceId));
             case "subscriptions.create": {
-                exactKeys(p, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"]);
+                exactKeys(p, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"], ["automatic_tax"]);
+                validateCheckoutTax(p);
                 const customer = get(customers, p.customer);
                 assertCustomerCurrency(customer.id, p.currency);
                 exactKeys(p.items, ["0"]);
@@ -993,6 +996,23 @@ function flatten(object, prefix = "") {
         const name = prefix ? `${prefix}[${key}]` : key;
         return typeof value === "object" ? flatten(value, name) : [[name, String(value)]];
     });
+}
+function validateCheckoutTax(p) {
+    if (p.automatic_tax !== undefined) {
+        exactKeys(p.automatic_tax, ["enabled"]);
+        requireValue(["true", "false"].includes(p.automatic_tax.enabled));
+    }
+    if (p.tax_id_collection !== undefined) {
+        exactKeys(p.tax_id_collection, ["enabled"]);
+        requireValue(["true", "false"].includes(p.tax_id_collection.enabled));
+    }
+    if (p.billing_address_collection !== undefined)
+        requireValue(["auto", "required"].includes(p.billing_address_collection));
+    if (p.customer_update !== undefined) {
+        requireValue(Boolean(p.customer));
+        exactKeys(p.customer_update, [], ["address", "name"]);
+        requireValue(Object.values(p.customer_update).every(value => ["auto", "never"].includes(value)));
+    }
 }
 // Serialize HTTP execution through the idempotency commit, including overlapping SDK retries.
 function serialized(handler) {

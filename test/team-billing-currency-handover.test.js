@@ -6,7 +6,7 @@ import Stripe from 'stripe';
 import { createStripeTeamBillingFake } from 'sporades/testing/stripe';
 
 const catalogue = { products: [{ id: 'prod_team', prices: [{ id: 'price_team', recurring: 'month', currency: 'gbp', unitAmount: 1900, currencyOptions: { eur: { unitAmount: 2500 } } }] }], portalConfigurations: [] };
-const config = { cardIdentityKeyEnv: 'CARD_KEY', enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
+const config = { cardIdentityKeyEnv: 'CARD_KEY', enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
 const env = { CARD_KEY: '0123456789abcdef0123456789abcdef', STRIPE_SECRET_KEY: 'sk_test_handover', STRIPE_WEBHOOK_SECRET: 'whsec_handover' };
 
 for (const resetAtAnchor of [false, true]) test(`fake handover replacement preserves flexible billing and resets ${resetAtAnchor ? 'at' : 'before'} its first paid anchor`, async t => {
@@ -72,7 +72,8 @@ import { createStripeCallbackEndpoint } from '../dist/stripe-webhook-runtime.js'
 import { openDevDatabase, routeEndpoint, runCurrentUserJobWorker, createWebSocketHub } from '../dist/server-runtime-source.js';
 import { startTeamBillingCheckout, readCurrentUserTeamBilling } from '../dist/team-billing-runtime.js';
 
-async function fixture(t, counted = false, includeOther = false) {
+async function fixture(t, counted = false, includeOther = false, taxEnabled = false) {
+  const stripeConfig = { ...config, tax: { enabled: taxEnabled } };
   const dir = await mkdtemp(path.join(tmpdir(), 'billing-handover-'));
   const checks = [];
   let allow = true;
@@ -87,7 +88,7 @@ async function fixture(t, counted = false, includeOther = false) {
     fakeCatalogue.products.push({ id: 'prod_other', prices: [{ id: 'price_other', recurring: 'month', currency: 'gbp', unitAmount: 2900, currencyOptions: { eur: { unitAmount: 3500 } } }] });
     definition.teamBilling.catalogue.other = { quantity: { kind: 'fixed', value: 2 }, stripe: Object.fromEntries(['sandbox', 'live'].map(mode => [mode, { productId: mode === 'live' ? 'prod_live_other' : 'prod_other', prices: { 'month:1': { priceId: mode === 'live' ? 'price_live_other' : 'price_other', currency: 'gbp', unitAmount: 2900, currencyOptions: { eur: { unitAmount: 3500 } } } } }])) };
   }
-  const open = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'handover', auth: { providers: { email: true } }, payments: { stripe: config } }, definition, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  const open = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'handover', auth: { providers: { email: true } }, payments: { stripe: stripeConfig } }, definition, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
   let database = await open();
   const server = createServer(async (req, res) => { try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); } catch { res.writeHead(500).end(); } });
   const hub = createWebSocketHub(() => database); server.on('upgrade', (req, socket) => hub.accept(req, socket));
@@ -115,7 +116,7 @@ async function fixture(t, counted = false, includeOther = false) {
   return { get database() { return database; }, actor, teamId, fake, checks, initial, input, send, start, drain, deliver,
     read: () => readCurrentUserTeamBilling(database, actor, teamId),
     revoke: () => { allow = false; },
-    restart: async () => { await database.close(); database = await open(); database.stripeApiBaseUrl = fake.origin; await database.init(); database.scheduleTeamBillingJobDispatch = () => {}; },
+    restart: async (enabled = stripeConfig.tax.enabled) => { await database.close(); stripeConfig.tax = { enabled }; database = await open(); database.stripeApiBaseUrl = fake.origin; await database.init(); database.scheduleTeamBillingJobDispatch = () => {}; },
   };
 }
 
@@ -207,7 +208,7 @@ test('GBP to EUR handover settles from verified evidence and permits later manag
   assert.ok(browserRead.error);
   assert.ok(!JSON.stringify(await f.read()).includes(refreshedCard.card.token));
   const handshake = await f.send({ type: 'auth.get' });
-  assert.deepEqual(handshake.data.payments, { stripe: { enabled: true, livemode: false } });
+  assert.deepEqual(handshake.data.payments, { stripe: { enabled: true, livemode: false, tax: { enabled: false } } });
   assert.ok(!JSON.stringify(handshake).includes(refreshedCard.card.token));
   const rows = f.database.adapter.prepare("SELECT * FROM [sporades_jobs]").all();
   assert.ok(!JSON.stringify(rows).includes(refreshedCard.card.token));
@@ -435,4 +436,64 @@ test('startup repair cannot revive a handover completed while its lifecycle lock
   assert.ok(injected);
   assert.equal((await f.start()).data.state, 'completed');
   assert.equal((await f.read()).currency, 'eur');
+});
+
+for (const issuedTax of [true, false]) for (const recovery of ['setup retry', 'setup erasure', 'replacement retry']) {
+  test(`lost ${recovery} acknowledgement preserves tax ${issuedTax} across a tax-changing restart`, async t => {
+    const f = await fixture(t, false, false, issuedTax);
+    await f.start();
+    const replacing = recovery === 'replacement retry';
+    if (replacing) await f.drain();
+    const operation = replacing ? 'subscriptions.create' : 'checkout.sessions.create';
+    f.fake.faults.inject({ operation, status: 500, when: 'after' });
+    if (replacing) {
+      await f.fake.checkout.complete(f.fake.state().checkouts.find(s => s.mode === 'setup').id);
+      await f.deliver();
+      assert.equal(f.fake.state().subscriptions.length, 2);
+    } else await f.drain();
+    const setup = f.fake.state().checkouts.find(s => s.mode === 'setup');
+    assert.ok(setup);
+    const before = f.fake.requests().filter(r => r.operation === operation).at(-1).parameters;
+    await f.restart(!issuedTax);
+    if (recovery === 'setup erasure') {
+      const input = { teamId: f.teamId, requestId: randomUUID() };
+      assert.equal((await f.send({ type: 'teamBilling.prepareErasure', input })).data.state, 'pending');
+      await f.drain();
+      assert.equal((await f.send({ type: 'teamBilling.prepareErasure', input })).data.state, 'authorized');
+      assert.equal(f.fake.state().checkouts.find(s => s.id === setup.id).status, 'expired');
+    } else {
+      await f.drain();
+      if (replacing) {
+        await f.deliver(); await f.deliver();
+        assert.equal((await f.start()).data.state, 'completed');
+        assert.equal((await f.read()).currency, 'eur');
+        assert.equal(f.fake.state().subscriptions.length, 2);
+      } else {
+        const result = (await f.start()).data;
+        assert.equal(result.state, 'ready');
+        assert.ok(result.url.includes(setup.id));
+      }
+    }
+    assert.deepEqual(f.fake.requests().filter(r => r.operation === operation).at(-1).parameters, before);
+    assert.equal(f.fake.state().checkouts.filter(s => s.mode === 'setup').length, 1);
+  });
+}
+
+test('queued pre-tax handover preserves taxless setup and lost replacement replay after migration', async t => {
+  const f = await fixture(t, false, false, true);
+  await f.start();
+  f.database.adapter.exec('ALTER TABLE [sporades_team_billing_operations] DROP COLUMN [taxEnabled]');
+  await f.restart(true); await f.drain();
+  const setup = f.fake.state().checkouts.find(s => s.mode === 'setup');
+  const setupRequest = f.fake.requests().filter(r => r.operation === 'checkout.sessions.create').at(-1);
+  assert.equal(setupRequest.parameters.tax_id_collection, undefined);
+  f.fake.faults.inject({ operation: 'subscriptions.create', status: 500, when: 'after' });
+  await f.fake.checkout.complete(setup.id); await f.deliver();
+  assert.equal(f.fake.state().subscriptions.length, 2);
+  await f.restart(false); await f.drain(); await f.deliver(); await f.deliver();
+  assert.equal((await f.start()).data.state, 'completed');
+  const replacements = f.fake.requests().filter(r => r.operation === 'subscriptions.create');
+  assert.equal(replacements[0].parameters.automatic_tax, undefined);
+  assert.deepEqual(replacements.at(-1).parameters, replacements[0].parameters);
+  assert.equal(f.fake.state().subscriptions.length, 2);
 });

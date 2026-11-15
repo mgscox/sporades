@@ -14,6 +14,7 @@ const enabledStripe = livemode => ({
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
   callbackPath: "/stripe/webhook",
+  tax: { enabled: false },
   apiVersion: "2026-08-26.dahlia",
   requestTimeoutMs: 10_000,
 });
@@ -48,15 +49,15 @@ async function withPaymentsRuntime(payments, run) {
 test("the runtime reports dormant payments for existing Capsules with no payment configuration", async () => {
   await withPaymentsRuntime(undefined, message => {
     assert.equal(message.error, null);
-    assert.deepEqual(message.data.payments, { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(message.data.payments, { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
   });
 });
 
-for (const livemode of [false, true]) {
-  test(`the runtime exposes only activation booleans for ${livemode ? "live" : "test"}-mode Stripe`, async () => {
-    await withPaymentsRuntime({ stripe: enabledStripe(livemode) }, message => {
+for (const livemode of [false, true]) for (const enabled of [false, true]) {
+  test(`the runtime exposes only activation booleans for ${livemode ? "live" : "test"}-mode Stripe with tax ${enabled}`, async () => {
+    await withPaymentsRuntime({ stripe: { ...enabledStripe(livemode), tax: { enabled } } }, message => {
       assert.equal(message.error, null);
-      assert.deepEqual(message.data.payments, { stripe: { enabled: true, livemode } });
+      assert.deepEqual(message.data.payments, { stripe: { enabled: true, livemode, tax: { enabled } } });
       assert.doesNotMatch(JSON.stringify(message), /sk_test_|sk_live_|whsec_|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|payments\.example|callbackPath|apiVersion|price_|cus_|prod_/);
     });
   });

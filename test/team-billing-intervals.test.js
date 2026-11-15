@@ -81,7 +81,7 @@ for (const billingMode of ["classic", "flexible"]) for (const [initial, currency
   if (currency) for (const mode of ['sandbox', 'live']) for (const price of Object.values(d.catalogue.kitchen.stripe[mode].prices)) {
     Object.assign(price, { currency: 'gbp', unitAmount: 1900, currencyOptions: { usd: { unitAmount: 2900 }, eur: { unitAmount: 2500 } } });
   }
-  const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
+  const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
   const env = { STRIPE_SECRET_KEY: 'sk_test_intervals', STRIPE_WEBHOOK_SECRET: 'whsec_intervals' };
   const open = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'intervals', auth: { providers: { anonymous: true, email: true } }, payments: { stripe: config } }, { name: 'intervals', schema: {}, teamBilling: d }, { createStripeCallbackEndpoint, createStripeTeamBillingProvider });
   let database = await open();

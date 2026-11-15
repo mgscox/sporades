@@ -236,7 +236,7 @@ The Capsule-owned server declaration that maps stable application Price names to
 _Avoid_: product list, Stripe Prices API, client price map
 
 **Payment activation snapshot**:
-The immutable Capsule-wide browser view of whether Stripe is active and whether it uses live mode. `createHooks().usePayments()` and framework-neutral `payments.get()` / `payments.subscribe()` expose only `{ stripe: { enabled, livemode } }` from the runtime handshake, defaulting to disabled with null mode before confirmation or while disconnected. It contains no provider IDs or credentials and grants no billing authority; Capsules use it to hide dormant Checkout and Customer Portal actions.
+The immutable Capsule-wide browser view of whether Stripe is active and whether it uses live mode. `createHooks().usePayments()` and framework-neutral `payments.get()` / `payments.subscribe()` expose only `{ stripe: { enabled, livemode, tax: { enabled } } }` from the runtime handshake, defaulting to disabled payments and tax with null mode before confirmation or while disconnected. It contains no provider IDs or credentials and grants no billing authority; Capsules use it to hide dormant Checkout and Customer Portal actions.
 _Avoid_: billing entitlement, browser Stripe configuration
 
 **capsule()**:
@@ -680,7 +680,7 @@ _Avoid_: config file (too generic — it's the specific project config)
 
 **Stripe payment configuration**:
 Optional `cardIdentityKeyEnv` names a dedicated random Sealed Server secret of at least 32 bytes of entropy, distinct from Stripe credentials; names-only diagnostics and optional activation preserve existing Capsules.
-The optional `payments.stripe` project configuration. `{ "enabled": false }` is credential-free and dormant. Activation is all-or-nothing and names Sealed Server env keys, the trusted public Capsule origin and callback path outside reserved runtime HTTP namespaces, the pinned Stripe compatibility version, account mode, and a bounded provider timeout. It never contains secret values or Price identities, and the runtime fails closed before publication when its complete configuration and matching credentials are unavailable. Activation registers one POST callback route after collision checks against Capsule and other provider routes.
+The optional `payments.stripe` project configuration. `{ "enabled": false }` is credential-free and dormant. Activation is all-or-nothing and names Sealed Server env keys, the trusted public Capsule origin and callback path outside reserved runtime HTTP namespaces, the pinned Stripe compatibility version, account mode, a bounded provider timeout, and an explicit required `tax: { enabled: boolean }` decision. It never contains secret values or Price identities, and the runtime fails closed before publication when its complete configuration and matching credentials are unavailable. Activation registers one POST callback route after collision checks against Capsule and other provider routes.
 _Avoid_: Stripe credentials, payment settings, provider payload
 
 **Scheduling policy**:

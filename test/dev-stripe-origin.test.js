@@ -81,7 +81,7 @@ async function fixture(t) {
   const config = JSON.parse(await readFile(path.join(project, "sporades.json"), "utf8"));
   config.dev.port = 0;
   config.auth = { providers: { anonymous: true, email: true } };
-  config.payments = { stripe: { enabled: true, secretKeyEnv: "STRIPE_KEY", webhookSecretEnv: "STRIPE_WEBHOOK", publicOrigin: "https://billing.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 1000 } };
+  config.payments = { stripe: { enabled: true, secretKeyEnv: "STRIPE_KEY", webhookSecretEnv: "STRIPE_WEBHOOK", publicOrigin: "https://billing.example.test", callbackPath: "/stripe/webhook", tax: { enabled: false }, apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 1000 } };
   await writeFile(path.join(project, "sporades.json"), JSON.stringify(config));
   for (const [key, value] of [["STRIPE_KEY", "sk_test_fixture"], ["STRIPE_WEBHOOK", "whsec_fixture"]]) {
     assert.equal((await run(["env", "set", key, "--stdin", "--json"], { cwd: project, input: value + "\n" })).code, 0);

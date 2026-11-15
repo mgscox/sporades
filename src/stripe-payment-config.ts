@@ -13,6 +13,7 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   apiVersion: typeof STRIPE_API_VERSION;
   livemode: boolean;
   requestTimeoutMs: number;
+  tax: Readonly<{ enabled: boolean }>;
 }>;
 export type StripePaymentsConfig = DormantStripePaymentsConfig | StripeEnabledPaymentsConfig;
 export type PaymentsConfig = Readonly<{ stripe: StripePaymentsConfig }>;
@@ -26,6 +27,7 @@ const ENABLED_KEYS = [
   "apiVersion",
   "livemode",
   "requestTimeoutMs",
+  "tax",
 ] as const;
 
 export function validatePaymentsConfig(payments: unknown): PaymentsConfig | undefined {
@@ -59,6 +61,9 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
   }
   for (const key of ENABLED_KEYS) {
     if (!(key in stripe)) {
+      if (key === "tax") {
+        fail("Missing Stripe tax configuration.", "Set `payments.stripe.tax` to `{ enabled: true }` or `{ enabled: false }`. Tax must be an explicit decision, never a default.");
+      }
       fail("Incomplete Stripe payments configuration.", `Set \`payments.stripe.${key}\` before enabling Stripe payments.`);
     }
   }
@@ -84,6 +89,9 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
   if (!Number.isInteger(stripe.requestTimeoutMs) || stripe.requestTimeoutMs < 1_000 || stripe.requestTimeoutMs > 30_000) {
     fail("Invalid Stripe request timeout.", "Set `payments.stripe.requestTimeoutMs` to an integer from 1000 through 30000 milliseconds.");
   }
+  if (!isPlainRecord(stripe.tax) || typeof stripe.tax.enabled !== "boolean" || Object.keys(stripe.tax).some(key => key !== "enabled")) {
+    fail("Invalid Stripe tax configuration.", "Set `payments.stripe.tax` to `{ enabled: true }` or `{ enabled: false }` with no other keys.");
+  }
   return {
     stripe: {
       enabled: true,
@@ -95,6 +103,7 @@ export function validatePaymentsConfig(payments: unknown): PaymentsConfig | unde
       apiVersion: STRIPE_API_VERSION,
       livemode: stripe.livemode,
       requestTimeoutMs: stripe.requestTimeoutMs,
+      tax: { enabled: stripe.tax.enabled },
     },
   };
 }
