@@ -1074,6 +1074,12 @@ inspection omits the payload and does not expose raw provider history.
 
 ### Send SMTP mail
 
+Generated Message-IDs and SMTP EHLO greetings use the effective `from` domain,
+defaulting to `mail.smtp.defaultFrom`. A sender without a DNS-safe domain falls
+back to the canonical public origin hostname, then `sporades.local` for local
+development. Notification intents select their immutable Message-ID on acceptance
+using the same rule. See [mail identity](../guide/mail.md#smtp-mail).
+
 `ctx.mail.send(...)` accepts one provider-independent message with `to`,
 optional `cc`, `bcc`, `from`, and `replyTo`, plus `subject`, `textBody` and/or
 `htmlBody`, an optional `autoSubmitted: "no" | "auto-generated" | "auto-replied"`,
