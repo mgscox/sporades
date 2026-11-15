@@ -1,0 +1,8 @@
+{
+  "name": "todo-mcp-pilot",
+  "client": { "framework": "react", "toolchain": "esbuild" },
+  "auth": { "providers": { "anonymous": true, "email": { "enabled": true } } },
+  "security": { "cors": { "allowedOrigins": [] }, "csp": { "mode": "report-only" } },
+  "dev": { "port": 5688 },
+  "deploy": { "port": 5688 }
+}

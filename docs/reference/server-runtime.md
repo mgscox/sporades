@@ -515,6 +515,35 @@ table ACL, Team policy, and Capsule code therefore authorize the real owner and
 can separately attribute the named API access. They may inspect these values
 but cannot replace or mutate them.
 
+### Check admitted Access-key scopes inside a Custom endpoint
+
+`ctx.hasAccessKeyScopes(requiredScopes)` is a server-only `EndpointContext`
+method for dispatching operations with different scope requirements inside one
+endpoint. Guard the endpoint with `requireAuth({ credentials: ["access-key"] },
+handler)`, then check each operation at discovery and call time:
+
+```ts
+const canRead = ctx.hasAccessKeyScopes(["todos:read"]);
+const canReadAndAdd = ctx.hasAccessKeyScopes(["todos:read", "todos:add"]);
+```
+
+It returns true only when every required label is a unique, nonempty concrete
+scope declared by the current Capsule and matched by the admitted key's grants.
+An empty, malformed, duplicate, wildcard or undeclared scope list returns false.
+Sessions, Anonymous contexts and missing Access-key admission return false,
+even if mutable context properties resemble Access-key provenance. The method
+captures runtime admission rather than reading `this`, bearer headers or
+Capsule-supplied Credential values. Grants and bearer material remain private;
+`ctx.credential` keeps its existing safe provenance shape. Already-admitted work
+keeps its snapshot; rotation, expiry and revocation apply at the next admission.
+The check grants no actor, database, ACL, File or Team capability. Sessionless
+endpoints do not expose it.
+
+A committed ordinary Custom endpoint triggers the existing table-scoped query
+refresh mechanism, so an external integration's writes appear in subscribed
+browser queries. Failed endpoint transactions do not publish partial rows.
+See the [Capsule-owned MCP pilot](mcp-bridge.md#capsule-owned-app-facing-mcp).
+
 ### Manage Access keys
 
 A linked, non-guest Session manages only its own keys through `ctx.accessKeys`:

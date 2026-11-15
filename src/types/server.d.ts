@@ -1262,6 +1262,8 @@ export type EndpointContext<
   Credential extends CredentialProvenance = CredentialProvenance,
 > = Omit<CapsuleContext<Schema, Credential>, "files" | "lifecycle"> & {
   request: EndpointRequest;
+  /** True only for admitted Access keys satisfying every unique concrete declared scope; invalid or empty lists return false. */
+  hasAccessKeyScopes(requiredScopes: readonly string[]): boolean;
   /** Available only while handling a declared multipart ingress endpoint. */
   files: CurrentUserFilesApi & EndpointFileIngressApi;
   /** Present only after declared Capsule-principal pre-body admission. */
