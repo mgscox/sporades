@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { resolveMailIdentityDomain } from "./mail-runtime.js";
 export const NOTIFICATION_RESERVATION_MS = 30_000;
 export const NOTIFICATION_RECOVERY_SCAN_MS = 30_000;
 export const NOTIFICATION_MAX_BACKOFF_MS = 3_600_000;
@@ -122,7 +123,7 @@ export async function stageNotificationIntent(adapter, database, identity, input
         return { id: input.id, state: "staged" };
     }
     const acceptedAt = database.clock.now().toISOString();
-    const messageId = `<${randomUUID()}@sporades.local>`;
+    const messageId = `<${randomUUID()}@${resolveMailIdentityDomain(normalized.from, database.publicOrigin)}>`;
     const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING"))
         .run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
     if (inserted.changes === 0) {

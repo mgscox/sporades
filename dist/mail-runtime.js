@@ -100,6 +100,7 @@ export function createMailRuntime(mailConfig, serverEnv, options = {}) {
         },
         auth,
         defaultFrom: smtp.defaultFrom,
+        publicOrigin: options.publicOrigin,
         connectionTimeoutMs: smtp.connectionTimeoutMs ?? 10_000,
         socketTimeoutMs: smtp.socketTimeoutMs ?? 30_000,
     };
@@ -864,11 +865,26 @@ function normalizeMailTransportError(error) {
     }
     return normalized(mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status."));
 }
+export function resolveMailIdentityDomain(from, publicOrigin) {
+    const domain = from?.email.split("@")[1];
+    // Envelope validation also accepts local addresses; only copy DNS-safe names into EHLO.
+    const hostnamePattern = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+    if (domain && hostnamePattern.test(domain))
+        return domain.toLowerCase();
+    try {
+        const hostname = new URL(publicOrigin ?? "").hostname;
+        if (hostnamePattern.test(hostname))
+            return hostname;
+    }
+    catch { }
+    return "sporades.local";
+}
 export function createMailTransport(smtp) {
     const sockets = new Set();
     let closed = false;
     return {
         async send(message, options = {}) {
+            const identityDomain = resolveMailIdentityDomain(message.from, smtp.publicOrigin);
             let socket;
             let reader;
             const abortDelivery = () => {
@@ -903,7 +919,7 @@ export function createMailTransport(smtp) {
                 reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
                 let encrypted = smtp.tls.mode === "implicit";
                 await reader.expect([220]);
-                const ehlo = await smtpCommand(socket, reader, `EHLO sporades.local`, [250]);
+                const ehlo = await smtpCommand(socket, reader, `EHLO ${identityDomain}`, [250]);
                 if (smtp.tls.mode === "required-starttls" || smtp.tls.mode === "opportunistic") {
                     if (/\bSTARTTLS\b/i.test(ehlo.text)) {
                         await smtpCommand(socket, reader, "STARTTLS", [220]);
@@ -925,7 +941,7 @@ export function createMailTransport(smtp) {
                             error.cause = cause;
                             throw error;
                         });
-                        await smtpCommand(upgraded, reader, "EHLO sporades.local", [250]);
+                        await smtpCommand(upgraded, reader, `EHLO ${identityDomain}`, [250]);
                         encrypted = true;
                     }
                     else if (smtp.tls.mode === "required-starttls") {
@@ -975,7 +991,7 @@ export function createMailTransport(smtp) {
                 await smtpCommand(activeSocket, reader, "DATA", [354]);
                 const messageId = typeof message.messageId === "string" && /^<[^<>\r\n]+>$/.test(message.messageId)
                     ? message.messageId
-                    : `<${crypto.randomUUID()}@sporades.local>`;
+                    : `<${crypto.randomUUID()}@${identityDomain}>`;
                 const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
                 activeSocket.write(`${raw}\r\n.\r\n`);
                 const delivered = await reader.expect([250], "EREJECTED");
@@ -1171,7 +1187,7 @@ export function buildSmtpMessage(message) {
         ...(message.replyTo ? [foldMimeHeader("Reply-To", formatAddress(message.replyTo))] : []),
         foldMimeHeader("Subject", encodeMimeHeaderValue(message.subject)),
         `Date: ${new Date().toUTCString()}`,
-        `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@sporades.local>`}`,
+        `Message-ID: ${message.messageId ?? `<${crypto.randomUUID()}@${resolveMailIdentityDomain(message.from, message.publicOrigin)}>`}`,
         "MIME-Version: 1.0",
         ...(message.autoSubmitted !== undefined ? [`Auto-Submitted: ${message.autoSubmitted}`] : []),
         ...(message.providerHeaders ?? []).map((header) => header.json
