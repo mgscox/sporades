@@ -1060,3 +1060,48 @@ test("owner operations validate immutable metadata, eligibility, and one-time se
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("endpoint scope checks use captured Access-key admission and reject invalid requirements", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-endpoint-scopes-"));
+  let captured;
+  const inspect = (ctx) => {
+    captured = ctx.hasAccessKeyScopes;
+    return { body: {
+      read: ctx.hasAccessKeyScopes(["requests:read"]),
+      write: ctx.hasAccessKeyScopes(["requests:write"]),
+      both: ctx.hasAccessKeyScopes(["requests:read", "requests:write"]),
+      forged: ctx.hasAccessKeyScopes.call({ credential: { kind: "access-key" }, __sporadesAccessKeyGrants: ["*"] }, ["requests:write"]),
+      invalid: [undefined, null, [], "requests:read", [""], ["requests:*"], ["undeclared"], ["requests:read", "requests:read"], [1], Array(1)].map(value => ctx.hasAccessKeyScopes(value)),
+      credential: ctx.credential,
+    } };
+  };
+  const definition = capsule({
+    name: "endpoint-scopes",
+    accessKeys: { scopes: ["requests:read", "requests:write"] },
+    mutations: { issueKey: mutation(ctx => ctx.accessKeys.issue({ name: "reader", grants: ["*:read"] })), revoke: mutation((ctx, id) => ctx.accessKeys.revoke(id)) },
+    endpoints: {
+      inspect: endpoint({ method: "GET", path: "/inspect" }, requireAuth({ credentials: ["access-key"] }, inspect)),
+      session: endpoint({ method: "GET", path: "/session" }, inspect),
+    },
+  });
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: definition.name }, definition);
+  try {
+    const owner = await seedLinkedUser(database);
+    const issued = await runMutation(database, owner, "issueKey", []);
+    assert.equal(issued.error, null);
+    const response = await requestEndpoint(database, "/inspect", { headers: { authorization: `Bearer ${issued.data.token}` } });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      read: true, write: false, both: false, forged: false, invalid: Array(10).fill(false),
+      credential: { kind: "access-key", id: issued.data.accessKey.id, name: "reader" },
+    });
+    const admittedCheck = captured;
+    await runMutation(database, owner, "revoke", [issued.data.accessKey.id]);
+    assert.equal(admittedCheck(["requests:read"]), true, "already admitted work retains its snapshot");
+    assert.equal((await requestEndpoint(database, "/inspect", { headers: { authorization: `Bearer ${issued.data.token}` } })).status, 401);
+    const session = await requestEndpoint(database, "/session", { headers: { "x-sporades-session-token": sessionTokenFor(owner) } });
+    assert.deepEqual(await session.json(), { read: false, write: false, both: false, forged: false, invalid: Array(10).fill(false), credential: { kind: "session" } });
+    const anonymous = await requestEndpoint(database, "/session");
+    assert.equal((await anonymous.json()).read, false);
+  } finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
+});

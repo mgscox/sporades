@@ -4107,6 +4107,8 @@ export async function runEndpoint(database: any, endpoint: { handler?: Function;
     await flushAccessKeyLifecycleAuditEvents(database, context);
     flushTeamSecurityEvents(database, context);
     await dispatchPendingJobs(context);
+    // Endpoint writes share the live-query completion boundary used by mutations and Jobs.
+    database.__notifyJobStateQueries?.();
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
@@ -4497,9 +4499,23 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   const credential = options.ordinaryCredential === false
     ? null
     : protectContextIdentity(options.credential ?? { kind: "session" });
+  const admittedGrants = credential?.kind === "access-key" ? options.accessKeyGrants : null;
+  const declaredScopes: readonly string[] = database.accessKeyScopes ?? [];
+  const hasAccessKeyScopes = (requiredScopes: unknown) => {
+    // Capture admission rather than consulting replaceable Capsule context fields.
+    if (!Array.isArray(admittedGrants) || !Array.isArray(requiredScopes)
+      || requiredScopes.length === 0 || requiredScopes.length > declaredScopes.length) return false;
+    for (let index = 0; index < requiredScopes.length; index++) {
+      const scope = requiredScopes[index];
+      if (typeof scope !== "string" || !scope || scope.includes("*")
+        || !declaredScopes.includes(scope) || requiredScopes.indexOf(scope) !== index) return false;
+    }
+    return accessKeyGrantsSatisfyScopes(admittedGrants, requiredScopes);
+  };
   const context: LooseRecord = {
     auth,
     ...(credential ? { credential } : {}),
+    hasAccessKeyScopes,
     app: database.app,
     signal: options.signal,
     rateLimit: database.capsuleRateLimiter.consume,

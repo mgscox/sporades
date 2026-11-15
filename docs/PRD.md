@@ -254,6 +254,13 @@ The repository currently includes:
   database routes; Capsule tools are Custom endpoints declared with `mcp`, and
   undeclared endpoints are never listed. Bridged endpoint requests carry no
   key or caller credential. A missing or short key closes every bridge route.
+- A server-only admitted Access-key scope check for ordinary Custom endpoints,
+  plus an opt-in Capsule-owned React Todo MCP pilot. The Capsule owns its tools,
+  schemas and per-tool policy; same-version redeployment changes the catalogue.
+  Owner-scoped durable add receipts preserve retry results across restart, and
+  committed endpoint writes refresh subscribed browser queries. The existing
+  operator bridge and its independent credential retain their behavior. See the
+  [MCP reference](reference/mcp-bridge.md#capsule-owned-app-facing-mcp).
 - Field builders for `String()`, `Boolean()`, `Number()`, `Date()`, `Json()`,
   and `Reference()`.
 - Additive migrations for new tables, fields, and unique constraints, plus
