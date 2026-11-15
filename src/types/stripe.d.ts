@@ -38,15 +38,21 @@ export type StripePaymentsDisabledResult = Readonly<{
 }>;
 
 export type StripeCheckoutSessionInput = Readonly<{
-  /** Explicit server-owned mode derived from the Capsule Price catalogue. */
-  mode: "payment" | "subscription";
   priceId: string;
   quantity: number;
   successPath: string;
   cancelPath: string;
   idempotencyKey: string;
   businessReference: string;
-}>;
+} & (
+  | { mode: "payment" }
+  | {
+      mode: "subscription";
+      /** Server-owned integer 1–90. Collects a card even with zero due now.
+       * Omit for ordinary subscription Checkout. Capsule code owns eligibility. */
+      trialDays?: number;
+    }
+)>;
 
 export type StripeCheckoutSessionResult = Readonly<{
   ok: true;

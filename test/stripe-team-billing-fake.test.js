@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import Stripe from "stripe";
 import { createStripeTeamBillingFake } from "sporades/testing/stripe";
+import { createStripePaymentIntegration } from "sporades/server/stripe";
 import { createStripeTeamBillingProvider } from "../dist/stripe-team-billing-provider.js";
 import { startTeamBillingCheckout, performTeamBillingCheckout, readCurrentUserTeamBilling } from "../dist/team-billing-runtime.js";
 import { createStripeCallbackEndpoint } from "../dist/stripe-webhook-runtime.js";
@@ -145,6 +146,65 @@ function updateInput(subscription, item, overrides = {}) {
 const periodEndInput = (subscription, item, overrides = {}) => ({ ...updateInput(subscription, item), timing: "period-end", ...overrides });
 const erasure = (overrides = {}) => ({ mode: "sandbox", checkoutSessionIds: [], subscriptionIds: [], idempotencyKey: "fake-quiescence-key", ...overrides });
 const unavailable = (error) => error.code === "TEAM_BILLING_PROVIDER_UNAVAILABLE" && error.retryable;
+
+for (const enabled of [false, true]) test(`user-level trial Checkout completes without a charge and retains card collection (tax ${enabled})`, async t => {
+  const { fake } = await fixture(t);
+  const integration = createStripePaymentIntegration({ enabled: true, config: { ...config, tax: { enabled }, requestTimeoutMs: 1000 }, env, apiBaseUrl: fake.origin });
+  const checkoutInput = { mode: "subscription", priceId: "price_team", quantity: 2, trialDays: 14,
+    successPath: "/billing/success", cancelPath: "/billing/cancel", businessReference: "trial-intent-1", idempotencyKey: "trial-intent-1" };
+  const result = await integration.createCheckoutSession(checkoutInput);
+  assert.deepEqual(await integration.createCheckoutSession(checkoutInput), result);
+  assert.equal(fake.state().checkouts.length, 1);
+  const payload = fake.requests().find(request => request.operation === "checkout.sessions.create").parameters;
+  assert.deepEqual(payload.automatic_tax, { enabled: String(enabled) });
+  assert.deepEqual(payload.tax_id_collection, enabled ? { enabled: "true" } : undefined);
+  assert.equal(payload.billing_address_collection, enabled ? "required" : undefined);
+  const checkout = fake.state().checkouts[0];
+  assert.equal(checkout.amount_total, 0);
+  assert.equal(checkout.payment_method_collection, "always");
+  assert.deepEqual(checkout.payment_method_types, ["card"]);
+  const completed = await fake.checkout.complete(result.sessionId);
+  assert.equal(completed.payment_status, "no_payment_required");
+  const subscription = fake.subscriptions.get(completed.subscription);
+  assert.equal(subscription.status, "trialing");
+  assert.equal(subscription.trial_end - subscription.trial_start, 14 * 86400);
+  assert.match(subscription.default_payment_method, /^pm_/);
+  assert.equal(subscription.items.data[0].quantity, 2);
+  assert.equal(subscription.items.data[0].price.id, "price_team");
+  assert.deepEqual(fake.state().invoices, []);
+  const event = fake.state().events.find(event => event.type === "checkout.session.completed");
+  assert.equal(event.data.object.id, result.sessionId);
+  assert.equal(event.data.object.payment_status, "no_payment_required");
+  await fake.clock.advance(14 * 86400);
+  assert.equal(fake.subscriptions.get(completed.subscription).status, "active");
+});
+
+test("user-level subscription fake preserves ordinary Checkout and rejects trial protocol drift", async t => {
+  const { fake, stripe } = await fixture(t);
+  const ordinary = { mode: "subscription", automatic_tax: { enabled: false }, line_items: [{ price: "price_team", quantity: 1 }],
+    success_url: "https://billing.example.test/billing/success", cancel_url: "https://billing.example.test/billing/cancel",
+    client_reference_id: "ordinary-intent" };
+  const checkout = await stripe.checkout.sessions.create(ordinary);
+  const completed = await fake.checkout.complete(checkout.id);
+  assert.equal(completed.payment_status, "paid");
+  assert.equal(fake.subscriptions.get(completed.subscription).status, "active");
+  const trial = { ...ordinary, subscription_data: { trial_period_days: 14 }, payment_method_collection: "always", payment_method_types: ["card"] };
+  for (const request of [
+    { ...trial, payment_method_collection: "if_required" },
+    { ...trial, payment_method_types: ["sepa_debit"] },
+    { ...trial, payment_method_types: ["card", "sepa_debit"] },
+    { ...trial, subscription_data: { trial_period_days: 0 } },
+    { ...trial, subscription_data: { trial_period_days: 91 } },
+    { ...trial, subscription_data: { trial_period_days: 14, trial_end: 2_000_000_000 } },
+    { ...ordinary, payment_method_collection: "always" },
+    { ...trial, customer: completed.customer },
+    { ...trial, automatic_tax: undefined },
+    { ...trial, automatic_tax: { enabled: "invalid" } },
+  ]) {
+    await assert.rejects(stripe.checkout.sessions.create(request), error => error.code === "sporades_fake_unsupported");
+  }
+  assert.equal(fake.state().checkouts.length, 1);
+});
 
 test("a quoted payment-action retry recovers the original invoice capability", async t => {
   const f = await fixture(t);
@@ -566,12 +626,16 @@ test("literal loopback, sandbox-only authentication, exact API version and unsup
 });
 
 test("endpoint and event parity fails when the real provider or convergence adds a call", async () => {
-  const [provider, convergence, fake] = await Promise.all([
+  const [provider, convergence, fake, integration] = await Promise.all([
     readFile(new URL("../src/stripe-team-billing-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/team-billing-convergence.ts", import.meta.url), "utf8"),
     readFile(new URL("../src/testing/stripe.ts", import.meta.url), "utf8"),
+    readFile(new URL("../src/stripe-payment-integration.ts", import.meta.url), "utf8"),
   ]);
   const calls = new Set([...provider.matchAll(/await stripe\.([\w.]+)\(/g)].map((entry) => entry[1]));
+  for (const entry of integration.matchAll(/stripe\.([\w.]+)\(/g)) {
+    if (entry[1] !== "webhooks.constructEvent") calls.add(entry[1]);
+  }
   const routes = new Set([...fake.matchAll(/\["(?:POST|GET|DELETE)", .*?, "([\w.]+)"\]/g)].map((entry) => entry[1]));
   assert.equal(calls.size, 16);
   assert.deepEqual([...routes].sort(), [...calls].sort());
