@@ -844,13 +844,21 @@ export type TeamBillingProjection =
   | { state: "past-due"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number; currentPeriodEnd: string }
   | { state: "cancelled"; teamId: string; productKey: string; interval?: TeamBillingInterval; currency?: string; quantity: number }
   | { state: "attention-required"; teamId: string; reason: "catalogue-mismatch" | "provider-state-ambiguous" };
-/** Server-only result; never publish tokens to clients, logs or Job results. */
+/** Server-only result. Never publish tokens to clients, logs or Job results.
+ * `none`: no completed Checkout in the current payment mode; no trial permission.
+ * `pending`: completed Checkout awaits verifiable card evidence or provider recovery.
+ * Pending has NO upper time bound. Runtime-owned Jobs retry and verified provider
+ * events wake pending captures, but neither guarantees completion. A trial gate
+ * must deny while pending and enforce its own persisted deadline.
+ * `captured`: a card token, or null only after an actual non-card method is seen;
+ * capturedAt is the settlement time. Erasure removes the capture. */
 export type TeamBillingCardIdentity =
   | Readonly<{ state: "none" | "pending" }>
   | Readonly<{ state: "captured"; card: Readonly<{ token: string }> | null; capturedAt: string }>;
 
 export type CurrentUserTeamBillingApi = {
-  /** Current linked Team administrator plus the read policy; provider-free and server-only. */
+  /** Current linked Team administrator plus the read policy; provider-free and server-only.
+   * See TeamBillingCardIdentity: pending has no upper bound and must not grant a trial. */
   getCardIdentity(teamId: string): Promise<TeamBillingCardIdentity>;
   /** Provider-free verified billing truth for app policy; requires current linked Team membership. */
   get(teamId: string): Promise<TeamBillingProjection>;
@@ -966,7 +974,8 @@ export type PrivilegedTeamBillingQuarantine = Readonly<{
 }>;
 
 export type PrivilegedTeamBillingApi = {
-  /** Userless server-only card token read; requires an active Privileged callback. */
+  /** Userless server-only card token read; requires an active Privileged callback.
+   * See TeamBillingCardIdentity: pending has no upper bound and must not grant a trial. */
   getCardIdentity(teamId: string): Promise<TeamBillingCardIdentity>;
   /** Lists at most 100 provider-free quarantined observations, newest first. */
   listQuarantines(options?: { limit?: number }): Promise<{ quarantines: readonly PrivilegedTeamBillingQuarantine[] }>;

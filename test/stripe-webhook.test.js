@@ -1851,22 +1851,41 @@ test("an expired reserved Stripe Job is recovered by a second Postgres runtime w
   }
 });
 
-test("durable callbacks redact expanded card evidence and envelope PaymentMethod IDs", async () => {
-  let stored, delivered;
-  const endpoint = createStripeCallbackEndpoint({ stripe }, serverEnv);
-  const raw = JSON.parse(stripeEvent("evt_card_redaction", { type: "payment_method.attached", object: {
-    id: "pm_private_callback", object: "payment_method", type: "card", card: { fingerprint: "privatecallbackfingerprint" },
-  } }));
-  const body = JSON.stringify(raw);
-  await endpoint.handler({ request: { bodyBytes: { toUint8Array: () => Buffer.from(body) }, headers: {
-    "stripe-signature": Stripe.webhooks.generateTestHeaderString({ payload: body, secret: webhookSecret }),
-  } }, jobs: { enqueue: async (_name, payload) => { stored = payload; return { id: "job" }; } } });
-  assert.equal(stored.objectId, null);
-  assert.doesNotMatch(JSON.stringify(stored), /pm_private_callback|privatecallbackfingerprint/);
-  assert.match(stored.__sporadesProviderPayloadDigest, /^[a-f0-9]{64}$/);
-  const { dispatchVerifiedStripeEvent } = await import("../dist/stripe-events-runtime.js");
-  await dispatchVerifiedStripeEvent({}, stored, { kind: "stripeEvent", handler: (_ctx, event) => { delivered = event; } });
-  assert.equal("__sporadesProviderPayloadDigest" in delivered, false);
+test("durable Stripe handlers retain PaymentMethod ids and objectId while removing only fingerprints", async () => {
+  const delivered = [];
+  await withDatabase({ name: "card-redaction", payments: { stripe } }, {
+    stripeEvents: declareStripeEvent((_ctx, event) => { delivered.push(event); }),
+  }, async database => {
+    await database.init();
+    for (const [type, object] of [
+      ["setup_intent.succeeded", { id: "seti_callback", object: "setup_intent", payment_method: "pm_callback" }],
+      ["payment_method.attached", { id: "pm_callback", object: "payment_method", type: "card" }],
+    ]) {
+      object.card = { fingerprint: "privatecallbackfingerprint" };
+      object.metadata = { reference: "pm_business_reference" };
+      object.nested = [{ fingerprint: "nestedfingerprint", payment_method: "pm_nested" }];
+      const response = await postStripe(database, stripeEvent(`evt_${object.id}`, { type, object }));
+      const jobId = JSON.parse(response.response.body).jobId;
+      await waitForJob(database, jobId, "succeeded");
+      const stored = JSON.parse(database.adapter.prepare("SELECT [payload] FROM [sporades_jobs] WHERE [id] = ?").get(jobId).payload);
+      assert.equal(stored.objectId, object.id);
+      assert.equal(stored.raw.data.object.id, object.id);
+      assert.equal(stored.raw.data.object.metadata.reference, "pm_business_reference");
+      assert.equal(stored.raw.data.object.nested[0].payment_method, "pm_nested");
+      assert.doesNotMatch(JSON.stringify(stored), /privatecallbackfingerprint|nestedfingerprint|"fingerprint"/);
+      assert.match(stored.__sporadesProviderPayloadDigest, /^[a-f0-9]{64}$/);
+    }
+    assert.equal(delivered.length, 2);
+    assert.equal(delivered[0].raw.data.object.payment_method, "pm_callback");
+    assert.equal(delivered[0].objectId, "seti_callback");
+    assert.equal(delivered[1].raw.data.object.id, "pm_callback");
+    assert.equal(delivered[1].objectId, "pm_callback");
+    for (const event of delivered) {
+      assert.equal("__sporadesProviderPayloadDigest" in event, false);
+      assert.ok(Object.isFrozen(event.raw.data.object));
+      assert.doesNotMatch(JSON.stringify(event), /privatecallbackfingerprint|nestedfingerprint|"fingerprint"/);
+    }
+  });
 });
 
 test("atomic card identity reads stay provider-free and expire with their consequence", async () => {

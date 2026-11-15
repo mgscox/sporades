@@ -1,5 +1,14 @@
 # Changes
 
+## Unreleased
+
+- Add server-only keyed card identity reads and durable Team Billing capture (#406).
+- Durable Stripe event delivery removes only `fingerprint` keys from `raw`;
+  PaymentMethod IDs, metadata and `objectId` remain available to Capsule handlers.
+- Keep Team Billing card capture pending while payment-method evidence is absent;
+  verified events and delayed runtime Jobs retry it. Trial gates must refuse
+  pending results and enforce their own deadline.
+
 ## v0.9.51 - 2026-11-11
 
 Changes since v0.9.50.

@@ -213,7 +213,6 @@ test('GBP to EUR handover settles from verified evidence and permits later manag
   const rows = f.database.adapter.prepare("SELECT * FROM [sporades_jobs]").all();
   assert.ok(!JSON.stringify(rows).includes(refreshedCard.card.token));
   for (const pm of f.fake.state().paymentMethods) {
-    assert.ok(!JSON.stringify(rows).includes(pm.id));
     if (pm.card) assert.ok(!JSON.stringify(rows).includes(pm.card.fingerprint));
   }
 

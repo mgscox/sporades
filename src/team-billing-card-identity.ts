@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { jobTimestampAfter } from "./jobs-runtime.js";
 import { cardIdentityKey } from "./stripe-card-identity.js";
 import { teamBillingDenied } from "./team-billing-runtime.js";
 import { lockTeamLifecycle } from "./teams-runtime.js";
@@ -24,8 +25,56 @@ export async function stageTeamBillingCardIdentity(db: Obj, operationId: string)
   await enqueue(db, tx, operationId, generationId);
 }
 
-async function enqueue(db: Obj, tx: Obj, operationId: string, generationId: string) {
-  await db.enqueueTeamBillingCardIdentityJob(tx, { operationId, generationId }, `team-billing-card-identity:${operationId}:${generationId}`);
+async function enqueue(db: Obj, tx: Obj, operationId: string, generationId: string, availableAt?: string) {
+  await db.enqueueTeamBillingCardIdentityJob(tx, { operationId, generationId }, `team-billing-card-identity:${operationId}:${generationId}`, availableAt);
+}
+
+async function replacePendingGeneration(db: Obj, tx: Obj, operationId: string, previous: string, availableAt?: string) {
+  const generationId = randomUUID();
+  const changed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_billing_card_identities] SET [generationId] = ? WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'",
+  )).run(generationId, operationId, previous);
+  if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return false;
+  await enqueue(db, tx, operationId, generationId, availableAt);
+  return true;
+}
+
+/** Durable delayed repair avoids stranding a capture when a bounded Job exhausts. */
+export async function settleExhaustedTeamBillingCardIdentityJob(db: Obj, payload: Obj) {
+  if (!db.teamBillingDefinition || !db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return { replacementScheduled: false };
+  if (!payload || Object.keys(payload).sort().join() !== "generationId,operationId" || !UUID.test(payload.operationId) || !UUID.test(payload.generationId)) return { replacementScheduled: false };
+  const availableAt = jobTimestampAfter(db.clock.now(), 60_000);
+  if (!availableAt) return { replacementScheduled: false };
+  const settle = async (tx: Obj) => {
+    const row = await tx.prepare(tx.dialect.sql(
+      "SELECT [c].[teamId] FROM [sporades_team_billing_card_identities] [c] JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] " +
+      "JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] " +
+      "WHERE [c].[operationId] = ? AND [c].[generationId] = ? AND [c].[kind] = 'pending' AND [o].[status] = 'completed' AND [o].[mode] = ?",
+    )).get(payload.operationId, payload.generationId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
+    if (!row) return false;
+    await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
+    return replacePendingGeneration(db, tx, payload.operationId, payload.generationId, availableAt);
+  };
+  const replacementScheduled = db.__transactionActive ? await settle(db.adapter) : await db.adapter.withTransaction(settle);
+  if (replacementScheduled && !db.__transactionActive) db.scheduleTeamBillingJobDispatch?.();
+  return { replacementScheduled };
+}
+
+/** Verified events are wake-up hints, never payment-method or entitlement evidence. */
+export async function restageTeamBillingCardIdentities(db: Obj, customerId: string, subscriptionId?: string) {
+  if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
+  const tx = db.adapter;
+  const rows = await tx.prepare(tx.dialect.sql(
+    "SELECT [c].[operationId], [c].[teamId], [c].[generationId] FROM [sporades_team_billing_card_identities] [c] " +
+    "JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] " +
+    "JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] " +
+    "WHERE [c].[kind] = 'pending' AND [o].[status] = 'completed' AND [o].[mode] = ? AND [o].[providerCustomerId] = ?" +
+    (subscriptionId ? " AND [o].[providerSubscriptionId] = ?" : ""),
+  )).all(db.paymentsConfig.stripe.livemode ? "live" : "sandbox", customerId, ...(subscriptionId ? [subscriptionId] : []));
+  for (const row of rows) {
+    await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
+    await replacePendingGeneration(db, tx, row.operationId, row.generationId);
+  }
 }
 
 /** Restart replaces pending generations; older attempts can no longer settle them. */
@@ -77,6 +126,7 @@ export async function performTeamBillingCardIdentity(db: Obj, context: Obj, payl
     const provider = db.createStripeTeamBillingProvider({ config, env: db.serverEnv, signal: context.signal,
       ...(db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}) });
     result = await provider.readSubscriptionCardIdentity({ customerId: snapshot.providerCustomerId, subscriptionId: snapshot.providerSubscriptionId });
+    if (result?.pending === true) throw Object.assign(new Error(), { retryable: true });
     if (result?.ok !== true || result.card !== null && (!result.card || Object.keys(result.card).join() !== "token" || !/^[A-Za-z0-9_-]{43}$/.test(result.card.token))) throw new Error();
   } catch (error: any) {
     // Never let custom provider diagnostics or transient provider evidence enter Job errors.

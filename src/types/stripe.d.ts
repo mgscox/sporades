@@ -84,7 +84,9 @@ export type StripeWebhookVerificationInput = Readonly<{
   signature: string;
 }>;
 
-/** Bounded provider value produced only after exact-byte signature verification. */
+/** Bounded server-only provider value produced after exact-byte signature verification.
+ * Direct verification retains provider JSON. Durable stripeEvents delivery removes
+ * only fingerprint keys recursively, preserving objectId and PaymentMethod references. */
 export type VerifiedStripeEvent = Readonly<{
   provider: "stripe";
   providerEventId: string;
@@ -92,6 +94,7 @@ export type VerifiedStripeEvent = Readonly<{
   occurredAt: string;
   livemode: boolean;
   objectId: string | null;
+  /** Frozen provider JSON; durable delivery omits fingerprint keys only. */
   raw: Readonly<Record<string, unknown>>;
 }>;
 

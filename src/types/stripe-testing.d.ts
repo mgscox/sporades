@@ -51,8 +51,9 @@ export type StripeTeamBillingFake = {
   controlOrigin: string;
   close(): Promise<void>;
   checkout: {
-    /** Trial Checkouts create a trialing Subscription with trial_start/trial_end and no payment required. */
-    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible"; paymentMethod?: { type: "card"; card?: string } | { type: "sepa_debit" | "none" } }): Promise<StripeFakeObject>;
+    /** Trial Checkouts create a trialing Subscription with no payment required.
+     * deferPaymentMethod completes before attachment; use subscriptions.attachPaymentMethod later. */
+    complete(id: string, options?: { customerId?: string; billingMode?: "classic" | "flexible"; deferPaymentMethod?: boolean; paymentMethod?: { type: "card"; card?: string } | { type: "sepa_debit" | "none" } }): Promise<StripeFakeObject>;
     expire(id: string): Promise<StripeFakeObject>;
   };
   portal: {
@@ -61,6 +62,8 @@ export type StripeTeamBillingFake = {
     resume(id: string): Promise<StripeFakeObject>;
   };
   subscriptions: {
+    /** Attaches a deterministic method after Checkout; emits setup_intent.succeeded and a Subscription update. */
+    attachPaymentMethod(id: string, method?: { type: "card"; card?: string } | { type: "sepa_debit" }): Promise<StripeFakeObject>;
     setStatus(id: string, status: "active" | "past_due" | "unpaid" | "trialing" | "incomplete" | "incomplete_expired" | "canceled"): Promise<StripeFakeObject>;
     /** Attaches or clears an external schedule and emits a Subscription update. */
     setSchedule(id: string, scheduleId: string | null): Promise<StripeFakeObject>;

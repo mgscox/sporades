@@ -39,7 +39,7 @@ export function createStripeCallbackEndpoint(
         .digest("hex");
       const admitted = await ctx.jobs.enqueue(
         STRIPE_EVENT_JOB,
-        { ...event, objectId: redactStripeCardEvidence(event.objectId), raw: redactStripeCardEvidence(event.raw),
+        { ...event, raw: redactStripeCardEvidence(event.raw),
           __sporadesProviderPayloadDigest: createHash("sha256").update(JSON.stringify(event.raw)).digest("hex") },
         { idempotencyKey: `stripe-event:${identity}`, retry: STRIPE_EVENT_RETRY },
       );

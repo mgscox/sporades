@@ -1,4 +1,4 @@
-import { stageTeamBillingCardIdentity, performTeamBillingCardIdentity, readTeamBillingCardIdentity, repairTeamBillingCardIdentities } from "../../../dist/team-billing-card-identity.js";
+import { stageTeamBillingCardIdentity, performTeamBillingCardIdentity, readTeamBillingCardIdentity, repairTeamBillingCardIdentities, settleExhaustedTeamBillingCardIdentityJob } from "../../../dist/team-billing-card-identity.js";
 import assert from "node:assert/strict";
 import {
   performTeamBillingPlanTransition,
@@ -100,11 +100,11 @@ export const CONFORMANCE_SURFACE = {
         const operationId = "22222222-2222-4222-8222-222222222222";
         await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Card capture', ?, 'admin')")).run(teamId, NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [providerCustomerId], [providerSubscriptionId]) VALUES (?, ?, ?, 'admin', 'checkout', 'agency', 'completed', 'card-conformance', ?, ?, 'sandbox', 'cus_card', 'sub_card')")).run(operationId, operationId, teamId, NOW, NOW);
-        let payload;
+        let payload, availableAt;
         const db = { adapter, clock: { now: () => new Date(NOW) }, teamBillingDefinition: {},
           paymentsConfig: { stripe: { enabled: true, livemode: false, cardIdentityKeyEnv: "CARD_KEY" } },
           serverEnv: { CARD_KEY: "0123456789abcdef0123456789abcdef" },
-          enqueueTeamBillingCardIdentityJob: async (_tx, value) => { payload = value; },
+          enqueueTeamBillingCardIdentityJob: async (_tx, value, _key, at) => { payload = value; availableAt = at; },
           createStripeTeamBillingProvider: () => ({ readSubscriptionCardIdentity: async () => ({ ok: true, card: { token: "a".repeat(43) } }) }),
         };
         await assert.rejects(adapter.withTransaction(async tx => {
@@ -117,6 +117,16 @@ export const CONFORMANCE_SURFACE = {
         assert.deepEqual(await readTeamBillingCardIdentity(db, adapter, teamId), { state: "captured", card: { token: "a".repeat(43) }, capturedAt: NOW });
         await adapter.ensureTeamBillingStorage();
         assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities]"), 1);
+        await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [kind] = 'pending', [token] = NULL, [capturedAt] = NULL WHERE [operationId] = ?")).run(operationId);
+        const oldGeneration = payload;
+        db.paymentsConfig.stripe.livemode = true;
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, false);
+        db.paymentsConfig.stripe.livemode = false;
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, true);
+        assert.notEqual(payload.generationId, oldGeneration.generationId);
+        assert.equal(availableAt, new Date(Date.parse(NOW) + 60_000).toISOString());
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, false);
+        await performTeamBillingCardIdentity(db, {}, payload);
         for (const erased of [false, true]) {
           await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [kind] = 'pending', [token] = NULL, [capturedAt] = NULL WHERE [operationId] = ?")).run(operationId);
           let enter, release;

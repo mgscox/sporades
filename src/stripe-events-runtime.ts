@@ -25,9 +25,8 @@ export async function dispatchVerifiedStripeEvent(
   return Object.freeze({ delivered: true, providerEventId: event.providerEventId, type: event.type });
 }
 
-/** Card provider identity never belongs in a durable callback Job, including expanded events. */
+/** Remove raw card fingerprints without changing provider object references. */
 export function redactStripeCardEvidence(value: any): any {
-  if (typeof value === "string" && /^pm_[A-Za-z0-9_]+$/.test(value)) return null;
   if (!value || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(redactStripeCardEvidence);
   return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "fingerprint")

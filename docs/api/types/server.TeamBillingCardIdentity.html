@@ -12,10 +12,17 @@
 <li><a href="" aria-current="page">TeamBillingCardIdentity</a></li></ul>
 <h1>Type Alias TeamBillingCardIdentity</h1></div>
 <div class="tsd-signature"><span class="tsd-kind-type-alias">TeamBillingCardIdentity</span><span class="tsd-signature-symbol">:</span><br/>    <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">Readonly</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">state</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;none&quot;</span> <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">&quot;pending&quot;</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><br/>    <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">Readonly</span><span class="tsd-signature-symbol">&lt;</span><br/>        <span class="tsd-signature-symbol">{</span><br/>            <span class="tsd-kind-property">capturedAt</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">;</span><br/>            <span class="tsd-kind-property">card</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Readonly</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">token</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><br/>            <span class="tsd-signature-symbol">|</span> <span class="tsd-signature-type">null</span><span class="tsd-signature-symbol">;</span><br/>            <span class="tsd-kind-property">state</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">&quot;captured&quot;</span><span class="tsd-signature-symbol">;</span><br/>        <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">,</span><br/>    <span class="tsd-signature-symbol">&gt;</span></div>
-<div class="tsd-comment tsd-typography"><p>Server-only result; never publish tokens to clients, logs or Job results.</p>
+<div class="tsd-comment tsd-typography"><p>Server-only result. Never publish tokens to clients, logs or Job results.
+<code>none</code>: no completed Checkout in the current payment mode; no trial permission.
+<code>pending</code>: completed Checkout awaits verifiable card evidence or provider recovery.
+Pending has NO upper time bound. Runtime-owned Jobs retry and verified provider
+events wake pending captures, but neither guarantees completion. A trial gate
+must deny while pending and enforce its own persisted deadline.
+<code>captured</code>: a card token, or null only after an actual non-card method is seen;
+capturedAt is the settlement time. Erasure removes the capture.</p>
 </div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L848">server.d.ts:848</a></li></ul></aside></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L855">server.d.ts:855</a></li></ul></aside></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

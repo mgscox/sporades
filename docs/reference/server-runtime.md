@@ -1434,8 +1434,9 @@ idempotency key. User-level subscription Checkout supports
 `trialDays`; creating user-level setup Checkout remains unsupported.
 
 Do not place tokens in browser-visible payment Job state, results, app messages,
-logs or telemetry. Durable Stripe callback delivery redacts fingerprint fields
-and PaymentMethod IDs, retaining only an internal original-payload digest for
-replay comparison. Direct signature verification keeps its existing server-only
+logs or telemetry. Durable Stripe callback delivery recursively removes only
+`fingerprint` keys from `raw`, preserving PaymentMethod IDs, metadata values and
+`objectId` so Capsule payment handlers retain their existing references. An
+internal original-payload digest preserves replay comparison. Direct signature verification keeps its existing server-only
 raw-event contract. See [ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md)
 for rotation and the human Stripe sandbox verification requirement.

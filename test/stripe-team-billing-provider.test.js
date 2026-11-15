@@ -939,6 +939,11 @@ test("Subscription card capture attests provider association and hides rejected 
       const result = await provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" });
       assert.match(result.card.token, /^[A-Za-z0-9_-]{43}$/); assert.ok(Object.isFrozen(result));
     }
+    for (const fields of [{ default_payment_method: null }, { default_payment_method: { ...method, card: {} } }]) {
+      subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, ...fields };
+      assert.deepEqual(await provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" }),
+        { ok: true, card: null, pending: true });
+    }
     for (const fields of [{ customer: "cus_foreign" }, { livemode: true }, { default_payment_method: "pm_private" }, { default_payment_method: { ...method, object: "customer" } }, { default_payment_method: { ...method, customer: "cus_foreign" } }]) {
       subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, default_payment_method: method, ...fields };
       await assert.rejects(provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" }), error => {

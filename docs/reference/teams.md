@@ -1215,9 +1215,43 @@ acceptance remains a separately authorized human check.
 `await ctx.teamBilling.getCardIdentity(teamId)` returns one frozen value:
 
 - `{ state: "none" }`: no completed Checkout in the current payment mode.
-- `{ state: "pending" }`: completed Checkout awaits durable capture.
+- `{ state: "pending" }`: completed Checkout awaits verifiable card evidence or
+  provider recovery. **Pending has no upper time bound and must never permit a trial.**
 - `{ state: "captured", card: { token } | null, capturedAt }`: captured card
-  equality token or a known non-card/no-method result.
+  equality token, or null after an actual non-card method is seen. `capturedAt`
+  is the capture settlement time. An absent method or missing fingerprint stays pending.
+
+
+A Capsule trial gate must handle all three states. For example, persist a
+server-owned `deadline` when admitting Checkout, then run this in trusted server
+code; return only the safe decision to the browser:
+
+```ts
+async function trialGate(ctx, teamId, deadline) {
+  const identity = await ctx.teamBilling.getCardIdentity(teamId);
+  const deadlineMs = Date.parse(deadline);
+  if (!Number.isFinite(deadlineMs) || Date.now() >= deadlineMs) {
+    return { allowed: false, reason: "deadline-expired" };
+  }
+  switch (identity.state) {
+    case "none":
+      return { allowed: false, reason: "checkout-required" };
+    case "pending":
+      return { allowed: false, reason: "awaiting-card" };
+    case "captured":
+      if (!identity.card) return { allowed: false, reason: "card-required" };
+      return { allowed: await claimPrivateTrialToken(teamId, identity.card.token, deadline) };
+  }
+}
+```
+
+`claimPrivateTrialToken` is a Capsule-owned helper: atomically claim the token
+under a unique constraint, recheck the deadline in that transaction, allow an
+idempotent retry by the same Team, and refuse another Team's claim. Keep this ledger private. The persisted deadline must come
+from trusted Capsule state, never a browser value. Once expired, keep withholding
+entitlement even if capture later succeeds, and schedule the Capsule's cancellation
+or provider-safe erasure workflow. The trial Subscription already exists at this
+point; Sporades does not enforce the duplicate-card rule or cancel it automatically.
 
 Current-user server code needs current linked Team membership, administrator
 authority and the Team Billing `read` policy. Privileged callbacks are userless.
@@ -1230,8 +1264,16 @@ never expose this method or token.
 Set the dedicated optional `payments.stripe.cardIdentityKeyEnv` secret before
 relying on capture. Verified paid or trial Checkout stages a durable private
 capture Job. Provider-free convergence stays inside its atomic fence; the Job
-reads Stripe afterward. Bounded retry failures leave pending state; restart
-repairs missing Jobs and renews pending generations. Currency handover refreshes
+reads Stripe afterward. Each generation makes up to four attempts (permanent
+refusals end it earlier), leaves the state pending on failure, and enqueues
+another bounded capture generation one minute later. The durable Job queue owns
+that wake and restart recovery; an exhausted interrupted claim also gets a new
+generation. Verified Subscription updates, successful SetupIntents and paid
+invoices wake associated pending captures sooner. Events do not provide card
+truth: the capture Job still retrieves and attests the stored exact Subscription.
+Restart repairs missing work. Neither retries nor events guarantee completion;
+provider outages or absent card evidence can leave the read pending indefinitely.
+A Capsule gating a trial must persist its own deadline and refuse after it expires. Currency handover refreshes
 the token after verified replacement Subscription evidence. Portal method
 updates do not refresh in v1: this identifies the card that started billing.
 Provider-safe erasure removes the runtime token with billing rows. Retention of
@@ -1244,6 +1286,8 @@ entitlement and cancel through Portal or erasure; Checkout cannot refuse it in
 advance. Never put the token in browser-visible Job state or results, logs or
 messages. Rotating the dedicated key invalidates previous tokens, with no v1
 dual-key window. Wallets can yield different tokens per device, and tokens are
-not comparable across Capsules or Stripe accounts. A human sandbox check of
+comparable only within the same configured key, payment mode and Stripe account.
+HMAC includes no account ID; cross-account separation relies on Stripe's
+account-scoped fingerprints. A human sandbox check of
 Stripe's expanded fields is required before relying on the model; see
 [ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md).

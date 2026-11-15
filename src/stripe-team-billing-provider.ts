@@ -35,7 +35,9 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
           || subscription.livemode !== config.livemode || typeof subscription.pending_setup_intent === "string") throw providerFailure(false);
         const method = subscription.default_payment_method ?? subscription.pending_setup_intent?.payment_method;
         if (method && (method.customer !== input.customerId || method.livemode !== config.livemode)) throw providerFailure(false);
-        return Object.freeze({ ok: true, card: stripeCardIdentity(method, key, config.livemode) });
+        const card = stripeCardIdentity(method, key, config.livemode);
+        // Absence may precede attachment; only an observed non-card method settles null.
+        return Object.freeze({ ok: true, card, ...(!method || method.type === "card" && !card ? { pending: true } : {}) });
       } catch (error: any) {
         if (typeof error?.retryable === "boolean") throw providerFailure(error.retryable);
         throwProviderOperationFailure(error);

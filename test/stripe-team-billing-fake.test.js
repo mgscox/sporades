@@ -939,6 +939,11 @@ const product: TeamBillingProductDeclaration = { trialDays: 14, quantity: { kind
 // @ts-expect-error Trial days are numeric.
 const invalidProduct: TeamBillingProductDeclaration = { ...product, trialDays: "14" };
 void [serverTrial, invalidProduct];
+declare const delayedFake: Awaited<ReturnType<typeof generatedFactory>>;
+delayedFake.checkout.complete("cs_test_delayed", { deferPaymentMethod: true });
+delayedFake.subscriptions.attachPaymentMethod("sub_delayed", { type: "card", card: "shared" });
+// @ts-expect-error Deferred attachment is a boolean control.
+delayedFake.checkout.complete("cs_test_delayed", { deferPaymentMethod: "yes" });
 const generated: typeof createStripeTeamBillingFake = generatedFactory;
 const canonical: typeof generatedFactory = createStripeTeamBillingFake;
 async function guardControls(fake: Awaited<ReturnType<typeof createStripeTeamBillingFake>>) {
@@ -1158,7 +1163,7 @@ test("card identities are deterministic across customers, reset and trial collec
   assert.deepEqual(await capture({ type: "card", card: "4242424242424242" }, 2, 14), first);
   assert.notDeepEqual(await capture({ type: "card", card: "another-card" }, 3), first);
   assert.deepEqual(await capture({ type: "sepa_debit" }, 4), { ok: true, card: null });
-  assert.deepEqual(await capture({ type: "none" }, 5, 14), { ok: true, card: null });
+  assert.deepEqual(await capture({ type: "none" }, 5, 14), { ok: true, card: null, pending: true });
   const fingerprint = f.fake.state().paymentMethods[0].card.fingerprint;
   f.fake.reset();
   assert.deepEqual(await capture({ type: "card" }, 6), first);

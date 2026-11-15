@@ -61,8 +61,17 @@ token transiently and writes only `card | none`, token and `capturedAt` alongsid
 local Team/operation/generation correlation. Payloads contain only local
 operation and generation UUIDs; results are null. Failures are fixed and opaque.
 Restart repair reconstructs missing work and replaces pending generations;
-stale attempts cannot settle replacement-owned or erased rows. Bounded retry
-exhaustion leaves the read pending until restart repair. No provider I/O enters
+stale attempts cannot settle replacement-owned or erased rows. Each generation
+makes up to four attempts; permanent refusals end it earlier. Exhaustion leaves the read pending and schedules a fresh delayed generation
+one minute later, including recovery of an exhausted interrupted Job. Missing
+methods and card objects without a fingerprint are pending evidence, not a final
+non-card result. Verified `customer.subscription.updated`, `setup_intent.succeeded`
+and `invoice.paid` events wake only existing pending captures associated with the
+Customer and, where supplied by the event, the exact Subscription. SetupIntents
+identify a Customer rather than a Subscription; the Job re-reads and attests the
+stored exact Subscription before settlement. No event supplies a token or grants
+entitlement. Actual non-card methods settle a captured null. Pending has no upper
+time bound; Capsules must deny pending trial gates and own a persisted deadline. No provider I/O enters
 convergence or atomic Capsule handlers.
 
 Currency handover captures again after verified replacement Subscription truth
@@ -73,13 +82,15 @@ payment method. Reads select completed operations in the current payment mode.
 Provider-safe erasure (ADR 0049) deletes capture rows with billing rows; stale
 workers never recreate them. The Capsule decides retention of any copied ledger.
 
-A necessary durable-callback adjustment redacts PaymentMethod IDs and fingerprint
-fields before enqueue, including expanded webhook objects. The internal envelope
+Durable callback delivery removes only `fingerprint` keys recursively before
+enqueue, including expanded webhook objects. PaymentMethod IDs, metadata and
+`objectId` retain their verified provider values for Capsule payment flows. The internal envelope
 retains only an original-payload SHA-256 digest for replay/quarantine comparison;
 that internal field is omitted from Capsule event delivery. Direct signature
 verification still returns its existing server-only Verified Stripe event. No
-provider-read fingerprint or PaymentMethod ID enters a capture row, payload,
-result, observation, log, telemetry or diagnostic.
+provider-read fingerprint or PaymentMethod ID enters a capture row, capture Job
+payload/result, log, telemetry or diagnostic. General verified-event Jobs retain
+PaymentMethod references; they never retain fingerprint keys.
 
 ## Capsule rule and limits
 
@@ -93,14 +104,21 @@ browser-visible payment Job state, app messages, query results or logs.
 Apple Pay and Google Pay can present device-specific card numbers, producing
 different fingerprints for one physical card across devices or plain-card use.
 This is a deterrent, not a guarantee. Fingerprints are per Stripe account;
-tokens are deliberately not comparable across Capsules or accounts.
+comparisons require the same key, payment mode and Stripe account. The HMAC
+input contains no account or Capsule identifier: cross-account separation comes
+from Stripe's account-scoped fingerprints, while independently generated Capsule
+keys separate their tokens.
 
 ## Evidence and certification limits
 
 The loopback fake deterministically hashes `"sporades-fake-card\0" + cardLabel`
 to a 16-character hexadecimal fingerprint, stable across customers, processes,
-reset and runs. Omitted methods default to card `4242424242424242`; non-card and
-none controls model null identities. `state()` alone exposes fake PaymentMethods
+reset and runs. Omitted methods default to card `4242424242424242`. Non-card
+methods settle a captured null; none and deferred controls model missing evidence
+and remain pending. Deferred completion plus later attachment
+runs through the separate HTTP fake service with the real Stripe SDK and signed
+webhooks; tests cover both event/attachment orderings, non-card settlement,
+provider failure, delayed retry and event-driven repair. `state()` alone exposes fake PaymentMethods
 and their fingerprints for assertions. Exact supported expansion paths remain
 closed; arbitrary expansions are unsupported. ADR 0058's endpoint parity gate
 continues to bind every provider SDK endpoint to a fake route.
