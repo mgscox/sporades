@@ -41,7 +41,8 @@ export function createTeamBillingTables(adapter: LooseRecord) {
   const sql = adapter.dialect.sql;
   return chainMaybePromise([
     () => adapter.exec(sql("CREATE TABLE IF NOT EXISTS [sporades_team_billing_card_identities] (" +
-      "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL)")),
+      "[operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL, " +
+      "[generationCount] INTEGER NOT NULL DEFAULT 1, [readAttempts] INTEGER NOT NULL DEFAULT 0, [nextAttemptAt] TEXT NULL)")),
     () => adapter.exec(sql(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] (" +
       "[teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, " +
@@ -125,6 +126,9 @@ export function createTeamBillingTables(adapter: LooseRecord) {
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name, "INTEGER"))),
     ...(["eventType", "outcome", "safeReason"]
       .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "generationCount", "INTEGER NOT NULL DEFAULT 1"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "readAttempts", "INTEGER NOT NULL DEFAULT 0"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "nextAttemptAt", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
     // NULL preserves the immutable taxless intent of operations admitted before Stripe Tax.
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "taxEnabled", "INTEGER"),

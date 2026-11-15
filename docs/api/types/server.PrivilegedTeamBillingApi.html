@@ -13,7 +13,7 @@
 <h1>Type Alias PrivilegedTeamBillingApi</h1></div>
 <div class="tsd-signature"><span class="tsd-signature-keyword">type</span> <span class="tsd-kind-type-alias">PrivilegedTeamBillingApi</span> <span class="tsd-signature-symbol">=</span> <span class="tsd-signature-symbol">{</span><br/>    <a class="tsd-kind-call-signature" href="#getcardidentity-1">getCardIdentity</a><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.TeamBillingCardIdentity.html" class="tsd-signature-type tsd-kind-type-alias">TeamBillingCardIdentity</a><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/>    <a class="tsd-kind-call-signature" href="#listquarantines-1">listQuarantines</a><span class="tsd-signature-symbol">(</span><br/>        <span class="tsd-kind-parameter">options</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">limit</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">,</span><br/>    <span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">quarantines</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-keyword">readonly</span> <a href="server.PrivilegedTeamBillingQuarantine.html" class="tsd-signature-type tsd-kind-type-alias">PrivilegedTeamBillingQuarantine</a><span class="tsd-signature-symbol">[]</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span><span class="tsd-signature-symbol">;</span><br/><span class="tsd-signature-symbol">}</span></div><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L976">server.d.ts:976</a></li></ul></aside>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L979">server.d.ts:979</a></li></ul></aside>
 <section class="tsd-panel-group tsd-index-group">
 <section class="tsd-panel tsd-index-panel">
 <details class="tsd-index-content tsd-accordion" open><summary class="tsd-accordion-summary tsd-index-summary"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
@@ -34,7 +34,7 @@
 <div class="tsd-signature tsd-anchor-link" id="getcardidentity-1"><span class="tsd-kind-call-signature">getCardIdentity</span><span class="tsd-signature-symbol">(</span><span class="tsd-kind-parameter">teamId</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">string</span><span class="tsd-signature-symbol">)</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.TeamBillingCardIdentity.html" class="tsd-signature-type tsd-kind-type-alias">TeamBillingCardIdentity</a><span class="tsd-signature-symbol">&gt;</span><a href="#getcardidentity-1" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></div>
 <div class="tsd-description">
 <div class="tsd-comment tsd-typography"><p>Userless server-only card token read; requires an active Privileged callback.
-See TeamBillingCardIdentity: pending has no upper bound and must not grant a trial.</p>
+See TeamBillingCardIdentity: pending and unavailable must not grant a trial.</p>
 </div>
 <div class="tsd-parameters">
 <h4 class="tsd-parameters-title">Parameters</h4>
@@ -42,7 +42,7 @@ See TeamBillingCardIdentity: pending has no upper bound and must not grant a tri
 <li><span><span class="tsd-kind-parameter">teamId</span>: <span class="tsd-signature-type">string</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><a href="server.TeamBillingCardIdentity.html" class="tsd-signature-type tsd-kind-type-alias">TeamBillingCardIdentity</a><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L979">server.d.ts:979</a></li></ul></aside></div></li></ul></section>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L982">server.d.ts:982</a></li></ul></aside></div></li></ul></section>
 <section class="tsd-panel tsd-member">
 <h3 class="tsd-anchor-link" id="listquarantines"><span>list<wbr/>Quarantines</span><a href="#listquarantines" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h3>
 <ul class="tsd-signatures">
@@ -57,7 +57,7 @@ See TeamBillingCardIdentity: pending has no upper bound and must not grant a tri
 <li><span><code class="tsd-tag">Optional</code><span class="tsd-kind-parameter">options</span>: <span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">limit</span><span class="tsd-signature-symbol">?:</span> <span class="tsd-signature-type">number</span> <span class="tsd-signature-symbol">}</span></span></li></ul></div>
 <h4 class="tsd-returns-title">Returns <span class="tsd-signature-type">Promise</span><span class="tsd-signature-symbol">&lt;</span><span class="tsd-signature-symbol">{</span> <span class="tsd-kind-property">quarantines</span><span class="tsd-signature-symbol">:</span> <span class="tsd-signature-keyword">readonly</span> <a href="server.PrivilegedTeamBillingQuarantine.html" class="tsd-signature-type tsd-kind-type-alias">PrivilegedTeamBillingQuarantine</a><span class="tsd-signature-symbol">[]</span> <span class="tsd-signature-symbol">}</span><span class="tsd-signature-symbol">&gt;</span></h4><aside class="tsd-sources">
 <ul>
-<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L981">server.d.ts:981</a></li></ul></aside></div></li></ul></section></section></details></div>
+<li>Defined in <a href="https://github.com/mgscox/sporades/blob/main/src/types/server.d.ts#L984">server.d.ts:984</a></li></ul></aside></div></li></ul></section></section></details></div>
 <div class="col-sidebar">
 <div class="page-menu">
 <div class="tsd-navigation settings">

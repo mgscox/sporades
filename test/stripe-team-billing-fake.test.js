@@ -917,6 +917,15 @@ declare const current: CurrentUserTeamBillingApi;
 declare const privileged: PrivilegedTeamBillingApi;
 declare const atomic: AtomicStripeConsequenceContext;
 const identities: Promise<TeamBillingCardIdentity>[] = [current.getCardIdentity("team"), privileged.getCardIdentity("team"), atomic.teamBilling.getCardIdentity("team")];
+function trialDecision(identity: TeamBillingCardIdentity): boolean {
+  switch (identity.state) {
+    case "none": case "pending": case "unavailable": return false;
+    case "captured": return !!identity.card;
+    default: { const exhaustive: never = identity; return exhaustive; }
+  }
+}
+const unavailableIdentity: TeamBillingCardIdentity = { state: "unavailable" };
+trialDecision(unavailableIdentity);
 import { teamBilling as browserBilling } from "sporades/client";
 // @ts-expect-error Card identity is never a browser capability.
 browserBilling.getCardIdentity("team");

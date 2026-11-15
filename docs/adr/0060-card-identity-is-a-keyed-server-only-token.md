@@ -60,19 +60,31 @@ attests exact Subscription, Customer and live-mode association, computes the
 token transiently and writes only `card | none`, token and `capturedAt` alongside
 local Team/operation/generation correlation. Payloads contain only local
 operation and generation UUIDs; results are null. Failures are fixed and opaque.
-Restart repair reconstructs missing work and replaces pending generations;
-stale attempts cannot settle replacement-owned or erased rows. Each generation
-makes up to four attempts; permanent refusals end it earlier. Exhaustion leaves the read pending and schedules a fresh delayed generation
-one minute later, including recovery of an exhausted interrupted Job. Missing
-methods and card objects without a fingerprint are pending evidence, not a final
-non-card result. Verified `customer.subscription.updated`, `setup_intent.succeeded`
-and `invoice.paid` events wake only existing pending captures associated with the
-Customer and, where supplied by the event, the exact Subscription. SetupIntents
+Restart repair reconstructs missing work and transfers pending ownership without
+resetting the persisted generation count, reserved read count or next due time;
+stale attempts cannot settle replacement-owned or erased rows. Up to five automatic
+generations make at most four Subscription reads each. Exhaustion backs off by
+1, 5, 25 and 125 minutes between generations, including recovery of exhausted
+interrupted claims. Once the budget is spent, no timed capture Job remains and
+`getCardIdentity` returns `unavailable`. Cancellation or replacement retires pending
+capture early; provider reads also detect terminal Subscription status. Erasure
+removes capture authority. Budget reservations precede provider I/O, so repeated
+restarts cannot replenish a generation's four reads. Legacy pending rows adopt the
+finite budget on upgrade; subsequent boots preserve it.
+
+Missing methods and card objects without a fingerprint are pending evidence, not
+a final non-card result. Actual non-card methods settle a captured null. The stopped
+`unavailable` state is never `captured` with a null card and never permits a trial.
+Verified `customer.subscription.updated`, `setup_intent.succeeded` and `invoice.paid`
+events may wake existing pending or unavailable captures associated with the Customer
+and, where supplied, the exact Subscription. After exhaustion each new event admits
+one bounded generation without replenishing the automatic budget; replayed events
+are inert. Stopped captures make no calls while idle or on restart. SetupIntents
 identify a Customer rather than a Subscription; the Job re-reads and attests the
-stored exact Subscription before settlement. No event supplies a token or grants
-entitlement. Actual non-card methods settle a captured null. Pending has no upper
-time bound; Capsules must deny pending trial gates and own a persisted deadline. No provider I/O enters
-convergence or atomic Capsule handlers.
+stored exact Subscription and refuses retired billing before settlement. No event
+supplies a token, refreshes an already captured card or grants entitlement. Capsules
+must deny both pending and unavailable trial gates and own a persisted deadline.
+No provider I/O enters convergence or atomic Capsule handlers.
 
 Currency handover captures again after verified replacement Subscription truth
 settles the operation. A pending handover refresh does not expose the old token

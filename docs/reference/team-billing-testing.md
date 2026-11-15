@@ -349,18 +349,21 @@ await control("events.deliver"); // completed Checkout: getCardIdentity stays pe
 await control("subscriptions.attachPaymentMethod", subscriptionId,
   { type: "card", card: "same-card" });
 await control("events.deliver"); // successful SetupIntent and Subscription update
-// Poll the server-only getCardIdentity until captured; never grant a pending trial.
+// Read getCardIdentity in trusted server code; deny pending and unavailable trials.
 ```
 
 `control` posts `{ args: [...] }` to the control origin's `/__control/<name>` as
 described above. JavaScript controls expose the same methods. Attachment creates
 a deterministic PaymentMethod and successful SetupIntent, updates the existing
 Subscription, and emits signed-event candidates. Delivery can be withheld to test
-the runtime's delayed one-minute capture repair independently of webhooks. Use
+the runtime's finite capture repair independently of webhooks: five generations,
+with 1, 5, 25 and 125 minute delays. An exhausted capture becomes `unavailable`
+and makes no more timed reads; a new verified hint may wake one bounded generation. Use
 `faults.inject` for a transient Subscription-read failure, and `events.emit` with
 a matching `invoice.paid` object to exercise that wake-up path. See the HTTP CLI
 rehearsal in `test/team-billing-card-identity.test.js` for early/late attachment,
-same-card equality across Customers, non-card methods, retries and every hint.
+same-card equality across Customers, non-card methods, backoff, budget exhaustion,
+restart preservation, cancellation/replacement/erasure and every hint.
 The service proves Sporades handles these orderings; live Stripe ordering and
 population of expanded payment methods remain unverified.
 
@@ -386,8 +389,9 @@ if (first.state === "captured" && second.state === "captured" && first.card && s
 Different labels yield different tokens. Omitted `paymentMethod` uses the card
 `4242424242424242`; `{ type: "card" }` does the same. Use
 `{ paymentMethod: { type: "sepa_debit" } }` for a non-card method and
-`{ paymentMethod: { type: "none" } }` for a trial collecting none; both capture
-`card: null`. Fingerprints are deterministic across processes, customers,
+`{ paymentMethod: { type: "none" } }` for a trial collecting none. An observed
+non-card method captures `card: null`; no method stays pending, then becomes
+`unavailable` when the budget is spent. Fingerprints are deterministic across processes, customers,
 `reset()` and runs. `fake.state().paymentMethods` exposes fake `pm_…` objects and
 raw fake fingerprints only for assertions. The CLI control API accepts the same
 `checkout.complete` options and exposes the same `state` snapshot.

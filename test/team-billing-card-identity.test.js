@@ -22,13 +22,14 @@ const catalogue = { products: [{ id: 'prod_team', prices: [{ id: 'price_team', r
 async function fixture(t) {
   const dir = await mkdtemp(path.join(tmpdir(), 'card-capture-http-'));
   const clock = createControllableRuntimeClock(new Date());
-  const database = await openDevDatabase(path.join(dir, 'capture.db'), '',
+  const open = () => openDevDatabase(path.join(dir, 'capture.db'), '',
     { STRIPE_KEY: 'sk_test_capture', WEBHOOK_KEY: secret, CARD_KEY: '0123456789abcdef0123456789abcdef' },
     { name: 'late-card', payments: { stripe: config } }, { name: 'late-card', schema: {}, teamBilling: {
       catalogue: { team: { quantity: { kind: 'fixed', value: 1 }, stripe: {
         sandbox: { priceId: 'price_team' }, live: { priceId: 'price_live_team' },
       } } }, authorize: () => ({ allow: true }),
     } }, { clock, createStripeCallbackEndpoint, createStripeTeamBillingProvider });
+  let database = await open();
   const server = createServer(async (req, res) => {
     try { if (!await routeEndpoint(database, req, res)) res.writeHead(404).end(); }
     catch { res.writeHead(500).end(); }
@@ -61,7 +62,7 @@ async function fixture(t) {
   }
   database.stripeApiBaseUrl = origins.origin;
   await database.init(); database.scheduleTeamBillingJobDispatch = () => {};
-  const api = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: true }));
+  let api = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: true }));
   async function deliver(event) {
     assert.ok((await control('events.deliver', event.id)).every(result => result.status === 200));
     await runCurrentUserJobWorker(database);
@@ -88,7 +89,23 @@ async function fixture(t) {
     const delayed = database.adapter.prepare("SELECT [status], [availableAt] FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-card-identity' AND [payload] LIKE ? AND [status] = 'delayed'").all(`%${pendingRow(op).generationId}%`);
     assert.equal(delayed.length, 1); assert.ok(delayed[0].availableAt > clock.now().toISOString());
   }
-  return { database, clock, api, control, checkout, deliver, exhaust, pendingRow };
+  const queued = () => database.adapter.prepare("SELECT * FROM [sporades_jobs] WHERE [handler] = '_sporades.team-billing-card-identity' AND [status] IN ('queued', 'delayed', 'running')").all();
+  const reads = async () => (await control('requests')).filter(r => r.operation === 'subscriptions.retrieve').length;
+  async function restart() {
+    await database.close(); database = await open(); database.stripeApiBaseUrl = origins.origin;
+    await database.init(); database.scheduleTeamBillingJobDispatch = () => {};
+    api = createPrivilegedTeamBillingApi(database, () => ({ __privilegedRunActive: true }));
+  }
+  async function spendBudget(op) {
+    for (let step = 0; pendingRow(op).kind === 'pending' && step < 30; step++) {
+      const [job] = queued(); assert.ok(job);
+      clock.advanceBy(Math.max(1001, Date.parse(job.availableAt) - clock.now().getTime()));
+      await clock.runDueTimers(); await runCurrentUserJobWorker(database);
+    }
+    assert.deepEqual(await api.getCardIdentity(op.teamId), { state: 'unavailable' });
+    assert.equal(queued().length, 0);
+  }
+  return { get database() { return database; }, get api() { return api; }, clock, control, checkout, deliver, exhaust, pendingRow, restart, spendBudget, queued, reads };
 }
 
 test('HTTP Stripe emulator: attachment order, durable repair, same-card equality, non-card and provider retry', async t => {
@@ -128,9 +145,9 @@ test('HTTP Stripe emulator: attachment order, durable repair, same-card equality
 });
 
 for (const type of ['customer.subscription.updated', 'setup_intent.succeeded', 'invoice.paid']) {
-  test(`verified ${type} wakes only pending associated card capture before delayed repair`, async t => {
+  test(`verified ${type} wakes only associated stopped capture without refreshing captured cards`, async t => {
     const f = await fixture(t);
-    const late = await f.checkout({ deferPaymentMethod: true }); await f.deliver(late.event); await f.exhaust(late);
+    const late = await f.checkout({ deferPaymentMethod: true }); await f.deliver(late.event); await f.spendBudget(late);
     const generation = f.pendingRow(late).generationId;
     const subscription = await f.control('subscriptions.attachPaymentMethod', late.completed.subscription, { type: 'card' });
     const foreign = await f.control('events.emit', 'setup_intent.succeeded', {
@@ -174,4 +191,101 @@ test('capture replacement is atomic and recovers an exhausted interrupted claim'
   await f.control('subscriptions.attachPaymentMethod', op.completed.subscription);
   f.clock.advanceBy(60_001); await f.clock.runDueTimers();
   assert.equal((await f.api.getCardIdentity(op.teamId)).state, 'captured');
+});
+
+
+test('capture backs off exponentially, exhausts its durable budget, and stays idle', async t => {
+  const f = await fixture(t);
+  const op = await f.checkout({ deferPaymentMethod: true }); await f.deliver(op.event);
+  for (let generation = 1; generation <= 5; generation++) {
+    for (let attempt = 1; attempt < 4; attempt++) {
+      f.clock.advanceBy(1001); await runCurrentUserJobWorker(f.database);
+    }
+    if (generation === 5) break;
+    const jobs = f.queued(); assert.equal(jobs.length, 1);
+    const delay = Date.parse(jobs[0].availableAt) - f.clock.now().getTime();
+    assert.equal(delay, [60_000, 300_000, 1_500_000, 7_500_000][generation - 1], 'each replacement backs off by a factor of five');
+    f.clock.advanceBy(delay); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  }
+  assert.deepEqual(await f.api.getCardIdentity(op.teamId), { state: 'unavailable' });
+  assert.equal(f.queued().length, 0);
+  assert.equal(await f.reads(), 20);
+  f.clock.advanceBy(30 * 24 * 3600_000); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.equal(f.queued().length, 0); assert.equal(await f.reads(), 20);
+});
+
+
+test('restart preserves generation budget, reserved reads and due time, including stopped rows', async t => {
+  const f = await fixture(t);
+  const op = await f.checkout({ deferPaymentMethod: true }); await f.deliver(op.event); await f.exhaust(op);
+  const before = f.pendingRow(op), reads = await f.reads();
+  for (let restart = 0; restart < 3; restart++) {
+    await f.restart();
+    assert.equal(f.pendingRow(op).generationCount, before.generationCount);
+    assert.equal(f.pendingRow(op).readAttempts, 0);
+    assert.equal(f.pendingRow(op).nextAttemptAt, before.nextAttemptAt);
+    assert.equal(f.queued().length, 1);
+    await runCurrentUserJobWorker(f.database); assert.equal(await f.reads(), reads);
+  }
+  f.clock.advanceBy(Date.parse(before.nextAttemptAt) - f.clock.now().getTime());
+  await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.equal(f.pendingRow(op).readAttempts, 1);
+  await f.restart(); assert.equal(f.pendingRow(op).readAttempts, 1);
+  await f.spendBudget(op); assert.equal(await f.reads(), 20);
+  await f.restart(); assert.equal(f.pendingRow(op).generationCount, 5);
+  f.clock.advanceBy(30 * 24 * 3600_000); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.deepEqual(await f.api.getCardIdentity(op.teamId), { state: 'unavailable' });
+  assert.equal(f.queued().length, 0); assert.equal(await f.reads(), 20);
+});
+
+test('a verified hint revives a stopped capture for only one bounded generation', async t => {
+  const f = await fixture(t);
+  const op = await f.checkout({ deferPaymentMethod: true }); await f.deliver(op.event); await f.spendBudget(op);
+  const hint = await f.control('events.emit', 'setup_intent.succeeded', {
+    id: 'seti_still_missing', object: 'setup_intent', status: 'succeeded', customer: op.completed.customer, livemode: false,
+  });
+  await f.deliver(hint);
+  assert.deepEqual(await f.api.getCardIdentity(op.teamId), { state: 'pending' });
+  assert.equal(f.pendingRow(op).generationCount, 5);
+  await f.restart(); await f.spendBudget(op);
+  assert.equal(await f.reads(), 24);
+  f.clock.advanceBy(30 * 24 * 3600_000); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.equal(f.queued().length, 0); assert.equal(await f.reads(), 24);
+  await f.deliver(hint); assert.equal(f.queued().length, 0); assert.equal(await f.reads(), 24, 'replayed hints cannot replenish reads');
+});
+
+for (const delivered of [false, true]) {
+  test(`cancelled Subscription stops capture ${delivered ? 'on its verified event' : 'when read from the provider'}`, async t => {
+    const f = await fixture(t);
+    const op = await f.checkout({ deferPaymentMethod: true }); await f.deliver(op.event); await f.exhaust(op);
+    const before = await f.reads();
+    await f.control('subscriptions.setStatus', op.completed.subscription, 'canceled');
+    const event = (await f.control('events.pending')).find(e => e.type === 'customer.subscription.deleted');
+    if (delivered) await f.deliver(event);
+    else { f.clock.advanceBy(60_001); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database); }
+    assert.deepEqual(await f.api.getCardIdentity(op.teamId), { state: 'unavailable' });
+    assert.equal(f.queued().length, 0); assert.equal(await f.reads(), before + (delivered ? 0 : 1));
+    await f.restart(); f.clock.advanceBy(24 * 3600_000); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+    assert.equal(f.queued().length, 0); assert.equal(await f.reads(), before + (delivered ? 0 : 1));
+  });
+}
+
+test('replaced Subscription and erased Team cannot keep polling', async t => {
+  const f = await fixture(t);
+  const op = await f.checkout({ deferPaymentMethod: true }); await f.deliver(op.event); await f.exhaust(op);
+  const created = (await f.control('events.pending')).find(e => e.type === 'customer.subscription.created');
+  await f.deliver(created);
+  f.database.adapter.prepare("UPDATE [sporades_team_billing_subscriptions] SET [replacedBy] = 'sub_replacement' WHERE [providerSubscriptionId] = ?").run(op.completed.subscription);
+  const before = await f.reads();
+  f.clock.advanceBy(60_001); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.deepEqual(await f.api.getCardIdentity(op.teamId), { state: 'unavailable' });
+  assert.equal(f.queued().length, 0); assert.equal(await f.reads(), before);
+  const erased = await f.checkout({ deferPaymentMethod: true }); await f.deliver(erased.event); await f.exhaust(erased);
+  const reads = await f.reads();
+  // Local erasure removes Team authority; stale queued work must never call Stripe or recreate capture.
+  f.database.adapter.prepare('DELETE FROM [sporades_teams] WHERE [id] = ?').run(erased.teamId);
+  f.database.adapter.prepare('DELETE FROM [sporades_team_billing_card_identities] WHERE [teamId] = ?').run(erased.teamId);
+  await f.restart(); f.clock.advanceBy(30 * 24 * 3600_000); await f.clock.runDueTimers(); await runCurrentUserJobWorker(f.database);
+  assert.equal(f.queued().length, 0); assert.equal(await f.reads(), reads);
+  assert.equal(f.pendingRow(erased), undefined);
 });

@@ -6,8 +6,11 @@
 - Durable Stripe event delivery removes only `fingerprint` keys from `raw`;
   PaymentMethod IDs, metadata and `objectId` remain available to Capsule handlers.
 - Keep Team Billing card capture pending while payment-method evidence is absent;
-  verified events and delayed runtime Jobs retry it. Trial gates must refuse
-  pending results and enforce their own deadline.
+  five automatic generations back off by 1, 5, 25 and 125 minutes, then stop as
+  `unavailable`. The budget and due time survive restarts. Cancelled/replaced
+  billing stops capture early; verified events may wake one bounded generation
+  after exhaustion. Trial gates must deny pending/unavailable results and enforce
+  their own deadline.
 
 ## v0.9.51 - 2026-11-11
 

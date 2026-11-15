@@ -58,6 +58,8 @@ export const CONFORMANCE_SURFACE = {
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run("observation-1", "billing-team", "sandbox", "evt_private", "sub_private", "digest", NOW, NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_replay] ([providerEventId], [payloadDigest], [settledAt], [retainedUntil]) VALUES (?, ?, ?, ?)")).run("evt_private", "digest", NOW, "2026-09-13T12:00:00.000Z");
 
+        await adapter.exec(sql("CREATE TABLE [sporades_team_billing_card_identities] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL)"));
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind]) VALUES ('legacy-card', 'billing-team', 'legacy-generation', 'pending')")).run();
         await adapter.ensureTeamBillingStorage();
         await adapter.prepare(sql(
           "UPDATE [sporades_team_billing_subscriptions] SET [providerSubscriptionItemId] = 'si_private', [currentPeriodStart] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'cancelled', [lastEventRank] = 50, [terminalLatch] = 1, [hasSchedule] = 1 WHERE [id] = 'local-sub'",
@@ -75,10 +77,14 @@ export const CONFORMANCE_SURFACE = {
           "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?)",
         )).run("billing-team", NOW);
 
+        const legacy = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = 'legacy-card'")).get();
+        assert.equal(legacy.generationCount, 1); assert.equal(legacy.readAttempts, 0); assert.equal(legacy.nextAttemptAt, null);
+        await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [generationCount] = 3, [readAttempts] = 2, [nextAttemptAt] = ? WHERE [operationId] = 'legacy-card'")).run(NOW);
         await adapter.ensureTeamBillingStorage();
         for (const table of ["customers", "subscriptions", "operations", "observations", "replay", "desired_state", "provider_lanes"]) {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 1, table);
         }
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities] WHERE [generationCount] = 3 AND [readAttempts] = 2 AND [nextAttemptAt] = ?", NOW), 1);
         assert.equal(await count(adapter,
           "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionItemId] = 'si_private' AND [currentPeriodStart] = ? AND [lastEventRank] = 50 AND [terminalLatch] = 1 AND [hasSchedule] = 1", NOW), 1);
         assert.equal(await count(adapter,
@@ -126,6 +132,13 @@ export const CONFORMANCE_SURFACE = {
         assert.notEqual(payload.generationId, oldGeneration.generationId);
         assert.equal(availableAt, new Date(Date.parse(NOW) + 60_000).toISOString());
         assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, false);
+        const beforeRestart = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(operationId);
+        await repairTeamBillingCardIdentities(db);
+        const afterRestart = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(operationId);
+        assert.notEqual(afterRestart.generationId, beforeRestart.generationId);
+        assert.equal(afterRestart.generationCount, 2); assert.equal(afterRestart.readAttempts, 0);
+        assert.equal(afterRestart.nextAttemptAt, beforeRestart.nextAttemptAt);
+        assert.equal(availableAt, beforeRestart.nextAttemptAt);
         await performTeamBillingCardIdentity(db, {}, payload);
         for (const erased of [false, true]) {
           await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [kind] = 'pending', [token] = NULL, [capturedAt] = NULL WHERE [operationId] = ?")).run(operationId);

@@ -977,6 +977,10 @@ export async function openDevDatabase(
     mcp,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    cancelTeamBillingCardIdentityJobs: (transaction: LooseRecord, operationId: string) => transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_jobs] SET [status] = 'cancelled', [completedAt] = ?, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL " +
+      "WHERE [handler] = ? AND [idempotencyKey] LIKE ? AND [status] IN ('queued', 'delayed')",
+    )).run(database.clock.now().toISOString(), TEAM_BILLING_CARD_IDENTITY_JOB, `team-billing-card-identity:${operationId}:%`),
     enqueueTeamBillingCardIdentityJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CARD_IDENTITY_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true, availableAt, true),
     enqueueTeamBillingCheckoutJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>

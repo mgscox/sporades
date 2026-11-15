@@ -8,6 +8,11 @@ type Obj = Record<string, any>;
 export const TEAM_BILLING_CARD_IDENTITY_JOB = "_sporades.team-billing-card-identity";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// Five timed generations, at most four SDK reads each. Events may admit one more
+// bounded generation without replenishing this automatic budget.
+const MAX_GENERATIONS = 5;
+const MAX_READS = 4;
+
 /** This runs inside the Stripe fence and performs only local durable writes. */
 export async function stageTeamBillingCardIdentity(db: Obj, operationId: string) {
   if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
@@ -17,43 +22,77 @@ export async function stageTeamBillingCardIdentity(db: Obj, operationId: string)
     "AND [kind] IN ('checkout', 'currency-handover') AND [providerCustomerId] IS NOT NULL AND [providerSubscriptionId] IS NOT NULL",
   )).get(operationId);
   if (!op) return;
-  const generationId = randomUUID();
+  const generationId = randomUUID(), availableAt = db.clock.now().toISOString();
   const inserted = await tx.prepare(tx.dialect.sql(
-    "INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind], [token], [capturedAt]) VALUES (?, ?, ?, 'pending', NULL, NULL) ON CONFLICT DO NOTHING",
-  )).run(op.id, op.teamId, generationId);
+    "INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind], [token], [capturedAt], [generationCount], [readAttempts], [nextAttemptAt]) " +
+    "VALUES (?, ?, ?, 'pending', NULL, NULL, 1, 0, ?) ON CONFLICT DO NOTHING",
+  )).run(op.id, op.teamId, generationId, availableAt);
   if (Number(inserted?.changes ?? inserted?.changesCount ?? 0) !== 1) return;
-  await enqueue(db, tx, operationId, generationId);
+  await enqueue(db, tx, operationId, generationId, availableAt);
 }
 
-async function enqueue(db: Obj, tx: Obj, operationId: string, generationId: string, availableAt?: string) {
+async function enqueue(db: Obj, tx: Obj, operationId: string, generationId: string, availableAt: string) {
   await db.enqueueTeamBillingCardIdentityJob(tx, { operationId, generationId }, `team-billing-card-identity:${operationId}:${generationId}`, availableAt);
 }
 
-async function replacePendingGeneration(db: Obj, tx: Obj, operationId: string, previous: string, availableAt?: string) {
+async function lockedCapture(db: Obj, tx: Obj, payload: Obj) {
+  const read = () => tx.prepare(tx.dialect.sql(
+    "SELECT [c].*, [o].[providerCustomerId], [o].[providerSubscriptionId], [s].[state] AS [subscriptionState], [s].[terminalLatch], [s].[replacedBy] " +
+    "FROM [sporades_team_billing_card_identities] [c] JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] " +
+    "JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] " +
+    "LEFT JOIN [sporades_team_billing_subscriptions] [s] ON [s].[teamId] = [o].[teamId] AND [s].[mode] = [o].[mode] AND [s].[providerSubscriptionId] = [o].[providerSubscriptionId] " +
+    "WHERE [c].[operationId] = ? AND [c].[generationId] = ? AND [c].[kind] IN ('pending', 'unavailable') AND [o].[status] = 'completed' AND [o].[mode] = ?",
+  )).get(payload.operationId, payload.generationId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
+  const row = await read();
+  if (!row) return null;
+  await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
+  return read();
+}
+
+function retired(row: Obj) {
+  return row.subscriptionState === "cancelled" || Number(row.terminalLatch) === 1 || !!row.replacedBy;
+}
+
+function validBudget(row: Obj) {
+  return Number.isInteger(row.generationCount) && row.generationCount >= 1 && row.generationCount <= MAX_GENERATIONS
+    && Number.isInteger(row.readAttempts) && row.readAttempts >= 0 && row.readAttempts <= MAX_READS;
+}
+
+async function stopCapture(db: Obj, tx: Obj, row: Obj) {
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_billing_card_identities] SET [kind] = 'unavailable', [token] = NULL, [capturedAt] = NULL, [nextAttemptAt] = NULL " +
+    "WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'",
+  )).run(row.operationId, row.generationId);
+  await db.cancelTeamBillingCardIdentityJobs?.(tx, row.operationId);
+}
+
+async function replaceGeneration(db: Obj, tx: Obj, row: Obj, generationCount: number, readAttempts: number, availableAt: string) {
   const generationId = randomUUID();
   const changed = await tx.prepare(tx.dialect.sql(
-    "UPDATE [sporades_team_billing_card_identities] SET [generationId] = ? WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'",
-  )).run(generationId, operationId, previous);
+    "UPDATE [sporades_team_billing_card_identities] SET [generationId] = ?, [kind] = 'pending', [generationCount] = ?, [readAttempts] = ?, [nextAttemptAt] = ? " +
+    "WHERE [operationId] = ? AND [generationId] = ? AND [kind] = ?",
+  )).run(generationId, generationCount, readAttempts, availableAt, row.operationId, row.generationId, row.kind);
   if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return false;
-  await enqueue(db, tx, operationId, generationId, availableAt);
+  await db.cancelTeamBillingCardIdentityJobs?.(tx, row.operationId);
+  await enqueue(db, tx, row.operationId, generationId, availableAt);
   return true;
 }
 
-/** Durable delayed repair avoids stranding a capture when a bounded Job exhausts. */
+async function settleGeneration(db: Obj, tx: Obj, row: Obj) {
+  if (row.kind !== "pending") return false;
+  const availableAt = validBudget(row) && row.generationCount < MAX_GENERATIONS && !retired(row)
+    ? jobTimestampAfter(db.clock.now(), 60_000 * 5 ** (row.generationCount - 1)) : null;
+  if (!availableAt) { await stopCapture(db, tx, row); return false; }
+  return replaceGeneration(db, tx, row, row.generationCount + 1, 0, availableAt);
+}
+
+/** Exhaustion consumes a persisted finite budget; delayed generations back off. */
 export async function settleExhaustedTeamBillingCardIdentityJob(db: Obj, payload: Obj) {
   if (!db.teamBillingDefinition || !db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return { replacementScheduled: false };
   if (!payload || Object.keys(payload).sort().join() !== "generationId,operationId" || !UUID.test(payload.operationId) || !UUID.test(payload.generationId)) return { replacementScheduled: false };
-  const availableAt = jobTimestampAfter(db.clock.now(), 60_000);
-  if (!availableAt) return { replacementScheduled: false };
   const settle = async (tx: Obj) => {
-    const row = await tx.prepare(tx.dialect.sql(
-      "SELECT [c].[teamId] FROM [sporades_team_billing_card_identities] [c] JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] " +
-      "JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] " +
-      "WHERE [c].[operationId] = ? AND [c].[generationId] = ? AND [c].[kind] = 'pending' AND [o].[status] = 'completed' AND [o].[mode] = ?",
-    )).get(payload.operationId, payload.generationId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
-    if (!row) return false;
-    await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
-    return replacePendingGeneration(db, tx, payload.operationId, payload.generationId, availableAt);
+    const row = await lockedCapture(db, tx, payload);
+    return row ? settleGeneration(db, tx, row) : false;
   };
   const replacementScheduled = db.__transactionActive ? await settle(db.adapter) : await db.adapter.withTransaction(settle);
   if (replacementScheduled && !db.__transactionActive) db.scheduleTeamBillingJobDispatch?.();
@@ -65,19 +104,33 @@ export async function restageTeamBillingCardIdentities(db: Obj, customerId: stri
   if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
   const tx = db.adapter;
   const rows = await tx.prepare(tx.dialect.sql(
-    "SELECT [c].[operationId], [c].[teamId], [c].[generationId] FROM [sporades_team_billing_card_identities] [c] " +
+    "SELECT [c].[operationId], [c].[generationId] FROM [sporades_team_billing_card_identities] [c] " +
     "JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] " +
-    "JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] " +
-    "WHERE [c].[kind] = 'pending' AND [o].[status] = 'completed' AND [o].[mode] = ? AND [o].[providerCustomerId] = ?" +
+    "WHERE [c].[kind] IN ('pending', 'unavailable') AND [o].[status] = 'completed' AND [o].[mode] = ? AND [o].[providerCustomerId] = ?" +
     (subscriptionId ? " AND [o].[providerSubscriptionId] = ?" : ""),
   )).all(db.paymentsConfig.stripe.livemode ? "live" : "sandbox", customerId, ...(subscriptionId ? [subscriptionId] : []));
-  for (const row of rows) {
-    await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
-    await replacePendingGeneration(db, tx, row.operationId, row.generationId);
+  for (const payload of rows) {
+    const row = await lockedCapture(db, tx, payload);
+    if (!row) continue;
+    if (retired(row) || !validBudget(row)) { await stopCapture(db, tx, row); continue; }
+    await replaceGeneration(db, tx, row, row.kind === "unavailable" ? MAX_GENERATIONS : row.generationCount, 0, db.clock.now().toISOString());
   }
 }
 
-/** Restart replaces pending generations; older attempts can no longer settle them. */
+/** Retire queued work in the same transaction that cancels or replaces billing. */
+export async function stopRetiredTeamBillingCardIdentities(db: Obj, teamId: string) {
+  if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv || !teamId) return;
+  const tx = db.adapter;
+  const rows = await tx.prepare(tx.dialect.sql(
+    "SELECT [operationId], [generationId] FROM [sporades_team_billing_card_identities] WHERE [teamId] = ? AND [kind] = 'pending'",
+  )).all(teamId);
+  for (const payload of rows) {
+    const row = await lockedCapture(db, tx, payload);
+    if (row && retired(row)) await stopCapture(db, tx, row);
+  }
+}
+
+/** Restart transfers ownership without resetting the read budget or due time. */
 export async function repairTeamBillingCardIdentities(db: Obj) {
   if (!db.teamBillingDefinition || !db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
   await db.adapter.withTransaction(async (tx: Obj) => {
@@ -94,13 +147,13 @@ export async function repairTeamBillingCardIdentities(db: Obj) {
         if (!team) continue;
         throw error;
       }
-      const row = await tx.prepare(tx.dialect.sql("SELECT [kind] FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(op.id);
-      if (!row) await stageTeamBillingCardIdentity({ ...db, adapter: tx }, op.id);
-      else if (row.kind === "pending") {
-        const generationId = randomUUID();
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_card_identities] SET [generationId] = ? WHERE [operationId] = ? AND [kind] = 'pending'")).run(generationId, op.id);
-        await enqueue(db, tx, op.id, generationId);
-      }
+      const stored = await tx.prepare(tx.dialect.sql("SELECT [generationId] FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(op.id);
+      if (!stored) { await stageTeamBillingCardIdentity({ ...db, adapter: tx }, op.id); continue; }
+      const row = await lockedCapture(db, tx, { operationId: op.id, generationId: stored.generationId });
+      if (!row || row.kind !== "pending") continue;
+      if (retired(row) || !validBudget(row)) { await stopCapture(db, tx, row); continue; }
+      if (row.readAttempts === MAX_READS) { await settleGeneration(db, tx, row); continue; }
+      await replaceGeneration(db, tx, row, row.generationCount, row.readAttempts, row.nextAttemptAt ?? db.clock.now().toISOString());
     }
   });
 }
@@ -108,19 +161,20 @@ export async function repairTeamBillingCardIdentities(db: Obj) {
 export async function performTeamBillingCardIdentity(db: Obj, context: Obj, payload: Obj) {
   if (!payload || Object.keys(payload).sort().join() !== "generationId,operationId" || !UUID.test(payload.operationId) || !UUID.test(payload.generationId)) throw teamBillingDenied();
   const snapshot = await db.adapter.withTransaction(async (tx: Obj) => {
-    const row = await tx.prepare(tx.dialect.sql(
-      "SELECT [o].[teamId], [o].[mode], [o].[providerCustomerId], [o].[providerSubscriptionId] FROM [sporades_team_billing_operations] [o] " +
-      "JOIN [sporades_team_billing_card_identities] [c] ON [o].[id] = [c].[operationId] " +
-      "WHERE [o].[id] = ? AND [o].[status] = 'completed' AND [c].[kind] = 'pending' AND [c].[generationId] = ?",
-    )).get(payload.operationId, payload.generationId);
-    if (!row) return null;
-    await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
+    const row = await lockedCapture(db, tx, payload);
+    if (!row || row.kind !== "pending") return null;
+    if (retired(row) || !validBudget(row)) { await stopCapture(db, tx, row); return null; }
+    if (row.readAttempts === MAX_READS) return { exhausted: true };
+    // Reserve the provider read durably before I/O, including across restarts.
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_card_identities] SET [readAttempts] = [readAttempts] + 1 WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'",
+    )).run(payload.operationId, payload.generationId);
     return row;
   });
   if (!snapshot) return null;
+  if (snapshot.exhausted) throw Object.assign(new Error("Team card identity capture is unavailable."), { retryable: false });
   const config = db.paymentsConfig.stripe;
   cardIdentityKey(config, db.serverEnv);
-  if (snapshot.mode !== (config.livemode ? "live" : "sandbox")) throw teamBillingDenied();
   let result;
   try {
     const provider = db.createStripeTeamBillingProvider({ config, env: db.serverEnv, signal: context.signal,
@@ -135,9 +189,9 @@ export async function performTeamBillingCardIdentity(db: Obj, context: Obj, payl
   if (context.signal?.aborted) throw Object.assign(new Error("Team card identity capture was cancelled."), { code: "ABORT_ERR", name: "AbortError" });
   await db.adapter.withTransaction(async (tx: Obj) => {
     // Erasure can remove the Team while provider I/O is in flight. Never recreate rows.
-    const exists = await tx.prepare(tx.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(snapshot.teamId);
-    if (!exists) return;
-    await lockTeamLifecycle(tx, snapshot.teamId, teamBillingDenied);
+    const row = await lockedCapture(db, tx, payload);
+    if (!row || row.kind !== "pending") return;
+    if (retired(row) || result.unavailable === true) { await stopCapture(db, tx, row); return; }
     await tx.prepare(tx.dialect.sql(
       "UPDATE [sporades_team_billing_card_identities] SET [kind] = ?, [token] = ?, [capturedAt] = ? " +
       "WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'",
@@ -155,6 +209,7 @@ export async function readTeamBillingCardIdentity(db: Obj, tx: Obj, teamId: any)
     "WHERE [o].[teamId] = ? AND [o].[mode] = ? AND [o].[status] = 'completed' AND [o].[kind] IN ('checkout', 'currency-handover') ORDER BY [o].[createdAt] DESC, [o].[id] DESC LIMIT 1",
   )).get(teamId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
   if (!row) return Object.freeze({ state: "none" as const });
+  if (row.kind === "unavailable") return Object.freeze({ state: "unavailable" as const });
   if (!row.capturedAt) return Object.freeze({ state: "pending" as const });
   if (!["card", "none"].includes(row.kind) || row.kind === "card" && !/^[A-Za-z0-9_-]{43}$/.test(row.token)
     || typeof row.capturedAt !== "string" || !/^\d{4}-/.test(row.capturedAt) || !Number.isFinite(Date.parse(row.capturedAt)) || new Date(row.capturedAt).toISOString() !== row.capturedAt) throw teamBillingDenied();

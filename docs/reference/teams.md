@@ -1216,13 +1216,16 @@ acceptance remains a separately authorized human check.
 
 - `{ state: "none" }`: no completed Checkout in the current payment mode.
 - `{ state: "pending" }`: completed Checkout awaits verifiable card evidence or
-  provider recovery. **Pending has no upper time bound and must never permit a trial.**
+  provider recovery. **Pending must never permit a trial.**
+- `{ state: "unavailable" }`: automatic capture stopped because its retry budget
+  was spent or the Subscription was cancelled/replaced. **Never permit a trial.**
+  This is not evidence of a non-card method.
 - `{ state: "captured", card: { token } | null, capturedAt }`: captured card
   equality token, or null after an actual non-card method is seen. `capturedAt`
-  is the capture settlement time. An absent method or missing fingerprint stays pending.
+  is the capture settlement time. An absent method or missing fingerprint stays pending until the budget is spent.
 
 
-A Capsule trial gate must handle all three states. For example, persist a
+A Capsule trial gate must handle all four states. For example, persist a
 server-owned `deadline` when admitting Checkout, then run this in trusted server
 code; return only the safe decision to the browser:
 
@@ -1238,6 +1241,8 @@ async function trialGate(ctx, teamId, deadline) {
       return { allowed: false, reason: "checkout-required" };
     case "pending":
       return { allowed: false, reason: "awaiting-card" };
+    case "unavailable":
+      return { allowed: false, reason: "card-unavailable" };
     case "captured":
       if (!identity.card) return { allowed: false, reason: "card-required" };
       return { allowed: await claimPrivateTrialToken(teamId, identity.card.token, deadline) };
@@ -1264,16 +1269,25 @@ never expose this method or token.
 Set the dedicated optional `payments.stripe.cardIdentityKeyEnv` secret before
 relying on capture. Verified paid or trial Checkout stages a durable private
 capture Job. Provider-free convergence stays inside its atomic fence; the Job
-reads Stripe afterward. Each generation makes up to four attempts (permanent
-refusals end it earlier), leaves the state pending on failure, and enqueues
-another bounded capture generation one minute later. The durable Job queue owns
-that wake and restart recovery; an exhausted interrupted claim also gets a new
-generation. Verified Subscription updates, successful SetupIntents and paid
-invoices wake associated pending captures sooner. Events do not provide card
-truth: the capture Job still retrieves and attests the stored exact Subscription.
-Restart repairs missing work. Neither retries nor events guarantee completion;
-provider outages or absent card evidence can leave the read pending indefinitely.
-A Capsule gating a trial must persist its own deadline and refuse after it expires. Currency handover refreshes
+reads Stripe afterward. Capture admits at most five automatic generations, each
+with at most four Subscription reads (permanent refusals end a generation earlier).
+Replacement delays grow exponentially: **1, 5, 25 and 125 minutes**. The generation
+count, reserved read count and next due time are durable; restarting transfers
+ownership without resetting the budget or advancing the due time. After exhaustion,
+no further timed Job is scheduled and the read becomes `unavailable`. Cancellation
+or replacement of the Subscription stops pending capture early; Team erasure removes
+it. A missing method or fingerprint never settles as `captured` with `card: null`.
+
+Verified `customer.subscription.updated`, `setup_intent.succeeded` and `invoice.paid`
+events can wake associated pending or unavailable captures. After the automatic
+budget is spent, each new verified event admits only one bounded generation of up
+to four reads; it does not replenish the budget. Replayed events do not wake it again.
+A stopped capture costs no provider calls while idle. Events supply no card truth:
+the Job still retrieves and attests the stored exact Subscription and refuses a
+cancelled or replaced one. Captured cards are not refreshed by these hints.
+Restart repairs missing work but never revives an unavailable capture on its own.
+Capsules must deny both pending and unavailable trial gates, persist their own
+deadline and refuse after it expires. Currency handover refreshes
 the token after verified replacement Subscription evidence. Portal method
 updates do not refresh in v1: this identifies the card that started billing.
 Provider-safe erasure removes the runtime token with billing rows. Retention of

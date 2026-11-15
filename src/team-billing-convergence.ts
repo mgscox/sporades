@@ -1,4 +1,4 @@
-import { stageTeamBillingCardIdentity, restageTeamBillingCardIdentities } from "./team-billing-card-identity.js";
+import { stageTeamBillingCardIdentity, restageTeamBillingCardIdentities, stopRetiredTeamBillingCardIdentities } from "./team-billing-card-identity.js";
 import { applyCurrencySetup } from "./team-billing-currency-handover.js";
 import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
 import { teamBillingPriceById, TEAM_BILLING_READ_ONLY_KINDS_SQL } from "./team-billing-runtime.js";
@@ -108,6 +108,7 @@ export async function applyVerifiedTeamBillingObservation(database: LooseRecord,
       result = { teamId: preliminaryTeamId, objectId: object.id, rank: 0, outcome: "ignored" };
     }
     else result = await applyInvoiceFailure(database, event, expectedMode);
+    if (event.type.startsWith("customer.subscription.")) await stopRetiredTeamBillingCardIdentities(database, result.teamId);
     if (event.type === "customer.subscription.updated") {
       const object = event.raw.data.object;
       await restageTeamBillingCardIdentities(database, object.customer, object.id);

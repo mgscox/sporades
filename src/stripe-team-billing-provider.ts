@@ -33,6 +33,7 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
         throwIfAborted(options.signal);
         if (subscription.object !== "subscription" || subscription.id !== input.subscriptionId || subscription.customer !== input.customerId
           || subscription.livemode !== config.livemode || typeof subscription.pending_setup_intent === "string") throw providerFailure(false);
+        if (["canceled", "incomplete_expired"].includes(subscription.status)) return Object.freeze({ ok: true, card: null, unavailable: true });
         const method = subscription.default_payment_method ?? subscription.pending_setup_intent?.payment_method;
         if (method && (method.customer !== input.customerId || method.livemode !== config.livemode)) throw providerFailure(false);
         const card = stripeCardIdentity(method, key, config.livemode);
