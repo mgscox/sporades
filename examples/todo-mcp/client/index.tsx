@@ -43,7 +43,7 @@ function Keys() {
     <p role="status">{notice}</p>
     <ul>{keys.map(key => <li key={key.id}>{key.name} ({key.status}) <button disabled={key.status !== "active"} onClick={() => void perform(() => accessKeys.rotate(key.id, { lifecycleRevision: key.lifecycleRevision }))}>Rotate {key.name}</button> <button disabled={key.status === "revoked"} onClick={() => void perform(() => accessKeys.revoke(key.id))}>Revoke {key.name}</button></li>)}</ul>
     <h3>Separate automation list</h3><p>A Service User starts with its own empty list. It uses the name and permissions selected above.</p>
-    <button onClick={() => void perform(() => createAgent.run({ displayName: name, accessKey: { name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] } }))}>Create Todo agent</button>
+    <button disabled={!name.trim() || (!read && !add)} onClick={() => void perform(() => createAgent.run({ displayName: name, accessKey: { name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] } }))}>Create Todo agent</button>
     <ul>{(agents.data ?? []).map(agent => <li key={agent.id}>{agent.displayName} <button onClick={() => void perform(() => disableAgent.run(agent.serviceUserId))}>Disable {agent.displayName}</button></li>)}</ul>
   </section>;
 }
