@@ -40,8 +40,12 @@ The repository currently includes:
   wiring and empty Price catalogue, named payment Jobs, bounded known-Job
   state, shared types, and activation guidance. Stripe mechanics remain behind
   the narrow server-only `sporades/server/stripe` export. Complete activation
-  validates named Sealed Server credentials and trusted return authority before
-  publication. A linked actor can then pass a Capsule product key through an
+  validates named Sealed Server credentials, trusted return authority, and an
+  explicit required `payments.stripe.tax.enabled` boolean before publication.
+  Checkout requests Stripe automatic tax from this decision and collects tax IDs
+  and billing addresses when enabled; the public payment snapshot exposes only
+  the tax flag alongside activation and mode. Stripe account setup, registrations,
+  Price tax behavior, and real-provider tax acceptance remain operator responsibilities. A linked actor can then pass a Capsule product key through an
   explicit deny-by-default policy seam to atomically persist an intent and
   enqueue an idempotent durable Job. The same Job performs Stripe Checkout in
   the explicit server-owned one-time or recurring subscription mode after
@@ -525,10 +529,11 @@ preferences and file APIs, app-message helpers, a `createHooks` factory,
 Vue-native composables, Svelte stores, SolidJS signals, Lit reactive
 controllers, and Inferno lifecycle adapters over the same connection.
 `createHooks` also provides `usePayments()`, returning only
-`{ stripe: { enabled: boolean, livemode: boolean | null } }` from the runtime
+`{ stripe: { enabled: boolean, livemode: boolean | null, tax: { enabled: boolean } } }` from the runtime
 handshake. The framework-neutral `payments.get()` and `payments.subscribe()`
 expose the same immutable activation state without an app query. Missing,
-dormant, unknown, and disconnected state defaults to disabled with null mode.
+dormant, unknown, and disconnected state defaults to disabled payments and tax
+with null mode.
 Clients hide Checkout and Customer Portal actions while disabled; server billing
 authorization remains required. No credentials, Server env names, or provider
 IDs are exposed. The API is additive within 0.9.x.

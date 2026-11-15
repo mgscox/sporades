@@ -24,13 +24,16 @@ function BillingSettings() {
 }
 ```
 
-The result is `{ stripe: { enabled: boolean, livemode: boolean | null } }`.
-Dormant billing returns `{ enabled: false, livemode: null }`; activated sandbox
-billing returns `{ enabled: true, livemode: false }`; activated live billing
-returns `{ enabled: true, livemode: true }`. Until the runtime responds, during
-disconnects, or with an older runtime that does not report activation, the
-snapshot is dormant. Reconnecting refreshes it, and unmounting removes the
-subscription.
+The result is
+`{ stripe: { enabled: boolean, livemode: boolean | null, tax: { enabled: boolean } } }`.
+`stripe.tax.enabled` is the single runtime-owned tax decision from
+`payments.stripe.tax.enabled`. Use it for a tax disclosure alongside your actual
+Price tax behavior; it does not by itself mean that Prices exclude VAT.
+Dormant billing returns `enabled: false`, `livemode: null` and `tax.enabled: false`.
+Activated sandbox billing has `livemode: false`; live billing has `livemode: true`.
+Until the runtime responds, during disconnects, or with an older runtime that
+does not report the complete activation and tax snapshot, the snapshot is
+dormant. Reconnecting refreshes it, and unmounting removes the subscription.
 
 Hide or disable Checkout, plan-upgrade, and Customer Portal actions while
 `stripe.enabled` is false. Keep existing entitlement displays independent of

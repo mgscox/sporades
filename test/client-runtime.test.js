@@ -15,7 +15,7 @@ async function importClientRuntime(options = {}) {
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
 
-test("shipped and generated clients carry Plan preview targets and opaque quote confirmations", async () => {
+test("shipped and generated clients carry Plan previews and immutable payment tax state", async () => {
   for (const load of [() => import("../dist/client.js"), () => importClientRuntime()]) {
     const browser = installBrowserFakes(anonymousAuth, { handlers: {
       "teamBilling.previewPlanTransition": () => ({ type: "teamBilling.previewPlanTransition.result", data: { state: "ready", quoteId: "opaque-quote" }, error: null }),
@@ -28,6 +28,17 @@ test("shipped and generated clients carry Plan preview targets and opaque quote 
       assert.equal(quote.data.quoteId, "opaque-quote");
       const confirmation = { ...input, requestId: "confirmation", quoteId: quote.data.quoteId };
       assert.equal((await runtime.teamBilling.requestPlanTransition(confirmation)).data.state, "pending");
+      const states = [];
+      const observer = runtime.payments.subscribe(state => states.push(state));
+      await settleMicrotasks();
+      for (const livemode of [false, true]) for (const enabled of [false, true]) {
+        browser.sockets[0].emit("message", { data: JSON.stringify({ type: "auth.result", data: {
+          auth: anonymousAuth, payments: { stripe: { enabled: true, livemode, tax: { enabled, private: "secret" } } },
+        }, error: null }) });
+        assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode, tax: { enabled } } });
+        assert.equal(Object.isFrozen(states.at(-1).stripe.tax), true);
+      }
+      observer.unsubscribe();
       assert.deepEqual(browser.sent.find(message => message.type === "teamBilling.previewPlanTransition").input, input);
       assert.deepEqual(browser.sent.find(message => message.type === "teamBilling.requestPlanTransition").input, confirmation);
     } finally { browser.cleanup(); }
@@ -44,9 +55,9 @@ test("usePayments starts dormant and subscribes without an application query", a
       useState(initial) { return [initial, state => states.push(state)]; },
       useEffect(effect) { cleanup = effect(); },
     });
-    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
     await settleMicrotasks();
-    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
     assert.equal(browser.sent.some(message => message.type === "query.subscribe"), false);
     cleanup();
   } finally { browser.cleanup(); }
@@ -72,9 +83,9 @@ test("usePayments and the framework-neutral observer expose test/live state, res
       type, data: { auth: anonymousAuth, payments }, error: null,
     }) });
     const oldSocket = browser.sockets[0];
-    for (const livemode of [false, true]) {
-      emit(oldSocket, { stripe: { enabled: true, livemode, secretKey: "sk_private", customerId: "cus_private" }, secret: "private" });
-      assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode } });
+    for (const livemode of [false, true]) for (const enabled of [false, true]) {
+      emit(oldSocket, { stripe: { enabled: true, livemode, tax: { enabled }, secretKey: "sk_private", customerId: "cus_private" }, secret: "private" });
+      assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode, tax: { enabled } } });
       assert.deepEqual(observed.at(-1), states.at(-1));
       assert.equal(Object.isFrozen(states.at(-1).stripe), true);
     }
@@ -83,7 +94,7 @@ test("usePayments and the framework-neutral observer expose test/live state, res
     assert.equal(states.at(-1).stripe.livemode, true);
     oldSocket.readyState = 3;
     oldSocket.emit("close", {});
-    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
     await settleMicrotasks();
     timers.runNext();
     await settleMicrotasks();
@@ -91,8 +102,8 @@ test("usePayments and the framework-neutral observer expose test/live state, res
     assert.notEqual(newSocket, oldSocket);
     emit(oldSocket, { stripe: { enabled: true, livemode: true } });
     assert.equal(states.at(-1).stripe.enabled, false, "retired socket cannot enable billing");
-    emit(newSocket, { stripe: { enabled: true, livemode: false } });
-    assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode: false } });
+    emit(newSocket, { stripe: { enabled: true, livemode: false, tax: { enabled: false } } });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: true, livemode: false, tax: { enabled: false } } });
     cleanup(); subscription.unsubscribe(); subscription.unsubscribe();
     const count = states.length;
     const observedCount = observed.length;
@@ -112,17 +123,17 @@ test("payments.get and subscriptions fail closed for missing, malformed, or reje
   } });
   try {
     const runtime = await importClientRuntime();
-    for (metadata of [undefined, null, {}, { stripe: { enabled: true } }, { stripe: { enabled: "true", livemode: true } }, { stripe: { enabled: false, livemode: true } }]) {
-      assert.deepEqual(await runtime.payments.get(), { data: { stripe: { enabled: false, livemode: null } }, error: null });
+    for (metadata of [undefined, null, {}, { stripe: { enabled: true } }, { stripe: { enabled: true, livemode: false } }, { stripe: { enabled: true, livemode: false, tax: { enabled: "true" } } }, { stripe: { enabled: "true", livemode: true } }, { stripe: { enabled: false, livemode: true } }]) {
+      assert.deepEqual(await runtime.payments.get(), { data: { stripe: { enabled: false, livemode: null, tax: { enabled: false } } }, error: null });
     }
-    metadata = { stripe: { enabled: true, livemode: false } };
+    metadata = { stripe: { enabled: true, livemode: false, tax: { enabled: false } } };
     assert.deepEqual((await runtime.payments.get()).data, metadata);
     const states = [];
     const subscription = runtime.payments.subscribe(state => states.push(state));
     assert.deepEqual(states.at(-1), metadata, "late subscribers receive the confirmed snapshot");
     error = { code: "UNAUTHENTICATED", message: "Session rejected" };
     assert.deepEqual(await runtime.payments.get(), { data: null, error });
-    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(states.at(-1), { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
     subscription.unsubscribe();
     assert.throws(() => runtime.payments.subscribe(null), /listener/);
   } finally { browser.cleanup(); }
@@ -135,7 +146,7 @@ test("the shipped client and generated browser runtime both expose payments and 
     assert.equal(typeof runtime.payments.get, "function");
     assert.equal(typeof runtime.payments.subscribe, "function");
     const hooks = runtime.createHooks({ useState: state => [state, () => {}], useEffect() {} });
-    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null } });
+    assert.deepEqual(hooks.usePayments(), { stripe: { enabled: false, livemode: null, tax: { enabled: false } } });
   }
 });
 
@@ -151,7 +162,7 @@ test("payment observers have independent, idempotent subscription lifetimes", as
     first.unsubscribe();
     await settleMicrotasks();
     browser.sockets[0].emit("message", { data: JSON.stringify({ type: "auth.result", data: {
-      auth: anonymousAuth, payments: { stripe: { enabled: true, livemode: false } },
+      auth: anonymousAuth, payments: { stripe: { enabled: true, livemode: false, tax: { enabled: false } } },
     }, error: null }) });
     assert.equal(states.at(-1).stripe.enabled, true, "retired cleanup cannot remove a later observer");
     second.unsubscribe();

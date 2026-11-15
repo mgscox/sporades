@@ -15,6 +15,7 @@ const enabledConfig = {
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
   callbackPath: "/stripe/webhook",
+  tax: { enabled: false },
   apiVersion: "2026-08-26.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
@@ -38,6 +39,30 @@ function portalInput(intent = "intent-portal-1") {
     returnPath: "/account/billing",
     idempotencyKey: `capsule:portal:user-1:${intent}`,
   };
+}
+
+for (const enabled of [true, false]) for (const mode of ["payment", "subscription"]) {
+  test(`${mode} Checkout sends the explicit tax decision (${enabled})`, async () => {
+    let payload;
+    await withStripeFake(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      payload = new URLSearchParams(body);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "cs_test_tax", object: "checkout.session", livemode: false, mode,
+        url: "https://checkout.stripe.com/c/pay/cs_test_tax" }));
+    }, async apiBaseUrl => {
+      const integration = createStripePaymentIntegration({ enabled: true,
+        config: { ...enabledConfig, tax: { enabled } },
+        env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" }, apiBaseUrl });
+      await integration.createCheckoutSession({ ...checkoutInput(), mode });
+    });
+    assert.equal(payload.get("automatic_tax[enabled]"), String(enabled));
+    assert.equal(payload.get("tax_id_collection[enabled]"), enabled ? "true" : null);
+    assert.equal(payload.get("billing_address_collection"), enabled ? "required" : null);
+    assert.equal(payload.get("customer_creation"), enabled && mode === "payment" ? "always" : null);
+    assert.equal(payload.has("customer_update[address]"), false);
+  });
 }
 
 async function withStripeFake(handler, run) {

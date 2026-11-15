@@ -216,6 +216,7 @@ test("a Team member removal stages Agency seat convergence through the owning ap
         webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
         publicOrigin: "https://member-removal.example.test",
         callbackPath: "/stripe/webhook",
+        tax: { enabled: false },
         apiVersion: "2026-08-26.dahlia",
         livemode: false,
         requestTimeoutMs: 10_000,
@@ -2045,6 +2046,7 @@ test("headless Team Checkout durably deduplicates work and exposes only an autho
         webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
         publicOrigin: "https://checkout.example.test",
         callbackPath: "/stripe/webhook",
+        tax: { enabled: false },
         apiVersion: "2026-08-26.dahlia",
         livemode: false,
         requestTimeoutMs: 10_000,
@@ -2313,6 +2315,7 @@ test("queued Team Checkout reauthorization preserves a Service User actor before
     config: { payments: { stripe: {
       enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
       publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      tax: { enabled: false },
       apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
     } } },
     runtimeOptions: { createStripeCallbackEndpoint, createStripeTeamBillingProvider: () => ({
@@ -2355,6 +2358,7 @@ test("headless managed Plan transition stays pending through provider acknowledg
     config: { payments: { stripe: {
       enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
       publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      tax: { enabled: false },
       apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
     } } },
     runtimeOptions: {
@@ -2456,6 +2460,7 @@ test("headless Team Portal pins reviewed configuration and exposes only an autho
     config: { payments: { stripe: {
       enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
       publicOrigin: "https://checkout.example.test", callbackPath: "/stripe/webhook",
+      tax: { enabled: false },
       apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
     } } },
     runtimeOptions: {

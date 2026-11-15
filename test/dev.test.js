@@ -339,6 +339,7 @@ test("a generated activated blank Capsule runs Checkout, Customer Portal, and si
         webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
         publicOrigin: "https://payments.example.test",
         callbackPath: "/stripe/webhook",
+        tax: { enabled: false },
         apiVersion: "2026-08-26.dahlia",
         livemode: false,
         requestTimeoutMs: 10_000,

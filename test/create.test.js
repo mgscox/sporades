@@ -251,6 +251,7 @@ test("sporades create writes the dormant built-in Stripe foundation into every b
     assert.match(paymentClient, /\/pay\//);
     assert.match(paymentClient, /window\.location\.assign/);
     assert.match(readme, /payments\.stripe\.enabled/);
+    assert.match(readme, /payments\.stripe\.tax/);
     assert.match(readme, /Sealed Server env/);
     assert.match(readme, /Anonymous Checkout requires an explicit Capsule opt-in/);
     assert.match(readme, /client\/payments\.ts/);

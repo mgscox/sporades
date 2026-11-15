@@ -705,6 +705,7 @@ test("real runtime Job repair uses fresh queue generations while provider idempo
   const payments = { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://repair.example.test", callbackPath: "/stripe/webhook",
+    tax: { enabled: false },
     apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
   const capsule = { name: "team-billing-repair-jobs", schema: {}, teamBilling: {
@@ -781,6 +782,7 @@ test("crashed provider lane converges after TTL from normal exhaustion and lease
   const payments = { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
     publicOrigin: "https://crashed-lane.example.test", callbackPath: "/stripe/webhook",
+    tax: { enabled: false },
     apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10_000,
   } };
   const capsule = { name: "team-billing-crashed-lane", schema: {}, teamBilling: {
@@ -1238,7 +1240,7 @@ for (const billingMode of ["classic", "flexible"]) for (const [label, periodStar
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
-    const provider = createStripeTeamBillingProvider({ config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 1000 },
+    const provider = createStripeTeamBillingProvider({ config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", tax: { enabled: false }, apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 1000 },
       env: { STRIPE_SECRET_KEY: "sk_test_renewal" }, apiBaseUrl: `http://127.0.0.1:${server.address().port}` });
     f.database.clock = { now: () => new Date(`${now}T12:00:00Z`) };
     f.setMembers(5);

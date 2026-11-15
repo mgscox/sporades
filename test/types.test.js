@@ -374,7 +374,7 @@ createStripePaymentIntegration({ enabled: true });
 validateTeamBillingPriceEvidence({ catalogue: {}, mode: "sandbox", evidence: [] }).ok satisfies true;
 // @ts-expect-error Evidence validation requires an exact environment.
 validateTeamBillingPriceEvidence({ catalogue: {}, mode: "production", evidence: [] });
-const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
+const enabledStripe = createStripePaymentIntegration({ enabled: true, config: { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET", publicOrigin: "https://payments.example.test", callbackPath: "/stripe/webhook", tax: { enabled: false }, apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 10000 }, env: { STRIPE_SECRET_KEY: "fixture", STRIPE_WEBHOOK_SECRET: "fixture" } });
 const checkout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "payment", priceId: "price_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:intent", businessReference: "intent-123" });
 const subscriptionCheckout: Promise<StripeCheckoutSessionResult> = enabledStripe.createCheckoutSession({ mode: "subscription", priceId: "price_recurring_server_owned", quantity: 1, successPath: "/success", cancelPath: "/cancel", idempotencyKey: "capsule:checkout:user:subscription", businessReference: "subscription-123" });
 const customerPortal: Promise<StripeCustomerPortalSessionResult> = enabledStripe.createCustomerPortalSession({ customerId: "cus_server_owned", returnPath: "/account/billing", idempotencyKey: "capsule:portal:user:intent" });
@@ -763,6 +763,7 @@ const app = capsule({
   middleware: [
     async (ctx) => {
       await Promise.resolve();
+      if (ctx.payments?.stripe.enabled) { const taxEnabled: boolean = ctx.payments.stripe.tax.enabled; }
       await ctx.mail.send({ to: "recipient@example.com", subject: "Middleware", textBody: ctx.kind });
       return { ...ctx, requestKind: ctx.kind };
     },
@@ -1099,6 +1100,7 @@ paymentState.stripe.enabled = true;
 // @ts-expect-error Provider identities never belong to the browser activation contract.
 paymentState.stripe.customerId;
 payments.get().then(result => result.data?.stripe.livemode);
+payments.get().then(result => { const taxEnabled: boolean | undefined = result.data?.stripe.tax.enabled; });
 payments.subscribe(state => state.stripe.enabled).unsubscribe();
 const vue = createVueComposables({
   reactive<State extends object>(state: State): State { return state; },
