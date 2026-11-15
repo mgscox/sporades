@@ -162369,6 +162369,7 @@ async function createStripeTeamBillingFake(options) {
       schedule: null,
       pending_update: null,
       latest_invoice: null,
+      ...session.payment_method_collection === "always" ? { default_payment_method: id2("pm") } : {},
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{
         id: id2("si"),
@@ -162604,16 +162605,30 @@ async function createStripeTeamBillingFake(options) {
           sessions.set(sessionId2, session2);
           return copy(session2);
         }
-        exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency", "automatic_tax", "tax_id_collection", "billing_address_collection", "customer_update"]);
+        const foundation = !Object.hasOwn(p2, "metadata");
+        if (foundation) {
+          exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "automatic_tax"], ["subscription_data", "payment_method_collection", "payment_method_types", "tax_id_collection", "billing_address_collection"]);
+          if (p2.subscription_data) {
+            exactKeys2(p2.subscription_data, ["trial_period_days"]);
+            integer(p2.subscription_data.trial_period_days, 90);
+            requireValue(p2.payment_method_collection === "always");
+            exactKeys2(p2.payment_method_types, ["0"]);
+            requireValue(p2.payment_method_types[0] === "card");
+          } else {
+            requireValue(p2.payment_method_collection === void 0 && p2.payment_method_types === void 0);
+          }
+        } else {
+          exactKeys2(p2, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency", "automatic_tax", "tax_id_collection", "billing_address_collection", "customer_update"]);
+          exactKeys2(p2.metadata, ["sporades_team_billing_operation"]);
+          exactKeys2(p2.subscription_data, ["metadata"], ["trial_period_days"]);
+          if (p2.subscription_data.trial_period_days !== void 0) integer(p2.subscription_data.trial_period_days, 90);
+          exactKeys2(p2.subscription_data.metadata, ["sporades_team_billing_operation"]);
+          requireValue(p2.client_reference_id === p2.metadata.sporades_team_billing_operation && p2.client_reference_id === p2.subscription_data.metadata.sporades_team_billing_operation);
+        }
         validateCheckoutTax(p2);
         requireValue(p2.mode === "subscription");
         exactKeys2(p2.line_items, ["0"]);
         exactKeys2(p2.line_items[0], ["price", "quantity"]);
-        exactKeys2(p2.metadata, ["sporades_team_billing_operation"]);
-        exactKeys2(p2.subscription_data, ["metadata"], ["trial_period_days"]);
-        if (p2.subscription_data.trial_period_days !== void 0) integer(p2.subscription_data.trial_period_days, 90);
-        exactKeys2(p2.subscription_data.metadata, ["sporades_team_billing_operation"]);
-        requireValue(p2.client_reference_id === p2.metadata.sporades_team_billing_operation && p2.client_reference_id === p2.subscription_data.metadata.sporades_team_billing_operation);
         if (p2.customer) get(customers, p2.customer);
         const { entry } = catalogueEntry(p2.line_items[0].price);
         const itemPrice = price(p2.line_items[0].price, p2.currency);
@@ -162627,15 +162642,17 @@ async function createStripeTeamBillingFake(options) {
           status: "open",
           livemode: false,
           ...sessionCurrency ? { currency: sessionCurrency, amount_total: sessionAmount * integer(p2.line_items[0].quantity) } : {},
+          ...foundation && p2.subscription_data?.trial_period_days ? { amount_total: 0 } : {},
+          ...foundation && p2.subscription_data ? { payment_method_collection: "always", payment_method_types: ["card"] } : {},
           url: `https://checkout.stripe.com/c/pay/${sessionId}`,
           customer: p2.customer ?? null,
           subscription: null,
           success_url: p2.success_url,
           cancel_url: p2.cancel_url,
           client_reference_id: p2.client_reference_id,
-          expires_at: integer(p2.expires_at, 253402300799),
-          metadata: copy(p2.metadata),
-          subscription_data: copy(p2.subscription_data),
+          expires_at: foundation ? now3 + 86400 : integer(p2.expires_at, 253402300799),
+          metadata: copy(p2.metadata ?? {}),
+          subscription_data: { ...copy(p2.subscription_data ?? {}), metadata: copy(p2.subscription_data?.metadata ?? {}) },
           line_items: { object: "list", has_more: false, data: [{ price: itemPrice, quantity: integer(p2.line_items[0].quantity) }] }
         };
         sessions.set(sessionId, session);

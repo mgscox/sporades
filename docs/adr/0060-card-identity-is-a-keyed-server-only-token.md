@@ -37,9 +37,12 @@ Unexpanded associations and malformed evidence refuse opaquely. Provider faults
 follow ordinary bounded retry and cancellation conventions; GET has no
 idempotency key. Disabled payments retain `STRIPE_PAYMENTS_DISABLED`.
 
-The user-level Checkout creator still has no setup mode or trial options. A
-card-collecting trial cannot currently be initiated through that foundation;
-[follow-up #407](https://github.com/mgscox/sporades/issues/407) tracks it rather than widening this change.
+The user-level Checkout creator now supports card-collecting subscription trials
+through server-owned `trialDays` (1–90), added by
+[#409](https://github.com/mgscox/sporades/pull/409) to complete
+[follow-up #407](https://github.com/mgscox/sporades/issues/407). After completed
+Checkout, the same server-only card read can supply the Capsule's private trial
+ledger. User-level setup Checkout remains unsupported.
 
 Team Billing exposes `ctx.teamBilling.getCardIdentity(teamId)` in trusted
 current-user, Privileged and atomic Stripe consequence contexts. Current-user
