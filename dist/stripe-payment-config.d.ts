@@ -7,6 +7,7 @@ export type StripeEnabledPaymentsConfig = Readonly<{
     enabled: true;
     secretKeyEnv: string;
     webhookSecretEnv: string;
+    cardIdentityKeyEnv?: string;
     publicOrigin: string;
     callbackPath: string;
     apiVersion: typeof STRIPE_API_VERSION;

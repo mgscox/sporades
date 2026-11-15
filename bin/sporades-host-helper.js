@@ -30343,22 +30343,6 @@ var signatures = [
 ];
 var signedTypes = /* @__PURE__ */ new Set([...signatures.map(([type]) => type), "image/webp", "image/avif"]);
 
-// src/team-billing-erasure.ts
-var CLAIM_TTL_MS = 5 * 6e4;
-
-// src/team-billing-management.ts
-var QUOTE_TTL_MS = 5 * 60 * 1e3;
-var CLAIM_TTL_MS2 = 5 * 60 * 1e3;
-
-// src/jobs-runtime.ts
-var nodeCryptoModule = process.getBuiltinModule("node:crypto");
-var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
-var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
-var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
-var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
-var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
-var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
-
 // src/resource-runtime.ts
 var RESOURCE_ADAPTER_SUPPORT = Object.freeze({
   sqlite: "supported",
@@ -30532,7 +30516,7 @@ function auditString(value, fallback) {
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/file-storage-runtime.ts
-var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule = process.getBuiltinModule("node:crypto");
 
 // src/file-ingress-runtime.ts
 var import_pdf_lib = __toESM(require_cjs(), 1);
@@ -46231,7 +46215,7 @@ var clamavRefreshRetryMs = 15 * 60 * 1e3;
 var clamavRefreshTimeoutMs = 5 * 60 * 1e3;
 
 // src/auth-runtime.ts
-var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var nodeCryptoModule2 = process.getBuiltinModule("node:crypto");
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_VERIFICATION_WINDOW_MS = 60 * 1e3;
 var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
@@ -46248,12 +46232,28 @@ var TEAM_JOIN_LINK_MIN_TTL_SECONDS = 5 * 60;
 var TEAM_JOIN_LINK_MAX_TTL_SECONDS = 60 * 60 * 24 * 7;
 var transactionBeforeCommitChecks = Symbol.for("sporades.database.transactionBeforeCommitChecks");
 
+// src/team-billing-management.ts
+var QUOTE_TTL_MS = 5 * 60 * 1e3;
+var CLAIM_TTL_MS = 5 * 60 * 1e3;
+
 // src/team-billing-convergence.ts
 var RANK = Object.freeze({ active: 20, cancelling: 30, "past-due": 40, cancelled: 50 });
 
 // src/team-billing-runtime.ts
 var CHECKOUT_CONTINUATION_TTL_DEFAULT_SECONDS = 10 * 60;
 var CHECKOUT_CONTINUATION_TTL_MAX_SECONDS = 30 * 60;
+
+// src/team-billing-erasure.ts
+var CLAIM_TTL_MS2 = 5 * 6e4;
+
+// src/jobs-runtime.ts
+var nodeCryptoModule3 = process.getBuiltinModule("node:crypto");
+var STRIPE_EVENT_PAYLOAD_RETENTION_MS = 30 * 24 * 60 * 60 * 1e3;
+var REDACTED_STRIPE_EVENT_PAYLOAD = JSON.stringify({ kind: "stripe-event", retained: false });
+var STRIPE_EVENT_PAYLOAD_SENTINEL_RECHECK_MS = 24 * 60 * 60 * 1e3;
+var JOB_AUTH_SNAPSHOT_MAX_BYTES = 8 * 1024;
+var MAX_JOB_TIMESTAMP_MS = Date.parse("9999-12-31T23:59:59.999Z");
+var MIN_JOB_TIMESTAMP_MS = Date.parse("0000-01-01T00:00:00.000Z");
 
 // src/services-context.ts
 import { inspect } from "node:util";

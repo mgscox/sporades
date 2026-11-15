@@ -1,4 +1,4 @@
-import type { TeamBillingPriceEvidenceInput } from "./types/stripe.js";
+import type { TeamBillingPriceEvidenceInput } from "../src/types/stripe.js";
 /** Offline activation check; callers supply saved Prices with currency_options expanded. */
 export declare function validateTeamBillingPriceEvidence(input: TeamBillingPriceEvidenceInput): Readonly<{
     ok: true;

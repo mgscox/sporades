@@ -93101,8 +93101,21 @@ async function removeFileVersionBestEffort(database, fileId, version3) {
   });
 }
 
-// src/team-billing-currency-handover.ts
-import { randomUUID as randomUUID7 } from "node:crypto";
+// src/team-billing-card-identity.ts
+import { randomUUID as randomUUID8 } from "node:crypto";
+
+// src/stripe-card-identity.ts
+function cardIdentityKey(config, env) {
+  const key = config.cardIdentityKeyEnv && env?.[config.cardIdentityKeyEnv];
+  if (typeof key !== "string" || Buffer.byteLength(key, "utf8") < 32 || !key.trim()) {
+    throw Object.assign(new Error("Stripe card identity is not configured."), {
+      code: "STRIPE_CARD_IDENTITY_NOT_CONFIGURED",
+      retryable: false,
+      hint: "Configure payments.stripe.cardIdentityKeyEnv with a dedicated Sealed Server secret."
+    });
+  }
+  return key;
+}
 
 // src/team-billing-portal-policy.ts
 function normalizeTeamBillingPortalPolicy(value = {}) {
@@ -93115,6 +93128,9 @@ function normalizeTeamBillingPortalPolicy(value = {}) {
   }
   return Object.freeze({ prorationBehavior, billingCycleAnchor, scheduleAtPeriodEnd: Object.freeze([...scheduleAtPeriodEnd].sort()) });
 }
+
+// src/team-billing-currency-handover.ts
+import { randomUUID as randomUUID4 } from "node:crypto";
 
 // src/team-billing-prices.ts
 function validBillingCurrency(value) {
@@ -93196,52 +93212,6 @@ function isRecord2(value) {
 }
 function matchesBillingPriceAmount(actual, expected) {
   return actual?.unit_amount === expected && actual.custom_unit_amount == null && actual.tiers == null && (actual.unit_amount_decimal == null || typeof actual.unit_amount_decimal === "string" && /^\d+(?:\.0+)?$/.test(actual.unit_amount_decimal) && Number(actual.unit_amount_decimal) === expected);
-}
-
-// src/team-billing-runtime.ts
-import { createHash as createHash8, randomUUID as randomUUID6 } from "node:crypto";
-
-// src/team-billing-subscription-semantics.ts
-function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
-  if (eventType === "customer.subscription.deleted") {
-    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
-  }
-  if (state === "cancelled") return null;
-  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
-}
-function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
-  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
-  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
-  if (state === "trialing") return Object.freeze({ kind: "trialing", rank: 15, terminalLatch: 0 });
-  if (state !== "active") return null;
-  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
-}
-function teamBillingIntervalEnd(start, interval, count) {
-  if (interval === "day" || interval === "week") return start + count * 86400 * (interval === "week" ? 7 : 1);
-  const date = new Date(start * 1e3);
-  const day = date.getUTCDate();
-  date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
-  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
-  date.setUTCDate(Math.min(day, lastDay));
-  return Math.floor(date.getTime() / 1e3);
-}
-function teamBillingPeriodAt(anchor, interval, count, at2) {
-  if (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(at2) || at2 < anchor || !Number.isSafeInteger(count) || count < 1 || !["day", "week", "month", "year"].includes(interval)) return null;
-  const startDate = new Date(anchor * 1e3);
-  const atDate = new Date(at2 * 1e3);
-  let cycle = interval === "day" || interval === "week" ? Math.floor((at2 - anchor) / (count * 86400 * (interval === "week" ? 7 : 1))) : Math.floor(((atDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 + atDate.getUTCMonth() - startDate.getUTCMonth()) / (count * (interval === "year" ? 12 : 1)));
-  if (!Number.isSafeInteger(cycle)) return null;
-  if (teamBillingIntervalEnd(anchor, interval, count * cycle) > at2) cycle--;
-  const start = teamBillingIntervalEnd(anchor, interval, count * cycle);
-  const end = teamBillingIntervalEnd(anchor, interval, count * (cycle + 1));
-  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= at2 && at2 < end ? { start, end } : null;
-}
-function teamBillingTransitionRefusal(state, cancelling, hasSchedule) {
-  if (cancelling) return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";
-  if (["past-due", "past_due", "unpaid"].includes(state)) return "TEAM_BILLING_SUBSCRIPTION_PAST_DUE";
-  if (hasSchedule) return "TEAM_BILLING_UNKNOWN_SCHEDULE";
-  return state === "active" || state === "trialing" ? null : "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS";
 }
 
 // src/teams-runtime.ts
@@ -126264,7 +126234,7 @@ async function retireOAuthRegistrationKeys(database, options = {}) {
     const rows = await adapter.prepare(adapter.dialect.sql(
       "SELECT [key], [value] FROM [sporades] WHERE [key] LIKE ? ORDER BY [key]"
     )).all("oauth-registration-key:retain:%");
-    const retired = [];
+    const retired2 = [];
     for (const row of rows) {
       const keyId = String(row.key).slice("oauth-registration-key:retain:".length);
       if (!oauthRegistrationKeyId(keyId) || keyId === current2.keyId) continue;
@@ -126278,11 +126248,11 @@ async function retireOAuthRegistrationKeys(database, options = {}) {
       if (retainUntil === null || retainUntil > now3 || outstanding > now3) continue;
       await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationMaterialKey(keyId));
       await deleteOAuthRegistrationMetadata(adapter, oauthRegistrationRetentionKey(keyId));
-      retired.push(keyId);
+      retired2.push(keyId);
     }
     const aliasRow = await adapter.readSystemMetadata(OAUTH_REGISTRATION_ALIAS_KEY);
     if (aliasRow && !oauthRegistrationAlias(aliasRow.value, now3)) await deleteOAuthRegistrationMetadata(adapter, OAUTH_REGISTRATION_ALIAS_KEY);
-    return { activeKeyId: current2.keyId, retired };
+    return { activeKeyId: current2.keyId, retired: retired2 };
   });
 }
 function oauthRegistrationAad(row) {
@@ -127784,11 +127754,375 @@ function usageUnavailable() {
   return commandError("Team Billing usage is unavailable.", "Supply an exact nonnegative integer count for the declared meter.", "TEAM_BILLING_USAGE_UNAVAILABLE");
 }
 
+// src/team-billing-currency-handover.ts
+var TEAM_BILLING_CURRENCY_HANDOVER_JOB = "_sporades.team-billing-currency-handover";
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var active = ["queued", "running", "retrying", "ready", "awaiting-observation"];
+var now = (db) => db.clock.now().toISOString();
+function failure(code2 = "TEAM_BILLING_DENIED", retryable3 = false) {
+  return Object.assign(new Error("Team currency handover is unavailable."), { code: code2, retryable: retryable3 });
+}
+async function assertCurrencyHandoverInactive(tx, teamId) {
+  const row = await tx.prepare(tx.dialect.sql(
+    "SELECT [o].[id] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[teamId] = ? AND [o].[kind] = 'currency-handover' AND ([o].[status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation') OR ([h].[cancelDispatched] = 1 AND [h].[phase] NOT IN ('completed', 'closed')))"
+  )).get(teamId);
+  if (row) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
+}
+async function startTeamBillingCurrencyHandover(db, auth, input) {
+  const { teamId, requestId, productKey, interval, currency } = input ?? {};
+  const mode = db.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
+  const product = db.teamBillingDefinition?.catalogue?.[productKey];
+  const price = teamBillingPrice(product?.stripe?.[mode], interval);
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["teamId", "requestId", "productKey", "interval", "currency"].includes(key)) || !db.paymentsConfig?.stripe?.enabled || !db.teamBillingDefinition?.checkout || !UUID.test(String(teamId)) || !UUID.test(String(requestId)) || !price || !validBillingCurrency(currency) || billingCurrencyAmount(price, currency) === void 0) throw failure();
+  const result = await db.adapter.withTransaction(async (tx) => {
+    await admit(db, tx, auth, { teamId, requestId, productKey, interval: price.interval, currency });
+    await assertTeamBillingErasureInactive(db, tx, teamId);
+    const repeated = await operation(tx, teamId, requestId);
+    if (repeated) {
+      if (repeated.kind !== "currency-handover" || repeated.productKey !== productKey || repeated.providerPriceId !== price.priceId || repeated.currency !== currency) throw failure("TEAM_BILLING_REQUEST_CONFLICT");
+      return resultFor(db, repeated);
+    }
+    await assertCurrencyHandoverInactive(tx, teamId);
+    const projection = await safeTeamBillingProjection(tx, db.teamBillingDefinition, teamId, db.clock.now());
+    if (projection.state !== "active" || !projection.currency || projection.currency === currency) throw failure("TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
+    const source = await tx.prepare(tx.dialect.sql(
+      "SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] = 'active' AND [terminalLatch] = 0 AND [replacedBy] IS NULL"
+    )).get(teamId);
+    if (!source || source.hasSchedule === 1 || source.cancelAtPeriodEnd !== 0 || source.mode !== mode || !Number.isFinite(Date.parse(source.currentPeriodEnd)) || source.currentPeriodEnd <= now(db)) throw failure("TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
+    const busy = await tx.prepare(tx.dialect.sql(
+      `SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] NOT IN (${TEAM_BILLING_READ_ONLY_KINDS_SQL}) AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')`
+    )).get(teamId);
+    if (busy) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
+    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ? AND [status] IN ('failed', 'attention-required')")).run(teamId);
+    const quantity = await readTeamBillingQuantity(db, tx, teamId, product.quantity);
+    if (product.quantity.maximum !== void 0 && quantity > product.quantity.maximum) throw failure();
+    const customer = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
+    if (!customer || customer.mode !== mode) throw failure();
+    const id2 = randomUUID4();
+    const createdAt = now(db);
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt], [taxEnabled]) VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )).run(id2, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id2}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1e3) + 23 * 3600, Number(db.paymentsConfig.stripe.tax.enabled));
+    await tx.prepare(tx.dialect.sql(
+      "INSERT INTO [sporades_team_billing_handovers] ([operationId], [teamId], [sourceSubscriptionId], [sourceSnapshot], [anchor], [phase]) VALUES (?, ?, ?, ?, ?, 'setup')"
+    )).run(id2, teamId, source.providerSubscriptionId, JSON.stringify(source), source.currentPeriodEnd);
+    await enqueue(db, tx, id2, "setup");
+    return resultFor(db, await operation(tx, teamId, requestId));
+  });
+  db.scheduleTeamBillingJobDispatch?.();
+  return result;
+}
+async function admit(db, tx, auth, input) {
+  await lockTeamLifecycle(tx, input.teamId, failure);
+  const handover = await tx.prepare(tx.dialect.sql("SELECT [h].[sourceSnapshot] FROM [sporades_team_billing_handovers] [h] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [h].[operationId] WHERE [h].[teamId] = ? AND [o].[requestId] = ?")).get(input.teamId, input.requestId ?? "");
+  const source = handover ? JSON.parse(handover.sourceSnapshot) : await tx.prepare(tx.dialect.sql("SELECT [productKey], [interval], [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] = 'active'")).get(input.teamId);
+  await admitTeamBillingActor(db, tx, auth, { ...input, operation: "currency-handover", fromCurrency: input.fromCurrency ?? source?.currency, fromProductKey: input.fromProductKey ?? source?.productKey, fromInterval: input.fromInterval ?? source?.interval });
+}
+async function performTeamBillingCurrencyHandover(db, context2, payload, attempt = 1) {
+  if (!payload || !UUID.test(String(payload.operationId)) || !["setup", "replace", "expire", "deadline"].includes(payload.phase)) throw failure();
+  if (payload.phase === "deadline") return reconcileExpiredHandover(db, context2, payload.operationId);
+  if (payload.phase === "expire") {
+    await db.adapter.withTransaction(async (tx) => {
+      const row = await tx.prepare(tx.dialect.sql("SELECT [o].*, [h].[anchor] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(payload.operationId);
+      if (!row) return;
+      await lockTeamLifecycle(tx, row.teamId, failure);
+      if (row.status !== "ready" || row.continuationExpiresAt > now(db)) return;
+      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?")).run("expired", null, row.id, now(db));
+    });
+    return null;
+  }
+  let snapshot = null;
+  let claimed = false;
+  const token = randomUUID4();
+  try {
+    snapshot = await db.adapter.withTransaction(async (tx) => {
+      const row = await tx.prepare(tx.dialect.sql(
+        "SELECT [o].*, [h].[sourceSnapshot], [h].[sourceSubscriptionId], [h].[anchor], [h].[phase], [h].[latchUntil], [h].[cancelDispatched], [h].[setupSessionId] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [o].[id] = [h].[operationId] WHERE [o].[id] = ?"
+      )).get(payload.operationId);
+      if (!row || !active.includes(row.status) || (payload.phase === "setup" ? row.phase !== "setup" || row.status === "ready" : row.phase !== "replace")) return null;
+      snapshot = row;
+      await lockTeamLifecycle(tx, row.teamId, failure);
+      const current2 = await tx.prepare(tx.dialect.sql("SELECT [o].[status], [h].[phase], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(row.id);
+      if (!current2 || !active.includes(current2.status) || (payload.phase === "setup" ? current2.phase !== "setup" || current2.status === "ready" : current2.phase !== "replace")) return null;
+      Object.assign(row, current2);
+      const source = JSON.parse(row.sourceSnapshot);
+      const price = teamBillingPriceById(db.teamBillingDefinition?.catalogue?.[row.productKey]?.stripe?.[row.mode], row.providerPriceId);
+      if (!price || billingCurrencyAmount(price, row.currency) === void 0 || row.mode === "live" !== Boolean(db.paymentsConfig?.stripe?.livemode)) throw failure("TEAM_BILLING_CONFIGURATION_INVALID");
+      const auth = await db.readTeamBillingActorAuth(tx, row.actorUserId);
+      await admit(db, tx, auth, {
+        teamId: row.teamId,
+        productKey: row.productKey,
+        interval: price.interval,
+        currency: row.currency,
+        fromCurrency: source.currency,
+        fromProductKey: source.productKey,
+        fromInterval: source.interval
+      });
+      await assertTeamBillingErasureInactive(db, tx, row.teamId);
+      if (row.anchor <= now(db)) throw failure("TEAM_BILLING_HANDOVER_EXPIRED");
+      const quantity = await readTeamBillingQuantity(db, tx, row.teamId, db.teamBillingDefinition.catalogue[row.productKey].quantity);
+      const maximum = db.teamBillingDefinition.catalogue[row.productKey].quantity.maximum;
+      if (quantity !== row.quantity || maximum !== void 0 && quantity > maximum) throw failure("TEAM_BILLING_CONFIGURATION_INVALID");
+      await tx.prepare(tx.dialect.sql(
+        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
+      )).run(row.teamId, now(db));
+      const claimed2 = await tx.prepare(tx.dialect.sql(
+        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
+      )).run(token, new Date(db.clock.now().getTime() + 3e5).toISOString(), now(db), row.teamId, now(db));
+      if (Number(claimed2.changes ?? claimed2.changesCount) !== 1) throw failure("TEAM_BILLING_PROVIDER_LANE_BUSY", true);
+      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?) WHERE [id] = ?")).run(now(db), row.id);
+      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [attemptToken] = ? WHERE [operationId] = ?")).run(token, row.id);
+      if (payload.phase === "replace") await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [cancelDispatched] = 1 WHERE [operationId] = ?")).run(row.id);
+      return { ...row, source, price };
+    });
+    if (!snapshot) return null;
+    claimed = true;
+    const provider = db.createStripeTeamBillingProvider({
+      config: db.paymentsConfig.stripe,
+      env: db.serverEnv,
+      signal: context2?.signal,
+      ...db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}
+    });
+    const common = {
+      operationId: snapshot.id,
+      taxEnabled: snapshot.taxEnabled == null ? null : snapshot.taxEnabled === 1,
+      customerId: snapshot.providerCustomerId,
+      sourceSubscriptionId: snapshot.sourceSubscriptionId,
+      sourcePriceId: snapshot.source.providerPriceId,
+      sourceItemId: snapshot.source.providerSubscriptionItemId,
+      sourceCurrency: snapshot.source.currency,
+      sourceQuantity: snapshot.source.quantity,
+      anchor: Date.parse(snapshot.anchor) / 1e3,
+      currency: snapshot.currency,
+      priceId: snapshot.providerPriceId,
+      quantity: snapshot.quantity,
+      idempotencyKey: snapshot.idempotencyKey
+    };
+    const result = payload.phase === "setup" ? await provider.createCurrencySetup({
+      ...common,
+      successPath: db.teamBillingDefinition.checkout.successPath,
+      cancelPath: db.teamBillingDefinition.checkout.cancelPath,
+      providerExpiresAt: snapshot.providerExpiresAt
+    }) : await provider.replaceCurrencySubscription({ ...common, setupSessionId: snapshot.setupSessionId });
+    await db.adapter.withTransaction(async (tx) => {
+      const owned2 = await release(db, tx, snapshot.teamId, token);
+      if (!owned2) throw failure("TEAM_BILLING_PROVIDER_LANE_BUSY", true);
+      if (payload.phase === "setup") {
+        const expiresAt = new Date(Math.min(snapshot.providerExpiresAt * 1e3, db.clock.now().getTime() + db.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3)).toISOString();
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'"
+        )).run(result.sessionId, result.url, expiresAt, now(db), snapshot.id);
+        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [setupSessionId] = ? WHERE [operationId] = ? AND [phase] = 'setup'")).run(result.sessionId, snapshot.id);
+        await enqueue(db, tx, snapshot.id, "expire", "expire", expiresAt);
+      } else {
+        await tx.prepare(tx.dialect.sql(
+          "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'"
+        )).run(result.subscriptionId, now(db), snapshot.id);
+      }
+    });
+    return { acknowledged: true };
+  } catch (error) {
+    await db.adapter.withTransaction(async (tx) => {
+      if (snapshot) {
+        await lockTeamLifecycle(tx, snapshot.teamId, failure);
+        const handover = await tx.prepare(tx.dialect.sql("SELECT [attemptToken] FROM [sporades_team_billing_handovers] WHERE [operationId] = ?")).get(snapshot.id);
+        if (claimed && handover?.attemptToken !== token) return;
+        const released = await release(db, tx, snapshot.teamId, token);
+        if (!released && error?.code !== "TEAM_BILLING_PROVIDER_LANE_BUSY") {
+          const owner = await tx.prepare(tx.dialect.sql("SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(snapshot.teamId);
+          if (owner?.claimToken && owner.claimExpiresAt > now(db)) return;
+        }
+      }
+      if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY" && snapshot) {
+        const lane = await tx.prepare(tx.dialect.sql("SELECT [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(snapshot.teamId);
+        await enqueue(db, tx, payload.operationId, payload.phase, randomUUID4(), lane?.claimExpiresAt > now(db) ? lane.claimExpiresAt : now(db));
+        return;
+      }
+      if (error?.handoverUntouched === true && snapshot?.cancelDispatched === 0) await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [latchUntil] = NULL, [cancelDispatched] = 0 WHERE [operationId] = ?")).run(payload.operationId);
+      const retry = error?.retryable === true && attempt < 4;
+      const code2 = error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : error?.code === "TEAM_BILLING_CUSTOMER_BALANCE_NONZERO" ? "CUSTOMER_BALANCE_NONZERO" : "UNAVAILABLE";
+      await tx.prepare(tx.dialect.sql(
+        "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')"
+      )).run(retry ? "retrying" : "failed", code2, now(db), payload.operationId);
+    });
+    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") return { deferred: true };
+    throw error;
+  }
+}
+async function applyCurrencySetup(db, event, mode) {
+  const tx = db.adapter;
+  const object2 = event.raw.data.object;
+  const row = await tx.prepare(tx.dialect.sql(
+    "SELECT [o].*, [h].[anchor], [h].[phase], [h].[sourceSnapshot], [h].[setupSessionId] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [o].[id] = [h].[operationId] WHERE [o].[id] = ? AND [o].[kind] = 'currency-handover'"
+  )).get(object2.client_reference_id);
+  if (!row || row.mode !== mode || object2.object !== "checkout.session" || object2.mode !== "setup" || object2.livemode !== event.livemode || object2.metadata?.sporades_team_billing_operation !== row.id || object2.customer !== row.providerCustomerId || !/^cs_(test|live)_[A-Za-z0-9_]{1,240}$/.test(String(object2.id)) || row.providerObjectId && object2.id !== row.providerObjectId || row.setupSessionId && object2.id !== row.setupSessionId) return null;
+  await lockTeamLifecycle(tx, row.teamId, failure);
+  const current2 = await tx.prepare(tx.dialect.sql("SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(row.id);
+  if (row.phase !== "setup" || !active.includes(current2?.status)) return { teamId: row.teamId, objectId: object2.id, rank: 10, outcome: "ignored" };
+  const completed = event.type === "checkout.session.completed";
+  if (completed ? object2.status !== "complete" || !/^seti_[A-Za-z0-9_]{1,240}$/.test(String(object2.setup_intent)) : object2.status !== "expired") return null;
+  const source = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = (SELECT [sourceSubscriptionId] FROM [sporades_team_billing_handovers] WHERE [operationId] = ?)")).get(row.id);
+  const admitted = JSON.parse(row.sourceSnapshot);
+  const sameSource = source && ["providerPriceId", "productKey", "currency", "unitAmount", "quantity", "providerSubscriptionItemId", "interval"].every((key) => source[key] === admitted[key]);
+  if (completed && sameSource && row.anchor > now(db) && source?.state === "active" && source.terminalLatch === 0 && source.cancelAtPeriodEnd === 0 && source.hasSchedule !== 1 && source.currentPeriodEnd === row.anchor) {
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'replace', [setupSessionId] = ?, [latchUntil] = [anchor] WHERE [operationId] = ?")).run(object2.id, row.id);
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'queued', [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ?")).run(object2.id, row.id);
+    await enqueue(db, tx, row.id, "replace");
+    await enqueue(db, tx, row.id, "deadline", "deadline", row.anchor);
+  } else {
+    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ?")).run(row.id);
+  }
+  return { teamId: row.teamId, objectId: object2.id, rank: 10, outcome: "applied" };
+}
+async function readCurrencyHandoverLatch(tx, definition, teamId, clock) {
+  const rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_handovers] WHERE [teamId] = ? AND [latchUntil] IS NOT NULL AND [phase] <> 'completed' ORDER BY [anchor] DESC")).all(teamId);
+  const latch = rows.find((r2) => r2.latchUntil > clock.toISOString());
+  if (!latch) return null;
+  let source;
+  try {
+    source = JSON.parse(latch.sourceSnapshot);
+  } catch {
+    return null;
+  }
+  const product = definition.catalogue[source.productKey];
+  const price = teamBillingPriceById(product?.stripe?.[source.mode], source.providerPriceId);
+  if (!price || !matchesBillingCurrency(price, source.currency, source.unitAmount) || !Number.isSafeInteger(source.quantity) || source.quantity < 1 || product.quantity.kind === "fixed" && source.quantity !== product.quantity.value || price.interval && price.interval !== source.interval) return null;
+  return Object.freeze({
+    state: "active",
+    teamId,
+    productKey: source.productKey,
+    quantity: source.quantity,
+    currency: source.currency,
+    ...source.interval ? { interval: source.interval } : {},
+    renewsAt: latch.latchUntil
+  });
+}
+async function repairTeamBillingCurrencyHandovers(db) {
+  await db.adapter.withTransaction(async (tx) => {
+    const rows = await tx.prepare(tx.dialect.sql(
+      "SELECT [o].*, [h].[phase], [h].[anchor] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[kind] = 'currency-handover' AND ([o].[status] IN ('queued', 'running', 'retrying', 'awaiting-observation') OR ([o].[status] = 'failed' AND [h].[cancelDispatched] = 1 AND [h].[phase] NOT IN ('closed', 'completed')))"
+    )).all();
+    for (const candidate of rows) {
+      await lockTeamLifecycle(tx, candidate.teamId, failure);
+      const row = await tx.prepare(tx.dialect.sql(
+        "SELECT [o].*, [h].[phase], [h].[anchor], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?"
+      )).get(candidate.id);
+      if (!row || !["setup", "replace"].includes(row.phase) || !["queued", "running", "retrying", "awaiting-observation", "failed"].includes(row.status) || row.status === "failed" && row.cancelDispatched !== 1) continue;
+      const guard = " WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation', 'failed') AND EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[operationId] = ? AND [h].[phase] IN ('setup', 'replace') AND ([sporades_team_billing_operations].[status] <> 'failed' OR [h].[cancelDispatched] = 1))";
+      const expired = row.anchor <= now(db);
+      const changed = await tx.prepare(tx.dialect.sql(
+        (expired ? "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE'" : "UPDATE [sporades_team_billing_operations] SET [status] = 'queued'") + guard
+      )).run(row.id, row.id);
+      if (Number(changed.changes ?? changed.changesCount) !== 1) continue;
+      await enqueue(db, tx, row.id, expired ? "deadline" : row.phase === "setup" ? "setup" : "replace", randomUUID4());
+    }
+  });
+}
+async function enqueue(db, tx, operationId, phase, generation2 = phase, availableAt) {
+  await db.enqueueTeamBillingCurrencyHandoverJob(tx, { operationId, phase }, `currency-handover:${operationId}:${generation2}`, availableAt);
+}
+async function operation(tx, teamId, requestId) {
+  return tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
+}
+async function release(db, tx, teamId, token) {
+  const result = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?")).run(now(db), teamId, token);
+  return Number(result.changes ?? result.changesCount) === 1;
+}
+function resultFor(db, row) {
+  const common = { teamId: row.teamId, requestId: row.requestId, productKey: row.productKey };
+  if (row.status === "completed") return Object.freeze({ state: "completed", ...common });
+  if (row.status === "expired" || row.status === "superseded" || row.status === "ready" && row.continuationExpiresAt <= now(db)) return Object.freeze({ state: "expired", ...common });
+  if (row.status === "ready") return Object.freeze({ state: "ready", ...common, url: row.continuationUrl, expiresAt: row.continuationExpiresAt });
+  if (row.status === "failed") return Object.freeze({ state: "failed", ...common, reason: row.safeFailureCode === "CUSTOMER_BALANCE_NONZERO" ? "customer-balance-nonzero" : row.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
+  return Object.freeze({ state: "pending", ...common, requestedAt: row.createdAt });
+}
+async function reconcileExpiredHandover(db, context2, operationId) {
+  const token = randomUUID4();
+  const snapshot = await db.adapter.withTransaction(async (tx) => {
+    const row = await tx.prepare(tx.dialect.sql("SELECT [o].*, [h].[anchor], [h].[phase], [h].[sourceSubscriptionId], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(operationId);
+    if (!row || row.anchor > now(db) || ["completed", "closed"].includes(row.phase)) return null;
+    await lockTeamLifecycle(tx, row.teamId, failure);
+    await assertTeamBillingErasureInactive(db, tx, row.teamId);
+    const claimed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, new Date(db.clock.now().getTime() + 3e5).toISOString(), now(db), row.teamId, now(db));
+    if (Number(claimed.changes ?? claimed.changesCount) !== 1) {
+      const lane = await tx.prepare(tx.dialect.sql("SELECT [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(row.teamId);
+      await enqueue(db, tx, row.id, "deadline", randomUUID4(), lane.claimExpiresAt);
+      return null;
+    }
+    return row;
+  });
+  if (!snapshot) return null;
+  try {
+    const provider = db.createStripeTeamBillingProvider({
+      config: db.paymentsConfig.stripe,
+      env: db.serverEnv,
+      signal: context2?.signal,
+      ...db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}
+    });
+    const evidence = await provider.reconcileCurrencyHandover({ customerId: snapshot.providerCustomerId, operationId, sourceSubscriptionId: snapshot.sourceSubscriptionId });
+    await db.adapter.withTransaction(async (tx) => {
+      if (!await release(db, tx, snapshot.teamId, token)) return;
+      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE', [providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ? AND [status] <> 'completed'")).run(evidence.subscriptionId ?? null, operationId);
+      if (evidence.closed === true) await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'closed', [cancelDispatched] = CASE WHEN ? = 1 THEN 0 ELSE [cancelDispatched] END, [latchUntil] = CASE WHEN ? = 1 THEN NULL ELSE [latchUntil] END WHERE [operationId] = ? AND [phase] <> 'completed'")).run(evidence.sourceUncancelled ? 1 : 0, evidence.sourceUncancelled ? 1 : 0, operationId);
+    });
+  } catch (error) {
+    await db.adapter.withTransaction((tx) => release(db, tx, snapshot.teamId, token));
+    throw error;
+  }
+  return null;
+}
+
+// src/team-billing-runtime.ts
+import { createHash as createHash8, randomUUID as randomUUID7 } from "node:crypto";
+
+// src/team-billing-subscription-semantics.ts
+function teamBillingSubscriptionSemantics(eventType, state, cancelAtPeriodEnd) {
+  if (eventType === "customer.subscription.deleted") {
+    return state === "cancelled" ? Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 }) : null;
+  }
+  if (state === "cancelled") return null;
+  return teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd);
+}
+function teamBillingStoredSubscriptionSemantics(state, cancelAtPeriodEnd) {
+  if (state === "cancelled") return Object.freeze({ kind: "cancelled", rank: 50, terminalLatch: 1 });
+  if (state === "past-due") return Object.freeze({ kind: "past-due", rank: 40, terminalLatch: 0 });
+  if (state === "trialing") return Object.freeze({ kind: "trialing", rank: 15, terminalLatch: 0 });
+  if (state !== "active") return null;
+  return cancelAtPeriodEnd ? Object.freeze({ kind: "cancelling", rank: 30, terminalLatch: 0 }) : Object.freeze({ kind: "active", rank: 20, terminalLatch: 0 });
+}
+function teamBillingIntervalEnd(start, interval, count) {
+  if (interval === "day" || interval === "week") return start + count * 86400 * (interval === "week" ? 7 : 1);
+  const date = new Date(start * 1e3);
+  const day = date.getUTCDate();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + count * (interval === "year" ? 12 : 1));
+  const lastDay = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+  date.setUTCDate(Math.min(day, lastDay));
+  return Math.floor(date.getTime() / 1e3);
+}
+function teamBillingPeriodAt(anchor, interval, count, at2) {
+  if (!Number.isSafeInteger(anchor) || !Number.isSafeInteger(at2) || at2 < anchor || !Number.isSafeInteger(count) || count < 1 || !["day", "week", "month", "year"].includes(interval)) return null;
+  const startDate = new Date(anchor * 1e3);
+  const atDate = new Date(at2 * 1e3);
+  let cycle = interval === "day" || interval === "week" ? Math.floor((at2 - anchor) / (count * 86400 * (interval === "week" ? 7 : 1))) : Math.floor(((atDate.getUTCFullYear() - startDate.getUTCFullYear()) * 12 + atDate.getUTCMonth() - startDate.getUTCMonth()) / (count * (interval === "year" ? 12 : 1)));
+  if (!Number.isSafeInteger(cycle)) return null;
+  if (teamBillingIntervalEnd(anchor, interval, count * cycle) > at2) cycle--;
+  const start = teamBillingIntervalEnd(anchor, interval, count * cycle);
+  const end = teamBillingIntervalEnd(anchor, interval, count * (cycle + 1));
+  return Number.isSafeInteger(start) && Number.isSafeInteger(end) && start <= at2 && at2 < end ? { start, end } : null;
+}
+function teamBillingTransitionRefusal(state, cancelling, hasSchedule) {
+  if (cancelling) return "TEAM_BILLING_SUBSCRIPTION_CANCELLING";
+  if (["past-due", "past_due", "unpaid"].includes(state)) return "TEAM_BILLING_SUBSCRIPTION_PAST_DUE";
+  if (hasSchedule) return "TEAM_BILLING_UNKNOWN_SCHEDULE";
+  return state === "active" || state === "trialing" ? null : "TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS";
+}
+
 // src/team-billing-convergence.ts
-import { createHash as createHash7, randomUUID as randomUUID5 } from "node:crypto";
+import { createHash as createHash7, randomUUID as randomUUID6 } from "node:crypto";
 
 // src/team-billing-management.ts
-import { createHash as createHash6, randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash6, randomUUID as randomUUID5 } from "node:crypto";
 
 // src/team-billing-payment-action.ts
 function validTeamBillingHostedInvoiceUrl(value) {
@@ -127845,7 +128179,7 @@ async function previewTeamBillingPlanTransition(database, auth, input) {
       return Object.freeze({ state: repeated.status === "failed" ? "failed" : "pending", teamId, requestId, productKey });
     }
     const resolved = await resolvePlanTarget(database, transaction, teamId, productKey, price, false);
-    const operationId = randomUUID4();
+    const operationId = randomUUID5();
     const now3 = nowIso(database);
     const expiresAt = new Date(database.clock.now().getTime() + QUOTE_TTL_MS).toISOString();
     await transaction.prepare(transaction.dialect.sql(
@@ -127903,7 +128237,7 @@ async function repairTeamBillingPlanPreviewExpiries(database) {
 }
 async function performTeamBillingPlanPreview(database, context2, payload, attempt = 1) {
   if (!payload || Object.keys(payload).join() !== "operationId" || !TEAM_ID_PATTERN.test(payload.operationId)) throw denied();
-  const token = randomUUID4();
+  const token = randomUUID5();
   let teamId;
   let laneClaimed = false;
   try {
@@ -128089,7 +128423,7 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     const { quantity, endTrial, preserveTrial, resetBillingCycle } = resolved;
     if (quote2 && timing !== "now") throw invalidQuote();
     if (quote2 && quote2.snapshot !== JSON.stringify(resolved)) throw invalidQuote();
-    const operationId = randomUUID4();
+    const operationId = randomUUID5();
     const now3 = nowIso(database);
     const staged = await stageDesired(transaction, database, {
       teamId,
@@ -128108,10 +128442,10 @@ async function requestTeamBillingPlanTransition(database, auth, teamId, requestI
     }, quote2 !== null);
     if (quote2) {
       const consumedAt = nowIso(database);
-      const retired = await transaction.prepare(sql2(
+      const retired2 = await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [id] = ? AND [kind] = 'plan-preview' AND [status] = 'ready' AND " + LIVE_PREVIEW_QUOTE
       )).run(consumedAt, quoteId, consumedAt);
-      if (Number(retired.changes ?? retired.changesCount) !== 1) throw invalidQuote();
+      if (Number(retired2.changes ?? retired2.changesCount) !== 1) throw invalidQuote();
       await transaction.prepare(sql2(
         "UPDATE [sporades_team_billing_quotes] SET [consumedBy] = ? WHERE [operationId] = ? AND [consumedBy] IS NULL"
       )).run(operationId, quoteId);
@@ -128152,7 +128486,7 @@ async function cancelScheduledTeamBillingPlanTransition(database, auth, teamId, 
     await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'plan-transition' AND [status] IN ('queued', 'running', 'awaiting-observation')"
     )).run(now3, teamId);
-    const operationId = randomUUID4();
+    const operationId = randomUUID5();
     await transaction.prepare(sql2(
       "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerSubscriptionId], [currency]) VALUES (?, ?, ?, ?, 'plan-transition', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
@@ -128308,7 +128642,7 @@ async function performTeamBillingSeatConvergence(database, context2, payload) {
 }
 async function performDesired(database, _context, payload, kind) {
   if (typeof payload?.intentId !== "string" || typeof payload?.generationId !== "string") return { superseded: true };
-  const claimToken = randomUUID4();
+  const claimToken = randomUUID5();
   const snapshot = await inTransaction(database, async (transaction) => {
     const desired = await desiredByIntent(transaction, payload.intentId);
     if (!desired || desired.kind !== kind || desired.activeJobGenerationId !== payload.generationId || !["queued", "running", "awaiting-observation"].includes(desired.status)) return { superseded: true };
@@ -128756,18 +129090,18 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
   const unchanged = !replaceIntent && existing && existing.kind === input.kind && existing.targetProductKey === input.targetProductKey && (existing.preserveTrial ?? 0) === input.preserveTrial && (existing.endTrial ?? 0) === input.endTrial && (existing.targetPriceId ?? null) === input.targetPriceId && (Number(existing.targetQuantity) === input.targetQuantity || (existing.resetBillingCycle === 1 || existing.endTrial === 1 || existing.preserveTrial === 1) && existing.providerAttemptedAt) && Number(existing.resume ?? 0) === Number(input.resume ?? 0) && (existing.timing ?? null) === input.timing && (existing.providerScheduleId ?? null) === input.providerScheduleId && Number(existing.releaseSchedule ?? 0) === input.releaseSchedule;
   if (unchanged) {
     const transfersPlanOwnership = input.kind === "plan-transition" && typeof input.operationId === "string" && input.operationId !== existing.operationId;
-    const enqueue2 = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
-    if (enqueue2) await transaction.prepare(transaction.dialect.sql(
+    const enqueue3 = transfersPlanOwnership || ["failed", "attention-required"].includes(existing.status);
+    if (enqueue3) await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_desired_state] SET [operationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [providerAcknowledgedAt] = NULL, [resume] = ?, [updatedAt] = ? WHERE [intentId] = ?"
     )).run(transfersPlanOwnership ? input.operationId : existing.operationId, input.resume ?? 0, nowIso(database), existing.intentId);
     return {
       ...existing,
       operationId: transfersPlanOwnership ? input.operationId : existing.operationId,
-      status: enqueue2 ? "queued" : existing.status,
-      enqueue: enqueue2
+      status: enqueue3 ? "queued" : existing.status,
+      enqueue: enqueue3
     };
   }
-  const intentId = randomUUID4();
+  const intentId = randomUUID5();
   const idempotencyKey = intentIdempotency(database, input.teamId, intentId);
   const now3 = nowIso(database);
   if (existing) {
@@ -128785,7 +129119,7 @@ async function stageDesired(transaction, database, input, replaceIntent = false)
 async function enqueueIntent(database, transaction, desired, availableAt) {
   const callback = desired.kind === "plan-transition" ? database.enqueueTeamBillingPlanTransitionJob : database.enqueueTeamBillingSeatConvergenceJob;
   if (typeof callback !== "function") throw retryable("TEAM_BILLING_PROVIDER_UNAVAILABLE");
-  const generationId = randomUUID4();
+  const generationId = randomUUID5();
   const activated = await transaction.prepare(transaction.dialect.sql(
     "UPDATE [sporades_team_billing_desired_state] SET [activeJobGenerationId] = ?, [updatedAt] = ? WHERE [intentId] = ?"
   )).run(generationId, nowIso(database), desired.intentId);
@@ -129010,9 +129344,11 @@ var SUPPORTED = /* @__PURE__ */ new Set([
   "customer.subscription.deleted",
   "customer.subscription.pending_update_applied",
   "customer.subscription.pending_update_expired",
-  "invoice.payment_failed"
+  "invoice.payment_failed",
+  "invoice.paid",
+  "setup_intent.succeeded"
 ]);
-var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var EVENT_ID = /^evt_[A-Za-z0-9_]{1,240}$/;
 var CHECKOUT_ID = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
 var CUSTOMER_ID = /^cus_[A-Za-z0-9_]{1,120}$/;
@@ -129039,6 +129375,9 @@ var Quarantine = class extends Error {
 };
 async function applyVerifiedTeamBillingObservation(database, event) {
   if (!SUPPORTED.has(event?.type)) return Object.freeze({ applied: false, ignored: true });
+  if (["invoice.paid", "setup_intent.succeeded"].includes(event?.type) && !database?.paymentsConfig?.stripe?.cardIdentityKeyEnv) {
+    return Object.freeze({ applied: false, ignored: true });
+  }
   const transaction = database?.adapter;
   if (!transaction?.prepare || !database.teamBillingDefinition) return Object.freeze({ applied: false, ignored: true });
   if (typeof database.teamBillingErasureObjectKey === "function" && boundedObjectId(event?.objectId)) {
@@ -129047,7 +129386,7 @@ async function applyVerifiedTeamBillingObservation(database, event) {
     )).get(database.teamBillingErasureObjectKey(event.objectId));
     if (erased) return Object.freeze({ applied: false, erased: true });
   }
-  const digest3 = safeDigest(event?.raw);
+  const digest3 = typeof event?.__sporadesProviderPayloadDigest === "string" && /^[a-f0-9]{64}$/.test(event.__sporadesProviderPayloadDigest) ? event.__sporadesProviderPayloadDigest : safeDigest(event?.raw);
   const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
   const occurredAt = canonicalTimestamp(event?.occurredAt);
   const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
@@ -129071,7 +129410,21 @@ async function applyVerifiedTeamBillingObservation(database, event) {
     let result;
     if (event.type.startsWith("checkout.session.")) result = await applyCheckout(database, event, expectedMode);
     else if (event.type.startsWith("customer.subscription.")) result = await applySubscription(database, event, expectedMode);
-    else result = await applyInvoiceFailure(database, event, expectedMode);
+    else if (["invoice.paid", "setup_intent.succeeded"].includes(event.type)) {
+      const object2 = event.raw.data.object;
+      const setup = event.type === "setup_intent.succeeded";
+      const subscriptionId = object2.parent?.subscription_details?.subscription ?? object2.subscription;
+      if (object2.object !== (setup ? "setup_intent" : "invoice") || object2.livemode !== event.livemode || !CUSTOMER_ID.test(String(object2.customer ?? "")) || setup && (!/^seti_[A-Za-z0-9_]{1,240}$/.test(object2.id) || object2.status !== "succeeded") || !setup && (!INVOICE_ID.test(object2.id) || object2.status !== "paid" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")))) {
+        throw new Quarantine("provider-state-ambiguous");
+      }
+      await restageTeamBillingCardIdentities(database, object2.customer, setup ? void 0 : subscriptionId);
+      result = { teamId: preliminaryTeamId, objectId: object2.id, rank: 0, outcome: "ignored" };
+    } else result = await applyInvoiceFailure(database, event, expectedMode);
+    if (event.type.startsWith("customer.subscription.")) await stopRetiredTeamBillingCardIdentities(database, result.teamId);
+    if (event.type === "customer.subscription.updated") {
+      const object2 = event.raw.data.object;
+      await restageTeamBillingCardIdentities(database, object2.customer, object2.id);
+    }
     const outcome = result.outcome ?? "applied";
     await recordObservation(database, event, digest3, result.teamId, result.objectId, result.rank, outcome, null);
     return Object.freeze({ applied: outcome === "applied" });
@@ -129100,7 +129453,7 @@ async function applyCheckout(database, event, mode) {
     if (!result) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
     return result;
   }
-  if (object2.object !== "checkout.session" || object2.mode !== "subscription" || object2.livemode !== event.livemode || !CHECKOUT_ID.test(String(object2.id ?? "")) || !UUID.test(String(operationId ?? "")) || object2.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
+  if (object2.object !== "checkout.session" || object2.mode !== "subscription" || object2.livemode !== event.livemode || !CHECKOUT_ID.test(String(object2.id ?? "")) || !UUID2.test(String(operationId ?? "")) || object2.metadata?.sporades_team_billing_operation !== operationId) throw new Quarantine("provider-state-ambiguous", null, 50, boundedObjectId(object2.id));
   const operation2 = await tx.prepare(tx.dialect.sql(
     "SELECT [id], [teamId], [mode], [currency], [status], [providerObjectId], [providerCustomerId], [providerSubscriptionId], [terminalObservedAt] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'"
   )).get(operationId);
@@ -129125,6 +129478,7 @@ async function applyCheckout(database, event, mode) {
     )).run(completed ? "completed" : "expired", object2.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
     outcome = "applied";
   }
+  if (completed) await stageTeamBillingCardIdentity(database, operationId);
   return { teamId: operation2.teamId, objectId: object2.id, rank: 10, outcome };
 }
 async function applySubscription(database, event, mode) {
@@ -129139,7 +129493,7 @@ async function applySubscription(database, event, mode) {
   const existing = await tx.prepare(tx.dialect.sql(
     "SELECT [id], [teamId], [mode], [currency], [providerSubscriptionId], [providerSubscriptionItemId], [providerPriceId], [productKey], [terminalLatch], [currentPeriodStart], [lastEventOccurredAt], [lastEventRank], [hasSchedule], [providerScheduleId], [replacedBy] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = ?"
   )).get(subscriptionId);
-  const operation2 = metadataOperationId && UUID.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
+  const operation2 = metadataOperationId && UUID2.test(metadataOperationId) ? await tx.prepare(tx.dialect.sql(
     "SELECT [id], [teamId], [mode], [kind], [currency], [productKey], [quantity], [providerPriceId], [providerCustomerId], [providerSubscriptionId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] IN ('checkout', 'currency-handover')"
   )).get(metadataOperationId) : null;
   const teamId = existing?.teamId ?? operation2?.teamId ?? null;
@@ -129195,7 +129549,7 @@ async function applySubscription(database, event, mode) {
     await tx.prepare(tx.dialect.sql(
       "INSERT INTO [sporades_team_billing_subscriptions] ([id], [teamId], [mode], [providerSubscriptionId], [providerPriceId], [interval], [billingMode], [providerSubscriptionItemId], [productKey], [quantity], [state], [cancelAtPeriodEnd], [currentPeriodStart], [currentPeriodEnd], [trialEndsAt], [observedAt], [updatedAt], [lastEventOccurredAt], [lastEventKind], [lastEventRank], [terminalLatch], [hasSchedule], [providerScheduleId], [currency], [unitAmount]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )).run(
-      randomUUID5(),
+      randomUUID6(),
       teamId,
       mode,
       subscriptionId,
@@ -129258,6 +129612,7 @@ async function applySubscription(database, event, mode) {
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [replacedBy] = ? WHERE [providerSubscriptionId] = ? AND [teamId] = ?")).run(subscriptionId, handover.sourceSubscriptionId, teamId);
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'completed', [latchUntil] = NULL WHERE [operationId] = ?")).run(operation2.id);
     await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL WHERE [id] = ?")).run(operation2.id);
+    await stageTeamBillingCardIdentity(database, operation2.id);
     if (product.quantity.kind === "team-members") await stageTeamBillingMembershipChange(
       { ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database },
       teamId
@@ -129401,7 +129756,7 @@ async function applyInvoiceFailure(database, event, mode) {
 async function inferTeamId(tx, event) {
   const object2 = event?.raw?.data?.object;
   const operationId = object2?.client_reference_id ?? object2?.metadata?.sporades_team_billing_operation;
-  if (UUID.test(String(operationId ?? ""))) {
+  if (UUID2.test(String(operationId ?? ""))) {
     const row = await tx.prepare(tx.dialect.sql(
       `SELECT [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] NOT IN (${TEAM_BILLING_READ_ONLY_KINDS_SQL})`
     )).get(operationId);
@@ -129430,7 +129785,7 @@ async function recordObservation(database, event, digest3, teamId, objectId, ran
   await database.adapter.prepare(database.adapter.dialect.sql(
     "INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt], [eventType], [eventRank], [outcome], [safeReason]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT ([providerEventId]) DO NOTHING"
   )).run(
-    randomUUID5(),
+    randomUUID6(),
     teamId,
     event.livemode ? "live" : "sandbox",
     event.providerEventId,
@@ -129492,6 +129847,7 @@ var TEAM_ID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]
 function createTeamBillingTables(adapter) {
   const sql2 = adapter.dialect.sql;
   return chainMaybePromise([
+    () => adapter.exec(sql2("CREATE TABLE IF NOT EXISTS [sporades_team_billing_card_identities] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL, [generationCount] INTEGER NOT NULL DEFAULT 1, [readAttempts] INTEGER NOT NULL DEFAULT 0, [nextAttemptAt] TEXT NULL)")),
     () => adapter.exec(sql2(
       "CREATE TABLE IF NOT EXISTS [sporades_team_billing_customers] ([teamId] TEXT PRIMARY KEY, [mode] TEXT NOT NULL, [providerCustomerId] TEXT NOT NULL UNIQUE, [createdAt] TEXT NOT NULL, [updatedAt] TEXT NOT NULL)"
     )),
@@ -129534,6 +129890,9 @@ function createTeamBillingTables(adapter) {
     ...["billingMode", "currency", "interval", "trialEndsAt", "providerSubscriptionItemId", "currentPeriodStart", "lastEventOccurredAt", "lastEventKind"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "TEXT")),
     ...["unitAmount", "lastEventRank", "terminalLatch", "hasSchedule"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_subscriptions", name2, "INTEGER")),
     ...["eventType", "outcome", "safeReason"].map((name2) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name2, "TEXT")),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "generationCount", "INTEGER NOT NULL DEFAULT 1"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "readAttempts", "INTEGER NOT NULL DEFAULT 0"),
+    () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_card_identities", "nextAttemptAt", "TEXT"),
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
     // NULL preserves the immutable taxless intent of operations admitted before Stripe Tax.
     () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "taxEnabled", "INTEGER"),
@@ -129716,7 +130075,7 @@ async function startTeamBillingCheckout(database, auth, teamId, requestId, produ
     } else if (active2) {
       throw checkoutActive();
     }
-    const operationId = randomUUID6();
+    const operationId = randomUUID7();
     const idempotencyKey = checkoutIdempotencyKey(database.capsuleIdentity, teamId, requestId);
     const providerExpiresAt = Math.floor((database.clock.now().getTime() + 23 * 60 * 60 * 1e3) / 1e3);
     await transaction.prepare(sql2(
@@ -129767,7 +130126,7 @@ async function startTeamBillingPortal(database, auth, teamId, requestId) {
         "UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] = 'ready'"
       )).run(now3, active2.id);
     } else if (active2) throw checkoutActive();
-    const operationId = randomUUID6();
+    const operationId = randomUUID7();
     const idempotencyKey = teamBillingOperationIdempotencyKey(database.capsuleIdentity, "portal", teamId, requestId);
     await transaction.prepare(sql2(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? WHERE [teamId] = ? AND [kind] = 'portal' AND [status] = 'queued' AND [providerObjectId] IS NULL"
@@ -129848,7 +130207,7 @@ async function performTeamBillingCheckout(database, context2, payload, attempt =
       await assertCheckoutCurrency(transaction, operation2.teamId, operation2.currency);
       if (operation2.trialDays != null) await assertTeamTrialAvailable(transaction, operation2.teamId, operation2.id, operation2.providerSubscriptionId ?? "");
       const attemptedAt = database.clock.now().toISOString();
-      const claimToken = randomUUID6();
+      const claimToken = randomUUID7();
       const claimExpiresAt = new Date(database.clock.now().getTime() + 5 * 6e4).toISOString();
       await transaction.prepare(sql2(
         "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
@@ -130214,6 +130573,15 @@ async function safeTeamBillingProjection(transaction, definition, teamId, clock 
 }
 function createPrivilegedTeamBillingApi(database, contextGetter) {
   return Object.freeze({
+    async getCardIdentity(teamId) {
+      assertActivePrivilegedTeamBillingAccess(contextGetter);
+      if (!database.teamBillingDefinition || typeof teamId !== "string" || !TEAM_ID_PATTERN2.test(teamId)) throw teamBillingDenied();
+      const exists2 = await database.adapter.prepare(database.adapter.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(teamId);
+      if (!exists2) throw teamBillingDenied();
+      const result = await readTeamBillingCardIdentity(database, database.adapter, teamId);
+      assertActivePrivilegedTeamBillingAccess(contextGetter);
+      return result;
+    },
     async listQuarantines(options = {}) {
       const assertActive = () => assertActivePrivilegedTeamBillingAccess(contextGetter);
       assertActive();
@@ -130489,326 +130857,201 @@ function teamBillingDenied() {
   );
 }
 
-// src/team-billing-currency-handover.ts
-var TEAM_BILLING_CURRENCY_HANDOVER_JOB = "_sporades.team-billing-currency-handover";
-var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-var active = ["queued", "running", "retrying", "ready", "awaiting-observation"];
-var now = (db) => db.clock.now().toISOString();
-function failure(code2 = "TEAM_BILLING_DENIED", retryable3 = false) {
-  return Object.assign(new Error("Team currency handover is unavailable."), { code: code2, retryable: retryable3 });
-}
-async function assertCurrencyHandoverInactive(tx, teamId) {
-  const row = await tx.prepare(tx.dialect.sql(
-    "SELECT [o].[id] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[teamId] = ? AND [o].[kind] = 'currency-handover' AND ([o].[status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation') OR ([h].[cancelDispatched] = 1 AND [h].[phase] NOT IN ('completed', 'closed')))"
-  )).get(teamId);
-  if (row) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
-}
-async function startTeamBillingCurrencyHandover(db, auth, input) {
-  const { teamId, requestId, productKey, interval, currency } = input ?? {};
-  const mode = db.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
-  const product = db.teamBillingDefinition?.catalogue?.[productKey];
-  const price = teamBillingPrice(product?.stripe?.[mode], interval);
-  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["teamId", "requestId", "productKey", "interval", "currency"].includes(key)) || !db.paymentsConfig?.stripe?.enabled || !db.teamBillingDefinition?.checkout || !UUID2.test(String(teamId)) || !UUID2.test(String(requestId)) || !price || !validBillingCurrency(currency) || billingCurrencyAmount(price, currency) === void 0) throw failure();
-  const result = await db.adapter.withTransaction(async (tx) => {
-    await admit(db, tx, auth, { teamId, requestId, productKey, interval: price.interval, currency });
-    await assertTeamBillingErasureInactive(db, tx, teamId);
-    const repeated = await operation(tx, teamId, requestId);
-    if (repeated) {
-      if (repeated.kind !== "currency-handover" || repeated.productKey !== productKey || repeated.providerPriceId !== price.priceId || repeated.currency !== currency) throw failure("TEAM_BILLING_REQUEST_CONFLICT");
-      return resultFor(db, repeated);
-    }
-    await assertCurrencyHandoverInactive(tx, teamId);
-    const projection = await safeTeamBillingProjection(tx, db.teamBillingDefinition, teamId, db.clock.now());
-    if (projection.state !== "active" || !projection.currency || projection.currency === currency) throw failure("TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
-    const source = await tx.prepare(tx.dialect.sql(
-      "SELECT * FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [state] = 'active' AND [terminalLatch] = 0 AND [replacedBy] IS NULL"
-    )).get(teamId);
-    if (!source || source.hasSchedule === 1 || source.cancelAtPeriodEnd !== 0 || source.mode !== mode || !Number.isFinite(Date.parse(source.currentPeriodEnd)) || source.currentPeriodEnd <= now(db)) throw failure("TEAM_BILLING_PROVIDER_STATE_AMBIGUOUS");
-    const busy = await tx.prepare(tx.dialect.sql(
-      `SELECT [id] FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] NOT IN (${TEAM_BILLING_READ_ONLY_KINDS_SQL}) AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')`
-    )).get(teamId);
-    if (busy) throw failure("TEAM_BILLING_CURRENCY_HANDOVER_ACTIVE");
-    await tx.prepare(tx.dialect.sql("DELETE FROM [sporades_team_billing_desired_state] WHERE [teamId] = ? AND [status] IN ('failed', 'attention-required')")).run(teamId);
-    const quantity = await readTeamBillingQuantity(db, tx, teamId, product.quantity);
-    if (product.quantity.maximum !== void 0 && quantity > product.quantity.maximum) throw failure();
-    const customer = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(teamId);
-    if (!customer || customer.mode !== mode) throw failure();
-    const id2 = randomUUID7();
-    const createdAt = now(db);
-    await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt], [taxEnabled]) VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )).run(id2, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id2}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1e3) + 23 * 3600, Number(db.paymentsConfig.stripe.tax.enabled));
-    await tx.prepare(tx.dialect.sql(
-      "INSERT INTO [sporades_team_billing_handovers] ([operationId], [teamId], [sourceSubscriptionId], [sourceSnapshot], [anchor], [phase]) VALUES (?, ?, ?, ?, ?, 'setup')"
-    )).run(id2, teamId, source.providerSubscriptionId, JSON.stringify(source), source.currentPeriodEnd);
-    await enqueue(db, tx, id2, "setup");
-    return resultFor(db, await operation(tx, teamId, requestId));
-  });
-  db.scheduleTeamBillingJobDispatch?.();
-  return result;
-}
-async function admit(db, tx, auth, input) {
-  await lockTeamLifecycle(tx, input.teamId, failure);
-  const handover = await tx.prepare(tx.dialect.sql("SELECT [h].[sourceSnapshot] FROM [sporades_team_billing_handovers] [h] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [h].[operationId] WHERE [h].[teamId] = ? AND [o].[requestId] = ?")).get(input.teamId, input.requestId ?? "");
-  const source = handover ? JSON.parse(handover.sourceSnapshot) : await tx.prepare(tx.dialect.sql("SELECT [productKey], [interval], [currency] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? AND [replacedBy] IS NULL AND [state] = 'active'")).get(input.teamId);
-  await admitTeamBillingActor(db, tx, auth, { ...input, operation: "currency-handover", fromCurrency: input.fromCurrency ?? source?.currency, fromProductKey: input.fromProductKey ?? source?.productKey, fromInterval: input.fromInterval ?? source?.interval });
-}
-async function performTeamBillingCurrencyHandover(db, context2, payload, attempt = 1) {
-  if (!payload || !UUID2.test(String(payload.operationId)) || !["setup", "replace", "expire", "deadline"].includes(payload.phase)) throw failure();
-  if (payload.phase === "deadline") return reconcileExpiredHandover(db, context2, payload.operationId);
-  if (payload.phase === "expire") {
-    await db.adapter.withTransaction(async (tx) => {
-      const row = await tx.prepare(tx.dialect.sql("SELECT [o].*, [h].[anchor] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(payload.operationId);
-      if (!row) return;
-      await lockTeamLifecycle(tx, row.teamId, failure);
-      if (row.status !== "ready" || row.continuationExpiresAt > now(db)) return;
-      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ? AND [status] = 'ready' AND [continuationExpiresAt] <= ?")).run("expired", null, row.id, now(db));
-    });
-    return null;
-  }
-  let snapshot = null;
-  let claimed = false;
-  const token = randomUUID7();
-  try {
-    snapshot = await db.adapter.withTransaction(async (tx) => {
-      const row = await tx.prepare(tx.dialect.sql(
-        "SELECT [o].*, [h].[sourceSnapshot], [h].[sourceSubscriptionId], [h].[anchor], [h].[phase], [h].[latchUntil], [h].[cancelDispatched], [h].[setupSessionId] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [o].[id] = [h].[operationId] WHERE [o].[id] = ?"
-      )).get(payload.operationId);
-      if (!row || !active.includes(row.status) || (payload.phase === "setup" ? row.phase !== "setup" || row.status === "ready" : row.phase !== "replace")) return null;
-      snapshot = row;
-      await lockTeamLifecycle(tx, row.teamId, failure);
-      const current2 = await tx.prepare(tx.dialect.sql("SELECT [o].[status], [h].[phase], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(row.id);
-      if (!current2 || !active.includes(current2.status) || (payload.phase === "setup" ? current2.phase !== "setup" || current2.status === "ready" : current2.phase !== "replace")) return null;
-      Object.assign(row, current2);
-      const source = JSON.parse(row.sourceSnapshot);
-      const price = teamBillingPriceById(db.teamBillingDefinition?.catalogue?.[row.productKey]?.stripe?.[row.mode], row.providerPriceId);
-      if (!price || billingCurrencyAmount(price, row.currency) === void 0 || row.mode === "live" !== Boolean(db.paymentsConfig?.stripe?.livemode)) throw failure("TEAM_BILLING_CONFIGURATION_INVALID");
-      const auth = await db.readTeamBillingActorAuth(tx, row.actorUserId);
-      await admit(db, tx, auth, {
-        teamId: row.teamId,
-        productKey: row.productKey,
-        interval: price.interval,
-        currency: row.currency,
-        fromCurrency: source.currency,
-        fromProductKey: source.productKey,
-        fromInterval: source.interval
-      });
-      await assertTeamBillingErasureInactive(db, tx, row.teamId);
-      if (row.anchor <= now(db)) throw failure("TEAM_BILLING_HANDOVER_EXPIRED");
-      const quantity = await readTeamBillingQuantity(db, tx, row.teamId, db.teamBillingDefinition.catalogue[row.productKey].quantity);
-      const maximum = db.teamBillingDefinition.catalogue[row.productKey].quantity.maximum;
-      if (quantity !== row.quantity || maximum !== void 0 && quantity > maximum) throw failure("TEAM_BILLING_CONFIGURATION_INVALID");
-      await tx.prepare(tx.dialect.sql(
-        "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?) ON CONFLICT DO NOTHING"
-      )).run(row.teamId, now(db));
-      const claimed2 = await tx.prepare(tx.dialect.sql(
-        "UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)"
-      )).run(token, new Date(db.clock.now().getTime() + 3e5).toISOString(), now(db), row.teamId, now(db));
-      if (Number(claimed2.changes ?? claimed2.changesCount) !== 1) throw failure("TEAM_BILLING_PROVIDER_LANE_BUSY", true);
-      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?) WHERE [id] = ?")).run(now(db), row.id);
-      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [attemptToken] = ? WHERE [operationId] = ?")).run(token, row.id);
-      if (payload.phase === "replace") await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [cancelDispatched] = 1 WHERE [operationId] = ?")).run(row.id);
-      return { ...row, source, price };
-    });
-    if (!snapshot) return null;
-    claimed = true;
-    const provider = db.createStripeTeamBillingProvider({
-      config: db.paymentsConfig.stripe,
-      env: db.serverEnv,
-      signal: context2?.signal,
-      ...db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}
-    });
-    const common = {
-      operationId: snapshot.id,
-      taxEnabled: snapshot.taxEnabled == null ? null : snapshot.taxEnabled === 1,
-      customerId: snapshot.providerCustomerId,
-      sourceSubscriptionId: snapshot.sourceSubscriptionId,
-      sourcePriceId: snapshot.source.providerPriceId,
-      sourceItemId: snapshot.source.providerSubscriptionItemId,
-      sourceCurrency: snapshot.source.currency,
-      sourceQuantity: snapshot.source.quantity,
-      anchor: Date.parse(snapshot.anchor) / 1e3,
-      currency: snapshot.currency,
-      priceId: snapshot.providerPriceId,
-      quantity: snapshot.quantity,
-      idempotencyKey: snapshot.idempotencyKey
-    };
-    const result = payload.phase === "setup" ? await provider.createCurrencySetup({
-      ...common,
-      successPath: db.teamBillingDefinition.checkout.successPath,
-      cancelPath: db.teamBillingDefinition.checkout.cancelPath,
-      providerExpiresAt: snapshot.providerExpiresAt
-    }) : await provider.replaceCurrencySubscription({ ...common, setupSessionId: snapshot.setupSessionId });
-    await db.adapter.withTransaction(async (tx) => {
-      const owned2 = await release(db, tx, snapshot.teamId, token);
-      if (!owned2) throw failure("TEAM_BILLING_PROVIDER_LANE_BUSY", true);
-      if (payload.phase === "setup") {
-        const expiresAt = new Date(Math.min(snapshot.providerExpiresAt * 1e3, db.clock.now().getTime() + db.teamBillingDefinition.checkout.continuationTtlSeconds * 1e3)).toISOString();
-        await tx.prepare(tx.dialect.sql(
-          "UPDATE [sporades_team_billing_operations] SET [status] = 'ready', [providerObjectId] = ?, [continuationUrl] = ?, [continuationExpiresAt] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'"
-        )).run(result.sessionId, result.url, expiresAt, now(db), snapshot.id);
-        await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [setupSessionId] = ? WHERE [operationId] = ? AND [phase] = 'setup'")).run(result.sessionId, snapshot.id);
-        await enqueue(db, tx, snapshot.id, "expire", "expire", expiresAt);
-      } else {
-        await tx.prepare(tx.dialect.sql(
-          "UPDATE [sporades_team_billing_operations] SET [status] = 'awaiting-observation', [providerSubscriptionId] = ?, [updatedAt] = ? WHERE [id] = ? AND [status] = 'running'"
-        )).run(result.subscriptionId, now(db), snapshot.id);
-      }
-    });
-    return { acknowledged: true };
-  } catch (error) {
-    await db.adapter.withTransaction(async (tx) => {
-      if (snapshot) {
-        await lockTeamLifecycle(tx, snapshot.teamId, failure);
-        const handover = await tx.prepare(tx.dialect.sql("SELECT [attemptToken] FROM [sporades_team_billing_handovers] WHERE [operationId] = ?")).get(snapshot.id);
-        if (claimed && handover?.attemptToken !== token) return;
-        const released = await release(db, tx, snapshot.teamId, token);
-        if (!released && error?.code !== "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-          const owner = await tx.prepare(tx.dialect.sql("SELECT [claimToken], [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(snapshot.teamId);
-          if (owner?.claimToken && owner.claimExpiresAt > now(db)) return;
-        }
-      }
-      if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY" && snapshot) {
-        const lane = await tx.prepare(tx.dialect.sql("SELECT [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(snapshot.teamId);
-        await enqueue(db, tx, payload.operationId, payload.phase, randomUUID7(), lane?.claimExpiresAt > now(db) ? lane.claimExpiresAt : now(db));
-        return;
-      }
-      if (error?.handoverUntouched === true && snapshot?.cancelDispatched === 0) await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [latchUntil] = NULL, [cancelDispatched] = 0 WHERE [operationId] = ?")).run(payload.operationId);
-      const retry = error?.retryable === true && attempt < 4;
-      const code2 = error?.code === "TEAM_BILLING_DENIED" ? "AUTHORITY_CHANGED" : error?.code === "TEAM_BILLING_CUSTOMER_BALANCE_NONZERO" ? "CUSTOMER_BALANCE_NONZERO" : "UNAVAILABLE";
-      await tx.prepare(tx.dialect.sql(
-        "UPDATE [sporades_team_billing_operations] SET [status] = ?, [safeFailureCode] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [updatedAt] = ? WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying')"
-      )).run(retry ? "retrying" : "failed", code2, now(db), payload.operationId);
-    });
-    if (error?.code === "TEAM_BILLING_PROVIDER_LANE_BUSY") return { deferred: true };
-    throw error;
-  }
-}
-async function applyCurrencySetup(db, event, mode) {
+// src/team-billing-card-identity.ts
+var TEAM_BILLING_CARD_IDENTITY_JOB = "_sporades.team-billing-card-identity";
+var UUID3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var MAX_GENERATIONS = 5;
+var MAX_READS = 4;
+async function stageTeamBillingCardIdentity(db, operationId) {
+  if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
   const tx = db.adapter;
-  const object2 = event.raw.data.object;
-  const row = await tx.prepare(tx.dialect.sql(
-    "SELECT [o].*, [h].[anchor], [h].[phase], [h].[sourceSnapshot], [h].[setupSessionId] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [o].[id] = [h].[operationId] WHERE [o].[id] = ? AND [o].[kind] = 'currency-handover'"
-  )).get(object2.client_reference_id);
-  if (!row || row.mode !== mode || object2.object !== "checkout.session" || object2.mode !== "setup" || object2.livemode !== event.livemode || object2.metadata?.sporades_team_billing_operation !== row.id || object2.customer !== row.providerCustomerId || !/^cs_(test|live)_[A-Za-z0-9_]{1,240}$/.test(String(object2.id)) || row.providerObjectId && object2.id !== row.providerObjectId || row.setupSessionId && object2.id !== row.setupSessionId) return null;
-  await lockTeamLifecycle(tx, row.teamId, failure);
-  const current2 = await tx.prepare(tx.dialect.sql("SELECT [status] FROM [sporades_team_billing_operations] WHERE [id] = ?")).get(row.id);
-  if (row.phase !== "setup" || !active.includes(current2?.status)) return { teamId: row.teamId, objectId: object2.id, rank: 10, outcome: "ignored" };
-  const completed = event.type === "checkout.session.completed";
-  if (completed ? object2.status !== "complete" || !/^seti_[A-Za-z0-9_]{1,240}$/.test(String(object2.setup_intent)) : object2.status !== "expired") return null;
-  const source = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionId] = (SELECT [sourceSubscriptionId] FROM [sporades_team_billing_handovers] WHERE [operationId] = ?)")).get(row.id);
-  const admitted = JSON.parse(row.sourceSnapshot);
-  const sameSource = source && ["providerPriceId", "productKey", "currency", "unitAmount", "quantity", "providerSubscriptionItemId", "interval"].every((key) => source[key] === admitted[key]);
-  if (completed && sameSource && row.anchor > now(db) && source?.state === "active" && source.terminalLatch === 0 && source.cancelAtPeriodEnd === 0 && source.hasSchedule !== 1 && source.currentPeriodEnd === row.anchor) {
-    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'replace', [setupSessionId] = ?, [latchUntil] = [anchor] WHERE [operationId] = ?")).run(object2.id, row.id);
-    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'queued', [providerObjectId] = ?, [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ?")).run(object2.id, row.id);
-    await enqueue(db, tx, row.id, "replace");
-    await enqueue(db, tx, row.id, "deadline", "deadline", row.anchor);
-  } else {
-    await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'expired', [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ?")).run(row.id);
-  }
-  return { teamId: row.teamId, objectId: object2.id, rank: 10, outcome: "applied" };
+  const op = await tx.prepare(tx.dialect.sql(
+    "SELECT [id], [teamId] FROM [sporades_team_billing_operations] WHERE [id] = ? AND [status] = 'completed' AND [kind] IN ('checkout', 'currency-handover') AND [providerCustomerId] IS NOT NULL AND [providerSubscriptionId] IS NOT NULL"
+  )).get(operationId);
+  if (!op) return;
+  const generationId = randomUUID8(), availableAt = db.clock.now().toISOString();
+  const inserted = await tx.prepare(tx.dialect.sql(
+    "INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind], [token], [capturedAt], [generationCount], [readAttempts], [nextAttemptAt]) VALUES (?, ?, ?, 'pending', NULL, NULL, 1, 0, ?) ON CONFLICT DO NOTHING"
+  )).run(op.id, op.teamId, generationId, availableAt);
+  if (Number(inserted?.changes ?? inserted?.changesCount ?? 0) !== 1) return;
+  await enqueue2(db, tx, operationId, generationId, availableAt);
 }
-async function readCurrencyHandoverLatch(tx, definition, teamId, clock) {
-  const rows = await tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_handovers] WHERE [teamId] = ? AND [latchUntil] IS NOT NULL AND [phase] <> 'completed' ORDER BY [anchor] DESC")).all(teamId);
-  const latch = rows.find((r2) => r2.latchUntil > clock.toISOString());
-  if (!latch) return null;
-  let source;
-  try {
-    source = JSON.parse(latch.sourceSnapshot);
-  } catch {
-    return null;
-  }
-  const product = definition.catalogue[source.productKey];
-  const price = teamBillingPriceById(product?.stripe?.[source.mode], source.providerPriceId);
-  if (!price || !matchesBillingCurrency(price, source.currency, source.unitAmount) || !Number.isSafeInteger(source.quantity) || source.quantity < 1 || product.quantity.kind === "fixed" && source.quantity !== product.quantity.value || price.interval && price.interval !== source.interval) return null;
-  return Object.freeze({
-    state: "active",
-    teamId,
-    productKey: source.productKey,
-    quantity: source.quantity,
-    currency: source.currency,
-    ...source.interval ? { interval: source.interval } : {},
-    renewsAt: latch.latchUntil
-  });
+async function enqueue2(db, tx, operationId, generationId, availableAt) {
+  await db.enqueueTeamBillingCardIdentityJob(tx, { operationId, generationId }, `team-billing-card-identity:${operationId}:${generationId}`, availableAt);
 }
-async function repairTeamBillingCurrencyHandovers(db) {
+async function lockedCapture(db, tx, payload) {
+  const read = () => tx.prepare(tx.dialect.sql(
+    "SELECT [c].*, [o].[providerCustomerId], [o].[providerSubscriptionId], [s].[state] AS [subscriptionState], [s].[terminalLatch], [s].[replacedBy] FROM [sporades_team_billing_card_identities] [c] JOIN [sporades_teams] [t] ON [t].[id] = [c].[teamId] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] LEFT JOIN [sporades_team_billing_subscriptions] [s] ON [s].[teamId] = [o].[teamId] AND [s].[mode] = [o].[mode] AND [s].[providerSubscriptionId] = [o].[providerSubscriptionId] WHERE [c].[operationId] = ? AND [c].[generationId] = ? AND [c].[kind] IN ('pending', 'unavailable') AND [o].[status] = 'completed' AND [o].[mode] = ?"
+  )).get(payload.operationId, payload.generationId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
+  const row = await read();
+  if (!row) return null;
+  await lockTeamLifecycle(tx, row.teamId, teamBillingDenied);
+  return read();
+}
+function retired(row) {
+  return row.subscriptionState === "cancelled" || Number(row.terminalLatch) === 1 || !!row.replacedBy;
+}
+function validBudget(row) {
+  return Number.isInteger(row.generationCount) && row.generationCount >= 1 && row.generationCount <= MAX_GENERATIONS && Number.isInteger(row.readAttempts) && row.readAttempts >= 0 && row.readAttempts <= MAX_READS;
+}
+async function stopCapture(db, tx, row) {
+  await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_billing_card_identities] SET [kind] = 'unavailable', [token] = NULL, [capturedAt] = NULL, [nextAttemptAt] = NULL WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'"
+  )).run(row.operationId, row.generationId);
+  await db.cancelTeamBillingCardIdentityJobs?.(tx, row.operationId);
+}
+async function replaceGeneration(db, tx, row, generationCount, readAttempts, availableAt) {
+  const generationId = randomUUID8();
+  const changed = await tx.prepare(tx.dialect.sql(
+    "UPDATE [sporades_team_billing_card_identities] SET [generationId] = ?, [kind] = 'pending', [generationCount] = ?, [readAttempts] = ?, [nextAttemptAt] = ? WHERE [operationId] = ? AND [generationId] = ? AND [kind] = ?"
+  )).run(generationId, generationCount, readAttempts, availableAt, row.operationId, row.generationId, row.kind);
+  if (Number(changed?.changes ?? changed?.changesCount ?? 0) !== 1) return false;
+  await db.cancelTeamBillingCardIdentityJobs?.(tx, row.operationId);
+  await enqueue2(db, tx, row.operationId, generationId, availableAt);
+  return true;
+}
+async function settleGeneration(db, tx, row) {
+  if (row.kind !== "pending") return false;
+  const availableAt = validBudget(row) && row.generationCount < MAX_GENERATIONS && !retired(row) ? jobTimestampAfter(db.clock.now(), 6e4 * 5 ** (row.generationCount - 1)) : null;
+  if (!availableAt) {
+    await stopCapture(db, tx, row);
+    return false;
+  }
+  return replaceGeneration(db, tx, row, row.generationCount + 1, 0, availableAt);
+}
+async function settleExhaustedTeamBillingCardIdentityJob(db, payload) {
+  if (!db.teamBillingDefinition || !db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return { replacementScheduled: false };
+  if (!payload || Object.keys(payload).sort().join() !== "generationId,operationId" || !UUID3.test(payload.operationId) || !UUID3.test(payload.generationId)) return { replacementScheduled: false };
+  const settle = async (tx) => {
+    const row = await lockedCapture(db, tx, payload);
+    return row ? settleGeneration(db, tx, row) : false;
+  };
+  const replacementScheduled = db.__transactionActive ? await settle(db.adapter) : await db.adapter.withTransaction(settle);
+  if (replacementScheduled && !db.__transactionActive) db.scheduleTeamBillingJobDispatch?.();
+  return { replacementScheduled };
+}
+async function restageTeamBillingCardIdentities(db, customerId, subscriptionId) {
+  if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
+  const tx = db.adapter;
+  const rows = await tx.prepare(tx.dialect.sql(
+    "SELECT [c].[operationId], [c].[generationId] FROM [sporades_team_billing_card_identities] [c] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [c].[operationId] AND [o].[teamId] = [c].[teamId] WHERE [c].[kind] IN ('pending', 'unavailable') AND [o].[status] = 'completed' AND [o].[mode] = ? AND [o].[providerCustomerId] = ?" + (subscriptionId ? " AND [o].[providerSubscriptionId] = ?" : "")
+  )).all(db.paymentsConfig.stripe.livemode ? "live" : "sandbox", customerId, ...subscriptionId ? [subscriptionId] : []);
+  for (const payload of rows) {
+    const row = await lockedCapture(db, tx, payload);
+    if (!row) continue;
+    if (retired(row) || !validBudget(row)) {
+      await stopCapture(db, tx, row);
+      continue;
+    }
+    await replaceGeneration(db, tx, row, row.kind === "unavailable" ? MAX_GENERATIONS : row.generationCount, 0, db.clock.now().toISOString());
+  }
+}
+async function stopRetiredTeamBillingCardIdentities(db, teamId) {
+  if (!db.paymentsConfig?.stripe?.cardIdentityKeyEnv || !teamId) return;
+  const tx = db.adapter;
+  const rows = await tx.prepare(tx.dialect.sql(
+    "SELECT [operationId], [generationId] FROM [sporades_team_billing_card_identities] WHERE [teamId] = ? AND [kind] = 'pending'"
+  )).all(teamId);
+  for (const payload of rows) {
+    const row = await lockedCapture(db, tx, payload);
+    if (row && retired(row)) await stopCapture(db, tx, row);
+  }
+}
+async function repairTeamBillingCardIdentities(db) {
+  if (!db.teamBillingDefinition || !db.paymentsConfig?.stripe?.cardIdentityKeyEnv) return;
   await db.adapter.withTransaction(async (tx) => {
-    const rows = await tx.prepare(tx.dialect.sql(
-      "SELECT [o].*, [h].[phase], [h].[anchor] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[kind] = 'currency-handover' AND ([o].[status] IN ('queued', 'running', 'retrying', 'awaiting-observation') OR ([o].[status] = 'failed' AND [h].[cancelDispatched] = 1 AND [h].[phase] NOT IN ('closed', 'completed')))"
-    )).all();
-    for (const candidate of rows) {
-      await lockTeamLifecycle(tx, candidate.teamId, failure);
-      const row = await tx.prepare(tx.dialect.sql(
-        "SELECT [o].*, [h].[phase], [h].[anchor], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?"
-      )).get(candidate.id);
-      if (!row || !["setup", "replace"].includes(row.phase) || !["queued", "running", "retrying", "awaiting-observation", "failed"].includes(row.status) || row.status === "failed" && row.cancelDispatched !== 1) continue;
-      const guard = " WHERE [id] = ? AND [status] IN ('queued', 'running', 'retrying', 'awaiting-observation', 'failed') AND EXISTS (SELECT 1 FROM [sporades_team_billing_handovers] [h] WHERE [h].[operationId] = ? AND [h].[phase] IN ('setup', 'replace') AND ([sporades_team_billing_operations].[status] <> 'failed' OR [h].[cancelDispatched] = 1))";
-      const expired = row.anchor <= now(db);
-      const changed = await tx.prepare(tx.dialect.sql(
-        (expired ? "UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE'" : "UPDATE [sporades_team_billing_operations] SET [status] = 'queued'") + guard
-      )).run(row.id, row.id);
-      if (Number(changed.changes ?? changed.changesCount) !== 1) continue;
-      await enqueue(db, tx, row.id, expired ? "deadline" : row.phase === "setup" ? "setup" : "replace", randomUUID7());
+    const ops = await tx.prepare(tx.dialect.sql(
+      "SELECT [o].[id], [o].[teamId] FROM [sporades_team_billing_operations] [o] JOIN [sporades_teams] [t] ON [t].[id] = [o].[teamId] LEFT JOIN [sporades_team_billing_card_identities] [c] ON [c].[operationId] = [o].[id] WHERE [o].[status] = 'completed' AND [o].[mode] = ? AND [o].[kind] IN ('checkout', 'currency-handover') AND ([c].[kind] IS NULL OR [c].[kind] = 'pending') ORDER BY [o].[id]"
+    )).all(db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
+    for (const op of ops) {
+      try {
+        await lockTeamLifecycle(tx, op.teamId, teamBillingDenied);
+      } catch (error) {
+        const team = await tx.prepare(tx.dialect.sql("SELECT [id] FROM [sporades_teams] WHERE [id] = ?")).get(op.teamId);
+        if (!team) continue;
+        throw error;
+      }
+      const stored = await tx.prepare(tx.dialect.sql("SELECT [generationId] FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(op.id);
+      if (!stored) {
+        await stageTeamBillingCardIdentity({ ...db, adapter: tx }, op.id);
+        continue;
+      }
+      const row = await lockedCapture(db, tx, { operationId: op.id, generationId: stored.generationId });
+      if (!row || row.kind !== "pending") continue;
+      if (retired(row) || !validBudget(row)) {
+        await stopCapture(db, tx, row);
+        continue;
+      }
+      if (row.readAttempts === MAX_READS) {
+        await settleGeneration(db, tx, row);
+        continue;
+      }
+      await replaceGeneration(db, tx, row, row.generationCount, row.readAttempts, row.nextAttemptAt ?? db.clock.now().toISOString());
     }
   });
 }
-async function enqueue(db, tx, operationId, phase, generation2 = phase, availableAt) {
-  await db.enqueueTeamBillingCurrencyHandoverJob(tx, { operationId, phase }, `currency-handover:${operationId}:${generation2}`, availableAt);
-}
-async function operation(tx, teamId, requestId) {
-  return tx.prepare(tx.dialect.sql("SELECT * FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [requestId] = ?")).get(teamId, requestId);
-}
-async function release(db, tx, teamId, token) {
-  const result = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = NULL, [claimExpiresAt] = NULL, [updatedAt] = ? WHERE [teamId] = ? AND [claimToken] = ?")).run(now(db), teamId, token);
-  return Number(result.changes ?? result.changesCount) === 1;
-}
-function resultFor(db, row) {
-  const common = { teamId: row.teamId, requestId: row.requestId, productKey: row.productKey };
-  if (row.status === "completed") return Object.freeze({ state: "completed", ...common });
-  if (row.status === "expired" || row.status === "superseded" || row.status === "ready" && row.continuationExpiresAt <= now(db)) return Object.freeze({ state: "expired", ...common });
-  if (row.status === "ready") return Object.freeze({ state: "ready", ...common, url: row.continuationUrl, expiresAt: row.continuationExpiresAt });
-  if (row.status === "failed") return Object.freeze({ state: "failed", ...common, reason: row.safeFailureCode === "CUSTOMER_BALANCE_NONZERO" ? "customer-balance-nonzero" : row.safeFailureCode === "AUTHORITY_CHANGED" ? "authority-changed" : "unavailable" });
-  return Object.freeze({ state: "pending", ...common, requestedAt: row.createdAt });
-}
-async function reconcileExpiredHandover(db, context2, operationId) {
-  const token = randomUUID7();
+async function performTeamBillingCardIdentity(db, context2, payload) {
+  if (!payload || Object.keys(payload).sort().join() !== "generationId,operationId" || !UUID3.test(payload.operationId) || !UUID3.test(payload.generationId)) throw teamBillingDenied();
   const snapshot = await db.adapter.withTransaction(async (tx) => {
-    const row = await tx.prepare(tx.dialect.sql("SELECT [o].*, [h].[anchor], [h].[phase], [h].[sourceSubscriptionId], [h].[cancelDispatched] FROM [sporades_team_billing_operations] [o] JOIN [sporades_team_billing_handovers] [h] ON [h].[operationId] = [o].[id] WHERE [o].[id] = ?")).get(operationId);
-    if (!row || row.anchor > now(db) || ["completed", "closed"].includes(row.phase)) return null;
-    await lockTeamLifecycle(tx, row.teamId, failure);
-    await assertTeamBillingErasureInactive(db, tx, row.teamId);
-    const claimed = await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_provider_lanes] SET [claimToken] = ?, [claimExpiresAt] = ?, [updatedAt] = ? WHERE [teamId] = ? AND ([claimToken] IS NULL OR [claimExpiresAt] IS NULL OR [claimExpiresAt] <= ?)")).run(token, new Date(db.clock.now().getTime() + 3e5).toISOString(), now(db), row.teamId, now(db));
-    if (Number(claimed.changes ?? claimed.changesCount) !== 1) {
-      const lane = await tx.prepare(tx.dialect.sql("SELECT [claimExpiresAt] FROM [sporades_team_billing_provider_lanes] WHERE [teamId] = ?")).get(row.teamId);
-      await enqueue(db, tx, row.id, "deadline", randomUUID7(), lane.claimExpiresAt);
+    const row = await lockedCapture(db, tx, payload);
+    if (!row || row.kind !== "pending") return null;
+    if (retired(row) || !validBudget(row)) {
+      await stopCapture(db, tx, row);
       return null;
     }
+    if (row.readAttempts === MAX_READS) return { exhausted: true };
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_card_identities] SET [readAttempts] = [readAttempts] + 1 WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'"
+    )).run(payload.operationId, payload.generationId);
     return row;
   });
   if (!snapshot) return null;
+  if (snapshot.exhausted) throw Object.assign(new Error("Team card identity capture is unavailable."), { retryable: false });
+  const config = db.paymentsConfig.stripe;
+  cardIdentityKey(config, db.serverEnv);
+  let result;
   try {
     const provider = db.createStripeTeamBillingProvider({
-      config: db.paymentsConfig.stripe,
+      config,
       env: db.serverEnv,
-      signal: context2?.signal,
+      signal: context2.signal,
       ...db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}
     });
-    const evidence = await provider.reconcileCurrencyHandover({ customerId: snapshot.providerCustomerId, operationId, sourceSubscriptionId: snapshot.sourceSubscriptionId });
-    await db.adapter.withTransaction(async (tx) => {
-      if (!await release(db, tx, snapshot.teamId, token)) return;
-      await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'failed', [safeFailureCode] = 'UNAVAILABLE', [providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL WHERE [id] = ? AND [status] <> 'completed'")).run(evidence.subscriptionId ?? null, operationId);
-      if (evidence.closed === true) await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'closed', [cancelDispatched] = CASE WHEN ? = 1 THEN 0 ELSE [cancelDispatched] END, [latchUntil] = CASE WHEN ? = 1 THEN NULL ELSE [latchUntil] END WHERE [operationId] = ? AND [phase] <> 'completed'")).run(evidence.sourceUncancelled ? 1 : 0, evidence.sourceUncancelled ? 1 : 0, operationId);
-    });
+    result = await provider.readSubscriptionCardIdentity({ customerId: snapshot.providerCustomerId, subscriptionId: snapshot.providerSubscriptionId });
+    if (result?.pending === true) throw Object.assign(new Error(), { retryable: true });
+    if (result?.ok !== true || result.card !== null && (!result.card || Object.keys(result.card).join() !== "token" || !/^[A-Za-z0-9_-]{43}$/.test(result.card.token))) throw new Error();
   } catch (error) {
-    await db.adapter.withTransaction((tx) => release(db, tx, snapshot.teamId, token));
-    throw error;
+    throw Object.assign(new Error("Team card identity capture is unavailable."), { code: "TEAM_BILLING_CARD_IDENTITY_UNAVAILABLE", retryable: error?.retryable !== false });
   }
+  if (context2.signal?.aborted) throw Object.assign(new Error("Team card identity capture was cancelled."), { code: "ABORT_ERR", name: "AbortError" });
+  await db.adapter.withTransaction(async (tx) => {
+    const row = await lockedCapture(db, tx, payload);
+    if (!row || row.kind !== "pending") return;
+    if (retired(row) || result.unavailable === true) {
+      await stopCapture(db, tx, row);
+      return;
+    }
+    await tx.prepare(tx.dialect.sql(
+      "UPDATE [sporades_team_billing_card_identities] SET [kind] = ?, [token] = ?, [capturedAt] = ? WHERE [operationId] = ? AND [generationId] = ? AND [kind] = 'pending'"
+    )).run(result.card ? "card" : "none", result.card?.token ?? null, db.clock.now().toISOString(), payload.operationId, payload.generationId);
+  });
   return null;
+}
+async function readTeamBillingCardIdentity(db, tx, teamId) {
+  if (!db.teamBillingDefinition || typeof teamId !== "string" || !UUID3.test(teamId)) throw teamBillingDenied();
+  cardIdentityKey(db.paymentsConfig?.stripe ?? {}, db.serverEnv);
+  const row = await tx.prepare(tx.dialect.sql(
+    "SELECT [c].[kind], [c].[token], [c].[capturedAt] FROM [sporades_team_billing_operations] [o] LEFT JOIN [sporades_team_billing_card_identities] [c] ON [c].[operationId] = [o].[id] WHERE [o].[teamId] = ? AND [o].[mode] = ? AND [o].[status] = 'completed' AND [o].[kind] IN ('checkout', 'currency-handover') ORDER BY [o].[createdAt] DESC, [o].[id] DESC LIMIT 1"
+  )).get(teamId, db.paymentsConfig.stripe.livemode ? "live" : "sandbox");
+  if (!row) return Object.freeze({ state: "none" });
+  if (row.kind === "unavailable") return Object.freeze({ state: "unavailable" });
+  if (!row.capturedAt) return Object.freeze({ state: "pending" });
+  if (!["card", "none"].includes(row.kind) || row.kind === "card" && !/^[A-Za-z0-9_-]{43}$/.test(row.token) || typeof row.capturedAt !== "string" || !/^\d{4}-/.test(row.capturedAt) || !Number.isFinite(Date.parse(row.capturedAt)) || new Date(row.capturedAt).toISOString() !== row.capturedAt) throw teamBillingDenied();
+  return Object.freeze({ state: "captured", card: row.kind === "card" ? Object.freeze({ token: row.token }) : null, capturedAt: row.capturedAt });
 }
 
 // src/team-billing-erasure.ts
-import { createHash as createHash9, randomUUID as randomUUID8 } from "node:crypto";
+import { createHash as createHash9, randomUUID as randomUUID9 } from "node:crypto";
 var TEAM_BILLING_ERASURE_JOB = "_sporades.team-billing-erasure";
 var TEAM_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 var CHECKOUT_ID2 = /^cs_(?:test|live)_[A-Za-z0-9_]{1,240}$/;
@@ -130828,8 +131071,8 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
     if (existing) {
       return Object.freeze({ state: "pending", teamId, requestId, requestedAt: existing.createdAt });
     }
-    const operationId = randomUUID8();
-    const generationId = randomUUID8();
+    const operationId = randomUUID9();
+    const generationId = randomUUID9();
     const now3 = database.clock.now().toISOString();
     await transaction.prepare(transaction.dialect.sql(
       "UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [safeFailureCode] = 'ERASURE_REQUESTED', [updatedAt] = ? WHERE [teamId] = ? AND [kind] <> 'checkout' AND [status] IN ('queued', 'running', 'retrying', 'ready', 'awaiting-observation')"
@@ -130857,7 +131100,7 @@ async function prepareTeamBillingErasure(database, auth, teamId, requestId) {
 }
 async function performTeamBillingErasure(database, context2, payload) {
   if (!exactPayload(payload)) return { superseded: true };
-  const claimToken = randomUUID8();
+  const claimToken = randomUUID9();
   const snapshot = await database.adapter.withTransaction(async (transaction) => {
     const state = await transaction.prepare(transaction.dialect.sql(
       "SELECT [e].*, [o].[actorUserId] FROM [sporades_team_billing_erasure_state] [e] JOIN [sporades_team_billing_operations] [o] ON [o].[id] = [e].[operationId] WHERE [e].[operationId] = ?"
@@ -130953,6 +131196,7 @@ async function performTeamBillingErasure(database, context2, payload) {
         )).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now2(database));
       }
       for (const table of [
+        "sporades_team_billing_card_identities",
         "sporades_team_billing_observations",
         "sporades_team_billing_handovers",
         "sporades_team_billing_subscriptions",
@@ -130989,7 +131233,7 @@ async function repairTeamBillingErasureStateAtStartup(database) {
       "SELECT [operationId] FROM [sporades_team_billing_erasure_state] WHERE [status] IN ('queued', 'running', 'failed') ORDER BY [operationId]"
     )).all();
     for (const row of rows) {
-      const generationId = randomUUID8();
+      const generationId = randomUUID9();
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ?"
       )).run(generationId, now2(database), row.operationId);
@@ -131019,7 +131263,7 @@ async function settleExhaustedTeamBillingErasureJob(database, payload, safeFailu
     )).get(state.teamId);
     const liveClaimExpiry = lane?.claimToken && canonicalTimestamp3(lane.claimExpiresAt) && lane.claimExpiresAt > now2(database) ? lane.claimExpiresAt : null;
     if (liveClaimExpiry || failureCode === "TEAM_BILLING_PROVIDER_LANE_BUSY") {
-      const generationId = randomUUID8();
+      const generationId = randomUUID9();
       const availableAt = liveClaimExpiry ?? now2(database);
       const changed = await transaction.prepare(transaction.dialect.sql(
         "UPDATE [sporades_team_billing_erasure_state] SET [activeJobGenerationId] = ?, [status] = 'queued', [safeFailureCode] = NULL, [updatedAt] = ? WHERE [operationId] = ? AND [activeJobGenerationId] = ? AND [status] IN ('queued', 'running')"
@@ -131056,6 +131300,17 @@ function createCurrentUserTeamBillingErasureApi(database, auth, contextGetter = 
     return context2;
   };
   return Object.freeze({
+    async getCardIdentity(teamId) {
+      requireActiveContext();
+      const read = async (tx) => {
+        await readCapsuleTeamBillingProjection(database, tx, auth, teamId);
+        await admitTeamBillingActor(database, tx, auth, { operation: "read", teamId });
+        return readTeamBillingCardIdentity(database, tx, teamId);
+      };
+      const result = database.__transactionActive ? await read(database.adapter) : await database.adapter.withTransaction(read);
+      requireActiveContext();
+      return result;
+    },
     async get(teamId) {
       requireActiveContext();
       const result = database.__transactionActive ? await readCapsuleTeamBillingProjection(database, database.adapter, auth, teamId) : await database.adapter.withTransaction((transaction) => readCapsuleTeamBillingProjection(database, transaction, auth, teamId));
@@ -131810,6 +132065,7 @@ function runtimeOwnedJobHandlers(runtime) {
     { name: TEAM_BILLING_PLAN_TRANSITION_JOB, handler: runtime.performTeamBillingPlanTransition },
     { name: TEAM_BILLING_SEAT_CONVERGENCE_JOB, handler: runtime.performTeamBillingSeatConvergence },
     { name: TEAM_BILLING_CURRENCY_HANDOVER_JOB, handler: runtime.performTeamBillingCurrencyHandover },
+    { name: TEAM_BILLING_CARD_IDENTITY_JOB, handler: runtime.performTeamBillingCardIdentity },
     { name: TEAM_BILLING_ERASURE_JOB, handler: runtime.performTeamBillingErasure },
     {
       name: STRIPE_EVENT_JOB,
@@ -132281,7 +132537,7 @@ function safeJobFailure(error) {
 import { createHash as createHash11 } from "node:crypto";
 
 // src/notification-intent-runtime.ts
-import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID9, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { createHash as createHash10, createHmac as createHmac2, randomBytes as randomBytes6, randomUUID as randomUUID10, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 
 // src/mail-runtime.ts
 function mailError(code2, message, hint) {
@@ -133585,7 +133841,7 @@ async function stageNotificationIntent(adapter, database, identity, input, canon
     return { id: input.id, state: "staged" };
   }
   const acceptedAt = database.clock.now().toISOString();
-  const messageId = `<${randomUUID9()}@${resolveMailIdentityDomain(normalized.from, database.publicOrigin)}>`;
+  const messageId = `<${randomUUID10()}@${resolveMailIdentityDomain(normalized.from, database.publicOrigin)}>`;
   const inserted = await adapter.prepare(sql(adapter, "INSERT INTO [sporades_notification_intents] ([resourceTable],[resourceId],[operationId],[intentId],[payloadDigest],[payloadJson],[messageId],[acceptedAt]) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT ([resourceTable],[resourceId],[operationId],[intentId]) DO NOTHING")).run(...key, payloadDigest, payloadJson, messageId, acceptedAt);
   if (inserted.changes === 0) {
     const raced = await adapter.prepare(sql(adapter, "SELECT [payloadDigest] FROM [sporades_notification_intents] WHERE [resourceTable]=? AND [resourceId]=? AND [operationId]=? AND [intentId]=?")).get(...key);
@@ -133626,7 +133882,7 @@ var recipientKey = (row) => [
   row.intentId ?? row.intentid,
   row.recipient
 ];
-function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID9()) {
+function notificationAttemptToken(attemptKey, key, sequence, messageId, nonce = randomUUID10()) {
   const authenticator = createHmac2("sha256", attemptKey).update([...key, String(sequence), messageId, nonce].join("\0")).digest("hex");
   return `${nonce}.${authenticator}`;
 }
@@ -135738,7 +135994,7 @@ function collectionLoader(options, parseFrames) {
 }
 
 // src/observability-runtime.ts
-import { randomUUID as randomUUID10 } from "node:crypto";
+import { randomUUID as randomUUID11 } from "node:crypto";
 function validateObservabilityConfig(config) {
   const fail7 = () => {
     const error = new Error("Invalid observability or analytics configuration.");
@@ -135921,7 +136177,7 @@ function createRuntimeObservability(config = {}, env = {}) {
     return task;
   };
   const eventBase = (platform) => ({
-    event_id: randomUUID10().replaceAll("-", ""),
+    event_id: randomUUID11().replaceAll("-", ""),
     timestamp: Date.now() / 1e3,
     platform,
     environment: errors.environment,
@@ -136265,7 +136521,7 @@ function liveQueryNeedsRefresh(readTables, dirty) {
 }
 
 // src/database-runtime.ts
-import { randomUUID as randomUUID11 } from "node:crypto";
+import { randomUUID as randomUUID12 } from "node:crypto";
 
 // src/inspection-sql.ts
 function validateReadOnlyInspectionSql(sql2) {
@@ -139822,7 +140078,7 @@ function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) 
     const occupiedNames = new Set(tableNames);
     let tempTableName;
     do {
-      tempTableName = `__sporades_migrating_${randomUUID11().replaceAll("-", "")}`;
+      tempTableName = `__sporades_migrating_${randomUUID12().replaceAll("-", "")}`;
     } while (occupiedNames.has(tempTableName));
     return chainMaybePromise([
       ...addedFieldsForTable(existingTable, nextTable).filter((field) => field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null).map(
@@ -140407,6 +140663,7 @@ function requiredServerEnvKeys(config) {
   if (stripe?.enabled === true) {
     keys.add(stripe.secretKeyEnv);
     keys.add(stripe.webhookSecretEnv);
+    if (stripe.cardIdentityKeyEnv) keys.add(stripe.cardIdentityKeyEnv);
   }
   for (const service of Object.values(config.services ?? {})) {
     if (service?.kind !== "container") continue;
@@ -140529,7 +140786,7 @@ function validateCanonicalDomain(value) {
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync5 } from "node:child_process";
-import { createHash as createHash20, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes13, timingSafeEqual as timingSafeEqual7, X509Certificate } from "node:crypto";
+import { createHash as createHash21, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes13, timingSafeEqual as timingSafeEqual7, X509Certificate } from "node:crypto";
 import { constants as fsConstants, lstatSync, readdirSync, readFileSync as readFileSync5, statSync as statSync2, watch } from "node:fs";
 import { createServer as createServer3 } from "node:http";
 import { appendFile, chmod as chmod7, cp as cp2, lstat as lstat16, mkdir as mkdir12, open as open6, readdir as readdir7, readFile as readFile16, rename as rename10, rm as rm12, writeFile as writeFile10 } from "node:fs/promises";
@@ -146800,7 +147057,7 @@ function validatePaymentsConfig(payments) {
   if (stripe.enabled !== true) {
     fail4("Invalid Stripe payments enabled flag.", "Set `payments.stripe.enabled` to true or false.");
   }
-  const unknownKeys = Object.keys(stripe).filter((key) => !ENABLED_KEYS.includes(key));
+  const unknownKeys = Object.keys(stripe).filter((key) => key !== "cardIdentityKeyEnv" && !ENABLED_KEYS.includes(key));
   if (unknownKeys.length > 0) {
     fail4("Unsupported Stripe payments configuration.", `Configure only ${ENABLED_KEYS.map((key) => `payments.stripe.${key}`).join(", ")} when Stripe payments are enabled.`);
   }
@@ -146815,6 +147072,10 @@ function validatePaymentsConfig(payments) {
   if (!isServerEnvReference(stripe.secretKeyEnv) || !isServerEnvReference(stripe.webhookSecretEnv) || stripe.secretKeyEnv === stripe.webhookSecretEnv) {
     fail4("Invalid Stripe Server env references.", "Use two distinct uppercase Sealed Server env names for the Stripe secret key and webhook signing secret.");
   }
+  if (stripe.cardIdentityKeyEnv !== void 0 && (!isServerEnvReference(stripe.cardIdentityKeyEnv) || [stripe.secretKeyEnv, stripe.webhookSecretEnv].includes(stripe.cardIdentityKeyEnv))) {
+    fail4("Invalid card identity Server env reference.", "Use a distinct uppercase Sealed Server env name for payments.stripe.cardIdentityKeyEnv.");
+  }
+  if ("cardIdentityKeyEnv" in stripe && stripe.cardIdentityKeyEnv === void 0) fail4("Invalid card identity Server env reference.", "Omit cardIdentityKeyEnv or name a dedicated Sealed Server secret.");
   validatePublicOrigin(stripe.publicOrigin);
   const callbackPath = canonicalSameOriginAbsolutePath(stripe.callbackPath);
   if (callbackPath === null || callbackPath !== stripe.callbackPath || callbackPath === "/__sporades" || callbackPath.startsWith("/__sporades/")) {
@@ -146837,6 +147098,7 @@ function validatePaymentsConfig(payments) {
       enabled: true,
       secretKeyEnv: stripe.secretKeyEnv,
       webhookSecretEnv: stripe.webhookSecretEnv,
+      ...stripe.cardIdentityKeyEnv === void 0 ? {} : { cardIdentityKeyEnv: stripe.cardIdentityKeyEnv },
       publicOrigin: stripe.publicOrigin,
       callbackPath,
       apiVersion: STRIPE_API_VERSION,
@@ -146857,6 +147119,12 @@ function validateStripePaymentsRuntimeConfig(payments, serverEnv) {
   }
   if (typeof webhookSecret !== "string" || !webhookSecret.startsWith("whsec_") || webhookSecret.length <= "whsec_".length) {
     fail4("Stripe webhook signing secret is unavailable.", "Set the named Stripe webhook signing secret in Sealed Server env before enabling Stripe payments.");
+  }
+  if (normalized.stripe.cardIdentityKeyEnv !== void 0) {
+    const key = serverEnv?.[normalized.stripe.cardIdentityKeyEnv];
+    if (typeof key !== "string" || !key.trim() || Buffer.byteLength(key, "utf8") < 32 || Buffer.byteLength(key, "utf8") > 4096) {
+      fail4("Card identity key is unavailable or invalid.", `Set ${normalized.stripe.cardIdentityKeyEnv} in Sealed Server env to a dedicated random secret with at least 32 bytes of entropy (maximum 4096 UTF-8 bytes).`);
+    }
   }
   return normalized;
 }
@@ -148047,11 +148315,11 @@ function resolveRegistrationThrottle(auth) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash15, randomBytes as randomBytes9, randomUUID as randomUUID14 } from "node:crypto";
+import { createHash as createHash15, randomBytes as randomBytes9, randomUUID as randomUUID15 } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync as readFileSync3 } from "node:fs";
 
 // src/log-envelope.ts
-import { randomUUID as randomUUID13 } from "node:crypto";
+import { randomUUID as randomUUID14 } from "node:crypto";
 
 // src/runtime-telemetry.ts
 init_esm();
@@ -148060,7 +148328,7 @@ var import_exporter_metrics_otlp_http = __toESM(require_src7(), 1);
 var import_resources = __toESM(require_src3(), 1);
 var import_sdk_metrics = __toESM(require_src4(), 1);
 var import_sdk_trace = __toESM(require_src8(), 1);
-import { randomUUID as randomUUID12 } from "node:crypto";
+import { randomUUID as randomUUID13 } from "node:crypto";
 import { readFileSync as readFileSync2, statSync } from "node:fs";
 import { getHeapStatistics } from "node:v8";
 import { constants as performanceConstants, monitorEventLoopDelay, performance as performance4, PerformanceObserver } from "node:perf_hooks";
@@ -148259,7 +148527,7 @@ function safeMethod(method) {
   const value = typeof method === "string" ? method.toUpperCase() : "OTHER";
   return /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$/.test(value) ? value : "OTHER";
 }
-var processInstanceId = randomUUID12();
+var processInstanceId = randomUUID13();
 function activeRuntimeLogIdentity() {
   const scope = runtimeRequestScope.getStore();
   if (!scope) return void 0;
@@ -148320,7 +148588,7 @@ function createProfileExporters(traceOptions, metricOptions) {
 }
 function createHttpRequestTelemetry(config, onDiagnostic) {
   if (!config) return { websocket: disabledWebSocketTelemetry, bindJobQueue: (_database) => {
-  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID12() }, handle), shutdown: async () => {
+  }, run: (_request, _response, _endpoints, handle) => runtimeRequestScope.run({ requestId: randomUUID13() }, handle), shutdown: async () => {
   } };
   const propagationOrigins = new Set(validateTracePropagationOrigins(config.tracePropagationOrigins));
   if (config.eventLoopDelayResolutionMs !== void 0 && (!Number.isSafeInteger(config.eventLoopDelayResolutionMs) || config.eventLoopDelayResolutionMs < 10 || config.eventLoopDelayResolutionMs > 1e3)) throw new Error("Event-loop delay resolution must be an integer from 10 to 1000 milliseconds.");
@@ -148611,7 +148879,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
         }
       };
       websocketEnds.add(end);
-      const scope = { requestId: randomUUID12(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
+      const scope = { requestId: randomUUID13(), span, tracer: websocketTracer, isOpen: () => !ended && !closing };
       return { run: (handle) => runtimeRequestScope.run(scope, handle), end };
     }
   };
@@ -148785,7 +149053,7 @@ function createHttpRequestTelemetry(config, onDiagnostic) {
       request.once("aborted", () => end("abort"));
       try {
         const isOpen = () => !ended && !closing;
-        const result = runtimeRequestScope.run({ requestId: randomUUID12(), span, operation: operation2, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
+        const result = runtimeRequestScope.run({ requestId: randomUUID13(), span, operation: operation2, tracer, isOpen, outboundFetch: outboundFetchTelemetry(tracer, span, propagationOrigins, isOpen) }, handle);
         if (result && typeof result.then === "function") {
           return Promise.resolve(result).catch((error) => {
             end("error");
@@ -148838,7 +149106,7 @@ function uncappedLogEnvelope(input) {
     },
     release: input.release ?? config.release ?? null,
     request: input.request || identity ? {
-      id: input.request?.id ?? identity?.requestId ?? randomUUID13(),
+      id: input.request?.id ?? identity?.requestId ?? randomUUID14(),
       method: input.request?.method ?? null,
       path: input.request?.path ?? null
     } : null,
@@ -150304,8 +150572,9 @@ function deepFreezeVerifiedJson(value) {
   return Object.freeze(value);
 }
 async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
+  const { __sporadesProviderPayloadDigest: _digest, ...publicEvent } = event;
   const deliveredEvent = Object.freeze({
-    ...event,
+    ...publicEvent,
     raw: deepFreezeVerifiedJson(event.raw)
   });
   if (subscription?.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
@@ -150629,6 +150898,16 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       }
       return dispatchVerifiedStripeEvent(context2, event, subscription);
     },
+    performTeamBillingCardIdentity: async (context2, payload) => {
+      try {
+        return await performTeamBillingCardIdentity(database, context2, payload);
+      } catch (error) {
+        if (!context2.signal?.aborted && ((database.__runtimeJobAttempts.get(context2) ?? 1) >= 4 || error?.retryable === false)) {
+          await settleExhaustedTeamBillingCardIdentityJob(database, payload);
+        }
+        throw error;
+      }
+    },
     performTeamBillingCheckout: (context2, payload) => performTeamBillingCheckout(database, context2, payload, database.__runtimeJobAttempts.get(context2) ?? 1),
     expireTeamBillingCheckout: (context2, payload) => expireTeamBillingCheckout(database, context2, payload),
     performTeamBillingPortal: (context2, payload) => performTeamBillingPortal(database, context2, payload, database.__runtimeJobAttempts.get(context2) ?? 1),
@@ -150729,6 +151008,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     mcp,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    cancelTeamBillingCardIdentityJobs: (transaction, operationId) => transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_jobs] SET [status] = 'cancelled', [completedAt] = ?, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL WHERE [handler] = ? AND [idempotencyKey] LIKE ? AND [status] IN ('queued', 'delayed')"
+    )).run(database.clock.now().toISOString(), TEAM_BILLING_CARD_IDENTITY_JOB, `team-billing-card-identity:${operationId}:%`),
+    enqueueTeamBillingCardIdentityJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CARD_IDENTITY_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1e3 }, true, availableAt, true),
     enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1e3 }, true),
     enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, void 0, true, availableAt),
     enqueueTeamBillingPortalJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1e3 }, true),
@@ -151031,6 +151314,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       if (database.teamBillingDefinition) {
         await repairTeamBillingPlanPreviewExpiries(database);
         await repairTeamBillingCurrencyHandovers(database);
+        await repairTeamBillingCardIdentities(database);
         await repairTeamBillingDesiredStateAtStartup(database);
         await repairTeamBillingErasureStateAtStartup(database);
       }
@@ -151339,7 +151623,7 @@ async function reconcileSchedules(database) {
               }
             }
           }
-          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID14() });
+          plans.push({ definition, row, nextOccurrence, exhausted, recoveredOccurrence, generationToken: randomUUID15() });
         }
         for (const row of persisted) {
           if (!declaredNames.has(String(row.name))) {
@@ -151650,7 +151934,7 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
 async function claimScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const id2 = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
-  const token = randomUUID14();
+  const token = randomUUID15();
   const now3 = database.clock.now();
   const nowIso2 = now3.toISOString();
   const fullLeaseExpiresAt = jobTimestampAfter(now3, RUNTIME_CLAIM_LEASE_MS);
@@ -151965,6 +152249,18 @@ async function recoverExpiredJobLeases(database) {
               "JOB_LEASE_EXPIRED"
             );
             replacementScheduled = managementSettlement?.replacementScheduled === true;
+          }
+          if (row.handler === TEAM_BILLING_CARD_IDENTITY_JOB) {
+            let payload = null;
+            try {
+              payload = JSON.parse(row.payload);
+            } catch {
+            }
+            const captureSettlement = await settleExhaustedTeamBillingCardIdentityJob(
+              { ...database, adapter: transaction, __transactionActive: true },
+              payload
+            );
+            replacementScheduled = captureSettlement.replacementScheduled;
           }
           if (row.handler === TEAM_BILLING_ERASURE_JOB) {
             let payload = null;
@@ -153734,6 +154030,8 @@ function createAtomicStripeConsequenceContext(database, parent) {
   context2.jobs = Object.freeze({
     enqueue: privilegedJobs.enqueue.bind(privilegedJobs)
   });
+  const billing = createPrivilegedTeamBillingApi(database, () => holder.current);
+  context2.teamBilling = Object.freeze({ getCardIdentity: billing.getCardIdentity.bind(billing) });
   const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
   context2.teams = Object.freeze({
     countMembers: privilegedTeams.countMembers.bind(privilegedTeams),
@@ -154471,7 +154769,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     insert(values) {
       const now3 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID14(),
+        id: randomUUID15(),
         createdAt: now3,
         updatedAt: now3
       };
@@ -154508,7 +154806,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       const now3 = (/* @__PURE__ */ new Date()).toISOString();
       const row = {
-        id: randomUUID14(),
+        id: randomUUID15(),
         createdAt: now3,
         updatedAt: now3
       };
@@ -155334,7 +155632,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null, options = {}) {
               const currentAuth = { userId: current2.userId, displayName: current2.displayName, email: current2.email, picture: current2.picture, isAuthenticated: Boolean(current2.isAuthenticated), isGuest: Boolean(current2.isGuest), provider: current2.provider };
               if (!await tx.claimEmailCredentialVersion(normalized.email, credential.passwordHash, credential.passwordSalt)) return;
               if (!await database.authorizeReauthentication(tx, currentAuth, purpose)) return;
-              await tx.replaceReauthenticationProof({ id: randomUUID14(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now3.toISOString(), expiresAt });
+              await tx.replaceReauthenticationProof({ id: randomUUID15(), userId: current2.userId, sessionToken: current2.token, purpose, createdAt: now3.toISOString(), expiresAt });
               ok = true;
               await tx.clearEmailReauthenticationAttempts(reauthenticationThrottleKeys);
             });
@@ -156223,7 +156521,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey,
       "INSERT INTO [sporades_jobs] ([id], [handler], [enqueuedByUserId], [actorUserId], [actorProvider], [payload], [status], [availableAt], [attempts], [idempotencyKey], [createdAt], [retryJson], [attemptHistory], [scheduleName], [scheduledFor], [enqueueTraceContext]) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, '[]', NULL, NULL, ?)"
     )
   ).run(
-    randomUUID14(),
+    randomUUID15(),
     handlerName,
     PRIVILEGED_AUTH_USER_ID,
     PRIVILEGED_AUTH_USER_ID,
@@ -157558,7 +157856,7 @@ async function runCurrentUserJobWorker(database) {
         await failInvalidQueuedJob(database, row, { code: "JOB_AVAILABLE_AT_INVALID", message: "The Job cannot acquire a canonical claim lease." });
         continue;
       }
-      const claimToken = randomUUID14();
+      const claimToken = randomUUID15();
       const claimed = await database.adapter.prepare(sql2(
         "UPDATE [sporades_jobs] SET [status] = 'running', [attempts] = [attempts] + 1, [startedAt] = ?, [leaseExpiresAt] = ?, [claimToken] = ? WHERE [id] = ? AND [status] = 'queued' AND [availableAt] = ? AND COALESCE([retryJson], '') = COALESCE(?, '')"
       )).run(startedAt, leaseExpiresAt, claimToken, row.id, row.availableAt, row.retryJson);
@@ -157761,7 +158059,7 @@ async function runInsertMutation(database, context2, mutationName, args) {
   }
   const now3 = (/* @__PURE__ */ new Date()).toISOString();
   const values = {
-    id: randomUUID14(),
+    id: randomUUID15(),
     createdAt: now3,
     updatedAt: now3
   };
@@ -162099,7 +162397,7 @@ function posixJoin(...segments) {
 import { readFile as readFile11 } from "node:fs/promises";
 
 // src/testing/stripe.ts
-import { createHmac as createHmac4, randomUUID as randomUUID15 } from "node:crypto";
+import { createHash as createHash17, createHmac as createHmac4, randomUUID as randomUUID16 } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 var API_VERSION = "2026-08-26.dahlia";
 var ENDPOINTS = [
@@ -162128,7 +162426,9 @@ var EVENTS = [
   "customer.subscription.deleted",
   "invoice.payment_failed",
   "customer.subscription.pending_update_applied",
-  "customer.subscription.pending_update_expired"
+  "customer.subscription.pending_update_expired",
+  "invoice.paid",
+  "setup_intent.succeeded"
 ];
 var [
   CHECKOUT_COMPLETED,
@@ -162255,6 +162555,7 @@ async function createStripeTeamBillingFake(options) {
   const schedules = /* @__PURE__ */ new Map();
   const portalSessions = /* @__PURE__ */ new Map();
   const setupIntents = /* @__PURE__ */ new Map();
+  const paymentMethods = /* @__PURE__ */ new Map();
   const invoices = /* @__PURE__ */ new Map();
   const pendingProrations = /* @__PURE__ */ new Map();
   const eventLog = [];
@@ -162269,7 +162570,7 @@ async function createStripeTeamBillingFake(options) {
   let now3 = Math.floor(Date.now() / 1e3);
   const initialNow = now3;
   let stopped2 = false;
-  const id2 = (prefix) => `${prefix}_${randomUUID15().replaceAll("-", "")}`;
+  const id2 = (prefix) => `${prefix}_${randomUUID16().replaceAll("-", "")}`;
   function get(map, key) {
     return map.get(key) ?? fail5(`No such resource: '${key}'.`, 404, "resource_missing");
   }
@@ -162361,6 +162662,21 @@ async function createStripeTeamBillingFake(options) {
     await emit(subscription.status === "canceled" ? SUBSCRIPTION_DELETED : SUBSCRIPTION_UPDATED, subscription);
     return copy(subscription);
   }
+  function createPaymentMethod(customerId, method) {
+    requireValue(method && typeof method === "object" && ["card", "sepa_debit", "none"].includes(method.type));
+    exactKeys2(method, ["type"], method.type === "card" ? ["card"] : []);
+    if (method.type === "card") requireValue(method.card === void 0 || typeof method.card === "string" && method.card.length > 0 && method.card.length <= 256);
+    const methodId = method.type === "none" ? null : id2("pm");
+    if (methodId) paymentMethods.set(methodId, {
+      id: methodId,
+      object: "payment_method",
+      type: method.type,
+      customer: customerId,
+      livemode: false,
+      ...method.type === "card" ? { card: { fingerprint: createHash17("sha256").update(`sporades-fake-card\0${method.card ?? "4242424242424242"}`).digest("hex").slice(0, 16) } } : {}
+    });
+    return methodId;
+  }
   async function complete(sessionId, input = {}) {
     const session = get(sessions, sessionId);
     requireValue(session.status === "open", "Checkout is not open.");
@@ -162369,8 +162685,11 @@ async function createStripeTeamBillingFake(options) {
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id2("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {}, balance: 0, invoice_credit_balance: {} });
+    requireValue(input.deferPaymentMethod === void 0 || typeof input.deferPaymentMethod === "boolean");
+    requireValue(!input.deferPaymentMethod || input.paymentMethod === void 0);
+    const methodId = createPaymentMethod(customerId, input.deferPaymentMethod ? { type: "none" } : input.paymentMethod ?? { type: "card" });
     if (session.mode === "setup") {
-      const intent = { id: id2("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: id2("pm") };
+      const intent = { id: id2("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: methodId };
       setupIntents.set(intent.id, intent);
       Object.assign(session, { status: "complete", payment_status: "no_payment_required", setup_intent: intent.id });
       await emit(CHECKOUT_COMPLETED, session);
@@ -162381,7 +162700,11 @@ async function createStripeTeamBillingFake(options) {
     const itemPrice = price(session.line_items.data[0].price.id, session.currency);
     const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
     const trialEnd = trialDays ? now3 + trialDays * 86400 : null;
+    const pendingSetup = trialDays && methodId ? { id: id2("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: methodId } : null;
+    if (pendingSetup) setupIntents.set(pendingSetup.id, pendingSetup);
     const subscription = {
+      default_payment_method: trialDays ? null : methodId,
+      pending_setup_intent: pendingSetup?.id ?? null,
       id: subscriptionId,
       object: "subscription",
       livemode: false,
@@ -162397,7 +162720,7 @@ async function createStripeTeamBillingFake(options) {
       schedule: null,
       pending_update: null,
       latest_invoice: null,
-      ...session.payment_method_collection === "always" ? { default_payment_method: id2("pm") } : {},
+      ...session.payment_method_collection === "always" ? { default_payment_method: methodId } : {},
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{
         id: id2("si"),
@@ -162414,6 +162737,18 @@ async function createStripeTeamBillingFake(options) {
     await emit(CHECKOUT_COMPLETED, session);
     await emit(SUBSCRIPTION_CREATED, subscription);
     return copy(session);
+  }
+  function expandedMethod(methodId) {
+    return methodId ? copy(get(paymentMethods, methodId)) : null;
+  }
+  function expandedSubscription(value) {
+    const subscription = copy(value);
+    subscription.default_payment_method = expandedMethod(subscription.default_payment_method);
+    if (subscription.pending_setup_intent) {
+      subscription.pending_setup_intent = copy(get(setupIntents, subscription.pending_setup_intent));
+      subscription.pending_setup_intent.payment_method = expandedMethod(subscription.pending_setup_intent.payment_method);
+    }
+    return subscription;
   }
   async function expire(sessionId) {
     const session = get(sessions, sessionId);
@@ -162690,9 +163025,17 @@ async function createStripeTeamBillingFake(options) {
         exactKeys2(p2, [], ["expand"]);
         const session = copy(get(sessions, resourceId));
         if (p2.expand) {
-          exactKeys2(p2.expand, ["0"]);
-          requireValue(p2.expand[0] === "setup_intent");
-          if (session.setup_intent) session.setup_intent = copy(get(setupIntents, session.setup_intent));
+          const paths = Object.values(p2.expand);
+          if (paths.join() === "setup_intent") {
+            if (session.setup_intent) session.setup_intent = copy(get(setupIntents, session.setup_intent));
+          } else {
+            requireValue(paths.join() === ["payment_intent.payment_method", "setup_intent.payment_method", "subscription.default_payment_method", "subscription.pending_setup_intent.payment_method"].join());
+            if (session.setup_intent) {
+              session.setup_intent = copy(get(setupIntents, session.setup_intent));
+              session.setup_intent.payment_method = expandedMethod(session.setup_intent.payment_method);
+            }
+            if (session.subscription) session.subscription = expandedSubscription(get(subscriptions, session.subscription));
+          }
         }
         return session;
       }
@@ -162750,6 +163093,7 @@ async function createStripeTeamBillingFake(options) {
         requireValue([...setupIntents.values()].some((i) => i.customer === p2.customer && i.status === "succeeded" && i.payment_method === p2.default_payment_method));
         const subscriptionId = id2("sub");
         const subscription = {
+          pending_setup_intent: null,
           id: subscriptionId,
           object: "subscription",
           livemode: false,
@@ -162805,9 +163149,12 @@ async function createStripeTeamBillingFake(options) {
           p2.preview_mode === "recurring"
         ).invoice;
       }
-      case "subscriptions.retrieve":
-        exactKeys2(p2, []);
-        return copy(get(subscriptions, resourceId));
+      case "subscriptions.retrieve": {
+        exactKeys2(p2, [], ["expand"]);
+        if (p2.expand) requireValue(Object.values(p2.expand).join() === ["default_payment_method", "pending_setup_intent.payment_method"].join());
+        const subscription = get(subscriptions, resourceId);
+        return p2.expand ? expandedSubscription(subscription) : copy(subscription);
+      }
       case "subscriptions.update": {
         exactKeys2(p2, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "cancel_at_period_end", "expand", "trial_end"]);
         requireValue(p2.trial_end === void 0 || p2.trial_end === "now");
@@ -163008,6 +163355,23 @@ async function createStripeTeamBillingFake(options) {
     subscriptions: {
       setStatus,
       setQuantity,
+      async attachPaymentMethod(id3, method = { type: "card" }) {
+        const subscription = liveSubscription(id3);
+        requireValue(method.type === "card" || method.type === "sepa_debit");
+        const methodId = createPaymentMethod(subscription.customer, method);
+        const setup = {
+          id: idForSetupIntent(),
+          object: "setup_intent",
+          livemode: false,
+          customer: subscription.customer,
+          status: "succeeded",
+          payment_method: methodId
+        };
+        setupIntents.set(setup.id, setup);
+        subscription.default_payment_method = methodId;
+        await emit("setup_intent.succeeded", setup);
+        return subscriptionEvent(subscription);
+      },
       async setSchedule(id3, scheduleId) {
         requireValue(scheduleId === null || typeof scheduleId === "string" && /^sub_sched_[A-Za-z0-9_]{1,240}$/.test(scheduleId));
         const subscription = liveSubscription(id3);
@@ -163181,12 +163545,15 @@ async function createStripeTeamBillingFake(options) {
       customers: [...customers.values()],
       subscriptions: [...subscriptions.values()],
       schedules: [...schedules.values()],
+      paymentMethods: [...paymentMethods.values()],
+      setupIntents: [...setupIntents.values()],
       checkouts: [...sessions.values()],
       portalSessions: [...portalSessions.values()],
       invoices: [...invoices.values()],
       events: eventLog
     }),
     reset() {
+      paymentMethods.clear();
       setupIntents.clear();
       sessions.clear();
       customers.clear();
@@ -163205,6 +163572,9 @@ async function createStripeTeamBillingFake(options) {
       now3 = initialNow;
     }
   };
+  function idForSetupIntent() {
+    return id2("seti");
+  }
   function idForInvoice() {
     return id2("in");
   }
@@ -163217,6 +163587,7 @@ async function createStripeTeamBillingFake(options) {
     "portal.switchPrice": fake.portal.switchPrice,
     "portal.cancelAtPeriodEnd": fake.portal.cancelAtPeriodEnd,
     "portal.resume": fake.portal.resume,
+    "subscriptions.attachPaymentMethod": fake.subscriptions.attachPaymentMethod,
     "subscriptions.setSchedule": fake.subscriptions.setSchedule,
     "subscriptions.setStatus": fake.subscriptions.setStatus,
     "subscriptions.setQuantity": fake.subscriptions.setQuantity,
@@ -163718,14 +164089,14 @@ function renderCliHelp(command) {
 // src/cli/monitoring-maintenance.ts
 import { spawn as spawn2, spawnSync as spawnSync3 } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { createHash as createHash18, randomBytes as randomBytes12 } from "node:crypto";
+import { createHash as createHash19, randomBytes as randomBytes12 } from "node:crypto";
 import { chown, chmod as chmod5, lstat as lstat14, mkdir as mkdir10, open as open5, readFile as readFile13, readdir as readdir6, rename as rename9, rm as rm11, writeFile as writeFile8 } from "node:fs/promises";
 import path21 from "node:path";
 import { pathToFileURL as pathToFileURL5 } from "node:url";
 
 // src/cli/monitoring-stack.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash17 } from "node:crypto";
+import { createHash as createHash18 } from "node:crypto";
 import { chmod as chmod4, cp, lstat as lstat13, mkdir as mkdir9, readFile as readFile12, readdir as readdir5, writeFile as writeFile7 } from "node:fs/promises";
 import path20 from "node:path";
 import { pathToFileURL as pathToFileURL4 } from "node:url";
@@ -163796,11 +164167,11 @@ async function runMonitoringStack(action, directory, packageRoot) {
     else {
       if (!current2.isFile()) throw commandError2(`Monitoring stack asset is not a regular file: ${name2}`, "Inspect the stack directory and remove unsafe links before continuing.");
       const destinationBytes = await readFile12(destination);
-      if (createHash17("sha256").update(sourceBytes).digest("hex") !== createHash17("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
+      if (createHash18("sha256").update(sourceBytes).digest("hex") !== createHash18("sha256").update(destinationBytes).digest("hex")) overrides2.push(name2);
     }
   }
   if (action === "init" && !manifestStat && !preexistingContent) {
-    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash17("sha256").update(await readFile12(path20.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
+    await writeFile7(manifestPath, `${JSON.stringify({ schemaVersion: STACK_SCHEMA, packageVersion: version3, assets: Object.fromEntries(await Promise.all(ASSETS.map(async (name2) => [name2, createHash18("sha256").update(await readFile12(path20.join(source, name2 === ".gitignore" ? "gitignore.template" : name2))).digest("hex")]))) }, null, 2)}
 `, { flag: "wx", mode: 420 });
     await chmod4(manifestPath, 420);
     created.push("stack-manifest.json");
@@ -163831,7 +164202,7 @@ async function runMonitoringStack(action, directory, packageRoot) {
 }
 
 // src/cli/monitoring-maintenance.ts
-var digest2 = (bytes) => createHash18("sha256").update(bytes).digest("hex");
+var digest2 = (bytes) => createHash19("sha256").update(bytes).digest("hex");
 function fail6() {
   throw commandError2("Monitoring maintenance could not complete.", "Keep services stopped. Check protected paths, stack provenance, configuration and the maintenance guide; retry with the same inputs. No backend history or Capsule data is deleted.");
 }
@@ -164097,7 +164468,7 @@ async function hashes(dir, prefix = "", exclude = /* @__PURE__ */ new Set()) {
     else if (e.isFile()) {
       const st = await lstat14(file);
       if (!st.isFile() || st.isSymbolicLink() || st.mode & 18) fail6();
-      const hash2 = createHash18("sha256");
+      const hash2 = createHash19("sha256");
       for await (const chunk of createReadStream(file)) hash2.update(chunk);
       result[name2] = hash2.digest("hex");
     } else fail6();
@@ -164554,7 +164925,7 @@ async function readAdmissionInspection(response) {
 }
 
 // src/cli/project-config.ts
-import { createHash as createHash19 } from "node:crypto";
+import { createHash as createHash20 } from "node:crypto";
 import { chmod as chmod6, mkdir as mkdir11, readFile as readFile14, writeFile as writeFile9 } from "node:fs/promises";
 import path23 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
@@ -164873,7 +165244,7 @@ async function resolveAuthorizedKeyLines(ssh, projectDir) {
 function authorizedKeyFingerprint(line) {
   const parts = line.split(/\s+/);
   const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest3 = createHash19("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  const digest3 = createHash20("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
   return `SHA256:${digest3}`;
 }
 function withRuntimeSecuritySession(config, session) {
@@ -170394,7 +170765,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash20("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash21("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -173121,7 +173492,7 @@ function upgradeHostHelper(options) {
     if (!statSync2(localHelper).isFile()) {
       throw new Error("not a file");
     }
-    helperChecksum = createHash20("sha256").update(readFileSync5(localHelper)).digest("hex");
+    helperChecksum = createHash21("sha256").update(readFileSync5(localHelper)).digest("hex");
   } catch {
     throw commandError2(
       "Local Host helper file was not found.",

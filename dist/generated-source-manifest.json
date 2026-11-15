@@ -129,11 +129,13 @@
       "src/service-users-runtime.ts",
       "src/services-context.ts",
       "src/stored-value-coding.ts",
+      "src/stripe-card-identity.ts",
       "src/stripe-events-runtime.ts",
       "src/stripe-payment-config.ts",
       "src/stripe-payment-integration.ts",
       "src/stripe-team-billing-provider.ts",
       "src/stripe-webhook-runtime.ts",
+      "src/team-billing-card-identity.ts",
       "src/team-billing-convergence.ts",
       "src/team-billing-currency-handover.ts",
       "src/team-billing-erasure.ts",
@@ -172,7 +174,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "301cff537734b5e4c2431af414054a6ec12c6b072c630c83615d21de37b17105"
+    "digest": "1b253d5e824a95512868e1253e31a5f0e43e4862fa18c8dc4524a7fab534361e"
   },
   "outputs": {
     "files": [
@@ -658,6 +660,10 @@
       "dist/stored-value-coding.d.ts.map",
       "dist/stored-value-coding.js",
       "dist/stored-value-coding.js.map",
+      "dist/stripe-card-identity.d.ts",
+      "dist/stripe-card-identity.d.ts.map",
+      "dist/stripe-card-identity.js",
+      "dist/stripe-card-identity.js.map",
       "dist/stripe-events-runtime.d.ts",
       "dist/stripe-events-runtime.d.ts.map",
       "dist/stripe-events-runtime.js",
@@ -678,6 +684,10 @@
       "dist/stripe-webhook-runtime.d.ts.map",
       "dist/stripe-webhook-runtime.js",
       "dist/stripe-webhook-runtime.js.map",
+      "dist/team-billing-card-identity.d.ts",
+      "dist/team-billing-card-identity.d.ts.map",
+      "dist/team-billing-card-identity.js",
+      "dist/team-billing-card-identity.js.map",
       "dist/team-billing-convergence.d.ts",
       "dist/team-billing-convergence.d.ts.map",
       "dist/team-billing-convergence.js",
@@ -764,6 +774,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "86079e40859cc4e485b6948564fec7a2b080e3fffb59ddc7231b9551add9898f"
+    "digest": "9dc2f4247be26e38c82fa8b640b00252d268d370ddb173eff6f0d8eb3180cb72"
   }
 }

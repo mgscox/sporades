@@ -197,11 +197,24 @@ export declare function safeTeamBillingProjection(transaction: LooseRecord, defi
 }>>;
 /** Bounded provider-free quarantine inspection for an active Privileged callback. */
 export declare function createPrivilegedTeamBillingApi(database: LooseRecord, contextGetter: () => LooseRecord): Readonly<{
+    getCardIdentity(teamId: any): Promise<Readonly<{
+        state: "none";
+    }> | Readonly<{
+        state: "unavailable";
+    }> | Readonly<{
+        state: "pending";
+    }> | Readonly<{
+        state: "captured";
+        card: Readonly<{
+            token: any;
+        }> | null;
+        capturedAt: any;
+    }>>;
     listQuarantines(options?: LooseRecord): Promise<Readonly<{
         quarantines: readonly Readonly<{
             teamId: string | null;
             associatedTeam: boolean;
-            mode: "sandbox" | "live";
+            mode: "live" | "sandbox";
             eventType: string;
             occurredAt: string | null;
             reason: "provider-state-ambiguous" | "catalogue-mismatch";

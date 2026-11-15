@@ -1,6 +1,17 @@
 type LooseRecord = Record<string, any>;
 /** Internal purpose-specific provider seam for the headless Team Checkout Job. */
 export declare function createStripeTeamBillingProvider(options: LooseRecord): Readonly<{
+    readSubscriptionCardIdentity(input: LooseRecord): Promise<Readonly<{
+        ok: true;
+        card: null;
+        unavailable: true;
+    }> | Readonly<{
+        pending?: true | undefined;
+        ok: true;
+        card: Readonly<{
+            token: string;
+        }> | null;
+    }>>;
     create(input: LooseRecord): Promise<Readonly<{
         ok: true;
         sessionId: any;
@@ -48,7 +59,7 @@ export declare function createStripeTeamBillingProvider(options: LooseRecord): R
             expiresAt: string;
         } | undefined;
         ok: true;
-        outcome: "payment-action-required" | "acknowledged";
+        outcome: "acknowledged" | "payment-action-required";
     }>>;
     quiesceTeamBilling(input: LooseRecord): Promise<Readonly<{
         ok: true;

@@ -8,8 +8,9 @@ export function deepFreezeVerifiedJson(value) {
 }
 /** Deliver one already-verified durable Stripe Event through the Capsule's single policy seam. */
 export async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
+    const { __sporadesProviderPayloadDigest: _digest, ...publicEvent } = event;
     const deliveredEvent = Object.freeze({
-        ...event,
+        ...publicEvent,
         raw: deepFreezeVerifiedJson(event.raw),
     });
     if (subscription?.kind !== "stripeEvent" || typeof subscription.handler !== "function") {
@@ -17,5 +18,14 @@ export async function dispatchVerifiedStripeEvent(ctx, event, subscription) {
     }
     await subscription.handler(ctx, deliveredEvent);
     return Object.freeze({ delivered: true, providerEventId: event.providerEventId, type: event.type });
+}
+/** Remove raw card fingerprints without changing provider object references. */
+export function redactStripeCardEvidence(value) {
+    if (!value || typeof value !== "object")
+        return value;
+    if (Array.isArray(value))
+        return value.map(redactStripeCardEvidence);
+    return Object.fromEntries(Object.entries(value).filter(([key]) => key !== "fingerprint")
+        .map(([key, child]) => [key, redactStripeCardEvidence(child)]));
 }
 //# sourceMappingURL=stripe-events-runtime.js.map

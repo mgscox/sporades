@@ -1,3 +1,4 @@
+import { cardIdentityKey, cardIdentityUnavailable, stripeCardIdentity, CHECKOUT_CARD_EXPAND } from "./stripe-card-identity.js";
 export { validateTeamBillingPriceEvidence } from "./team-billing-price-evidence.js";
 import Stripe from "stripe";
 import { deepFreezeVerifiedJson } from "./stripe-events-runtime.js";
@@ -10,13 +11,6 @@ const DISABLED_RESULT = Object.freeze({
         hint: "Configure server-owned Prices and Sealed Server env, then enable payments.stripe in sporades.json.",
     }),
 });
-/**
- * Creates the server-only Stripe integration used by generated Capsule wiring.
- * Dormant use receives no provider authority. Complete activation admits only
- * narrow validated Checkout, Customer Portal, and exact-byte callback
- * verification operations. Capsule code keeps product, Customer association,
- * billing-holder authority, and every payment consequence outside Sporades.
- */
 export function createStripePaymentIntegration(options) {
     if (options?.enabled !== false && options?.enabled !== true) {
         const error = new Error("Stripe payments are not fully configured.");
@@ -95,6 +89,37 @@ export function createStripePaymentIntegration(options) {
                 }
                 return Object.freeze({ ok: true, sessionId: session.id, url: session.url });
             },
+            async readCheckoutCardIdentity(input) {
+                if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).join() !== "sessionId" || !validCheckoutSessionId(input.sessionId)) {
+                    throw paymentError("STRIPE_CARD_IDENTITY_INPUT_INVALID", "Invalid card identity input.", "Pass only a completed Checkout sessionId.", false);
+                }
+                const key = cardIdentityKey(enabledConfig, options.env);
+                throwIfAborted(options.signal);
+                let session;
+                try {
+                    session = await waitForStripeRequest(stripe.checkout.sessions.retrieve(input.sessionId, { expand: CHECKOUT_CARD_EXPAND }), options.signal);
+                }
+                catch (error) {
+                    throw stripeOperationFailure(error, "cardIdentity");
+                }
+                throwIfAborted(options.signal);
+                if (!isPlainJsonRecord(session) || session.id !== input.sessionId || session.object !== "checkout.session" || session.status !== "complete" || session.livemode !== enabledConfig.livemode)
+                    throw cardIdentityUnavailable();
+                let method;
+                if (session.mode === "payment")
+                    method = session.payment_intent?.payment_method;
+                else if (session.mode === "setup")
+                    method = session.setup_intent?.payment_method;
+                else if (session.mode === "subscription")
+                    method = session.subscription?.default_payment_method ?? session.subscription?.pending_setup_intent?.payment_method;
+                else
+                    throw cardIdentityUnavailable();
+                // An unexpanded association is ambiguous, rather than proof of no collected method.
+                const parent = session.mode === "payment" ? session.payment_intent : session.mode === "setup" ? session.setup_intent : session.subscription;
+                if (typeof parent === "string" || typeof parent?.pending_setup_intent === "string")
+                    throw cardIdentityUnavailable();
+                return Object.freeze({ ok: true, card: stripeCardIdentity(method, key, enabledConfig.livemode) });
+            },
             async verifyWebhookEvent(input) {
                 return verifyStripeWebhookEvent(stripe, enabledConfig, options.env[enabledConfig.webhookSecretEnv], input);
             },
@@ -107,6 +132,7 @@ export function createStripePaymentIntegration(options) {
         async createCustomerPortalSession(_input) {
             return DISABLED_RESULT;
         },
+        async readCheckoutCardIdentity(_input) { return DISABLED_RESULT; },
         async verifyWebhookEvent(_input) {
             return DISABLED_RESULT;
         },
@@ -256,6 +282,10 @@ function validCheckoutUrl(value, sessionId) {
     }
 }
 const STRIPE_OPERATION_FAILURES = Object.freeze({
+    cardIdentity: Object.freeze({
+        unavailable: Object.freeze(["STRIPE_CARD_IDENTITY_UNAVAILABLE", "Stripe card identity is temporarily unavailable.", "The durable Job may retry within its bounded policy."]),
+        rejected: Object.freeze(["STRIPE_CARD_IDENTITY_REJECTED", "Stripe rejected the card identity request.", "Check the completed Checkout and configured Stripe mode."]),
+    }),
     checkout: Object.freeze({
         unavailable: Object.freeze(["STRIPE_CHECKOUT_UNAVAILABLE", "Stripe Checkout is temporarily unavailable.", "The durable payment Job will retry within its bounded policy."]),
         rejected: Object.freeze(["STRIPE_CHECKOUT_REJECTED", "Stripe rejected the Checkout request.", "Check the server-owned Price, account mode, and Stripe configuration before retrying."]),

@@ -1,3 +1,4 @@
+import { stageTeamBillingCardIdentity, restageTeamBillingCardIdentities, stopRetiredTeamBillingCardIdentities } from "./team-billing-card-identity.js";
 import { applyCurrencySetup } from "./team-billing-currency-handover.js";
 import { matchesBillingPriceAmount, matchesBillingCurrency, validBillingCurrency, validBillingAmount } from "./team-billing-prices.js";
 import { teamBillingPriceById, TEAM_BILLING_READ_ONLY_KINDS_SQL } from "./team-billing-runtime.js";
@@ -17,6 +18,8 @@ const SUPPORTED = new Set([
     "customer.subscription.pending_update_applied",
     "customer.subscription.pending_update_expired",
     "invoice.payment_failed",
+    "invoice.paid",
+    "setup_intent.succeeded",
 ]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EVENT_ID = /^evt_[A-Za-z0-9_]{1,240}$/;
@@ -47,6 +50,9 @@ class Quarantine extends Error {
 export async function applyVerifiedTeamBillingObservation(database, event) {
     if (!SUPPORTED.has(event?.type))
         return Object.freeze({ applied: false, ignored: true });
+    if (["invoice.paid", "setup_intent.succeeded"].includes(event?.type) && !database?.paymentsConfig?.stripe?.cardIdentityKeyEnv) {
+        return Object.freeze({ applied: false, ignored: true });
+    }
     const transaction = database?.adapter;
     if (!transaction?.prepare || !database.teamBillingDefinition)
         return Object.freeze({ applied: false, ignored: true });
@@ -55,7 +61,8 @@ export async function applyVerifiedTeamBillingObservation(database, event) {
         if (erased)
             return Object.freeze({ applied: false, erased: true });
     }
-    const digest = safeDigest(event?.raw);
+    const digest = typeof event?.__sporadesProviderPayloadDigest === "string" && /^[a-f0-9]{64}$/.test(event.__sporadesProviderPayloadDigest)
+        ? event.__sporadesProviderPayloadDigest : safeDigest(event?.raw);
     const eventId = typeof event?.providerEventId === "string" && EVENT_ID.test(event.providerEventId) ? event.providerEventId : null;
     const occurredAt = canonicalTimestamp(event?.occurredAt);
     const expectedMode = database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox";
@@ -77,8 +84,27 @@ export async function applyVerifiedTeamBillingObservation(database, event) {
             result = await applyCheckout(database, event, expectedMode);
         else if (event.type.startsWith("customer.subscription."))
             result = await applySubscription(database, event, expectedMode);
+        else if (["invoice.paid", "setup_intent.succeeded"].includes(event.type)) {
+            const object = event.raw.data.object;
+            const setup = event.type === "setup_intent.succeeded";
+            const subscriptionId = object.parent?.subscription_details?.subscription ?? object.subscription;
+            if (object.object !== (setup ? "setup_intent" : "invoice") || object.livemode !== event.livemode
+                || !CUSTOMER_ID.test(String(object.customer ?? ""))
+                || setup && (!/^seti_[A-Za-z0-9_]{1,240}$/.test(object.id) || object.status !== "succeeded")
+                || !setup && (!INVOICE_ID.test(object.id) || object.status !== "paid" || !SUBSCRIPTION_ID.test(String(subscriptionId ?? "")))) {
+                throw new Quarantine("provider-state-ambiguous");
+            }
+            await restageTeamBillingCardIdentities(database, object.customer, setup ? undefined : subscriptionId);
+            result = { teamId: preliminaryTeamId, objectId: object.id, rank: 0, outcome: "ignored" };
+        }
         else
             result = await applyInvoiceFailure(database, event, expectedMode);
+        if (event.type.startsWith("customer.subscription."))
+            await stopRetiredTeamBillingCardIdentities(database, result.teamId);
+        if (event.type === "customer.subscription.updated") {
+            const object = event.raw.data.object;
+            await restageTeamBillingCardIdentities(database, object.customer, object.id);
+        }
         const outcome = result.outcome ?? "applied";
         await recordObservation(database, event, digest, result.teamId, result.objectId, result.rank, outcome, null);
         return Object.freeze({ applied: outcome === "applied" });
@@ -148,6 +174,8 @@ async function applyCheckout(database, event, mode) {
             "[providerSubscriptionId] = COALESCE(?, [providerSubscriptionId]), [continuationUrl] = NULL, [continuationExpiresAt] = NULL, [terminalObservedAt] = ?, [updatedAt] = ? WHERE [id] = ?")).run(completed ? "completed" : "expired", object.id, customerId, subscriptionId, event.occurredAt, event.occurredAt, operationId);
         outcome = "applied";
     }
+    if (completed)
+        await stageTeamBillingCardIdentity(database, operationId);
     return { teamId: operation.teamId, objectId: object.id, rank: 10, outcome };
 }
 async function applySubscription(database, event, mode) {
@@ -229,6 +257,7 @@ async function applySubscription(database, event, mode) {
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_subscriptions] SET [replacedBy] = ? WHERE [providerSubscriptionId] = ? AND [teamId] = ?")).run(subscriptionId, handover.sourceSubscriptionId, teamId);
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_handovers] SET [phase] = 'completed', [latchUntil] = NULL WHERE [operationId] = ?")).run(operation.id);
         await tx.prepare(tx.dialect.sql("UPDATE [sporades_team_billing_operations] SET [status] = 'completed', [safeFailureCode] = NULL WHERE [id] = ?")).run(operation.id);
+        await stageTeamBillingCardIdentity(database, operation.id);
         if (product.quantity.kind === "team-members")
             await stageTeamBillingMembershipChange({ ...database, adapter: tx, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }, teamId);
     }

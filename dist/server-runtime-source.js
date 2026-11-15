@@ -1,3 +1,4 @@
+import { TEAM_BILLING_CARD_IDENTITY_JOB, performTeamBillingCardIdentity, repairTeamBillingCardIdentities, settleExhaustedTeamBillingCardIdentityJob } from "./team-billing-card-identity.js";
 import { TEAM_BILLING_CURRENCY_HANDOVER_JOB, startTeamBillingCurrencyHandover, performTeamBillingCurrencyHandover, repairTeamBillingCurrencyHandovers } from "./team-billing-currency-handover.js";
 import { snapshotIngressDecision, ingressRefusalJob } from "./file-ingress-refusal.js";
 import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
@@ -716,6 +717,17 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 }
                 return dispatchVerifiedStripeEvent(context, event, subscription);
             },
+            performTeamBillingCardIdentity: async (context, payload) => {
+                try {
+                    return await performTeamBillingCardIdentity(database, context, payload);
+                }
+                catch (error) {
+                    if (!context.signal?.aborted && ((database.__runtimeJobAttempts.get(context) ?? 1) >= 4 || error?.retryable === false)) {
+                        await settleExhaustedTeamBillingCardIdentityJob(database, payload);
+                    }
+                    throw error;
+                }
+            },
             performTeamBillingCheckout: (context, payload) => performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
             expireTeamBillingCheckout: (context, payload) => expireTeamBillingCheckout(database, context, payload),
             performTeamBillingPortal: (context, payload) => performTeamBillingPortal(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
@@ -820,6 +832,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         mcp,
         createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
         stripeApiBaseUrl: options?.stripeApiBaseUrl,
+        cancelTeamBillingCardIdentityJobs: (transaction, operationId) => transaction.prepare(transaction.dialect.sql("UPDATE [sporades_jobs] SET [status] = 'cancelled', [completedAt] = ?, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL " +
+            "WHERE [handler] = ? AND [idempotencyKey] LIKE ? AND [status] IN ('queued', 'delayed')")).run(database.clock.now().toISOString(), TEAM_BILLING_CARD_IDENTITY_JOB, `team-billing-card-identity:${operationId}:%`),
+        enqueueTeamBillingCardIdentityJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CARD_IDENTITY_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true, availableAt, true),
         enqueueTeamBillingCheckoutJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
         enqueueTeamBillingCheckoutExpiryJob: (transaction, payload, idempotencyKey, availableAt) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_EXPIRY_JOB, payload, idempotencyKey, undefined, true, availableAt),
         enqueueTeamBillingPortalJob: (transaction, payload, idempotencyKey) => enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_PORTAL_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_PORTAL_MAX_ATTEMPTS, delayMs: 1_000 }, true),
@@ -1135,6 +1150,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             if (database.teamBillingDefinition) {
                 await repairTeamBillingPlanPreviewExpiries(database);
                 await repairTeamBillingCurrencyHandovers(database);
+                await repairTeamBillingCardIdentities(database);
                 await repairTeamBillingDesiredStateAtStartup(database);
                 await repairTeamBillingErasureStateAtStartup(database);
             }
@@ -2225,6 +2241,15 @@ export async function recoverExpiredJobLeases(database) {
                         catch { }
                         const managementSettlement = await settleExhaustedTeamBillingManagementJob({ ...database, adapter: transaction, __transactionActive: true }, payload, "JOB_LEASE_EXPIRED");
                         replacementScheduled = managementSettlement?.replacementScheduled === true;
+                    }
+                    if (row.handler === TEAM_BILLING_CARD_IDENTITY_JOB) {
+                        let payload = null;
+                        try {
+                            payload = JSON.parse(row.payload);
+                        }
+                        catch { }
+                        const captureSettlement = await settleExhaustedTeamBillingCardIdentityJob({ ...database, adapter: transaction, __transactionActive: true }, payload);
+                        replacementScheduled = captureSettlement.replacementScheduled;
                     }
                     if (row.handler === TEAM_BILLING_ERASURE_JOB) {
                         let payload = null;
@@ -4181,6 +4206,8 @@ function createAtomicStripeConsequenceContext(database, parent) {
     context.jobs = Object.freeze({
         enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
     });
+    const billing = createPrivilegedTeamBillingApi(database, () => holder.current);
+    context.teamBilling = Object.freeze({ getCardIdentity: billing.getCardIdentity.bind(billing) });
     const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
     context.teams = Object.freeze({
         countMembers: privilegedTeams.countMembers.bind(privilegedTeams),

@@ -1,3 +1,4 @@
+import { readTeamBillingCardIdentity } from "./team-billing-card-identity.js";
 // Provider-safe Team Billing erasure. Sporades proves provider quiescence and
 // returns only deletion authorization; the Capsule owns its separate local
 // deletion transaction.
@@ -137,6 +138,7 @@ export async function performTeamBillingErasure(database, context, payload) {
                 await transaction.prepare(transaction.dialect.sql("INSERT INTO [sporades_team_billing_erasure_object_tombstones] ([objectKey], [kind], [terminalState], [providerQuiescedAt], [createdAt]) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")).run(teamBillingErasureObjectKey(database, entry.id), entry.kind, entry.state, canonical.providerObservedAt, now(database));
             }
             for (const table of [
+                "sporades_team_billing_card_identities",
                 "sporades_team_billing_observations",
                 "sporades_team_billing_handovers",
                 "sporades_team_billing_subscriptions",
@@ -234,6 +236,17 @@ export function createCurrentUserTeamBillingErasureApi(database, auth, contextGe
         return context;
     };
     return Object.freeze({
+        async getCardIdentity(teamId) {
+            requireActiveContext();
+            const read = async (tx) => {
+                await readCapsuleTeamBillingProjection(database, tx, auth, teamId);
+                await admitTeamBillingActor(database, tx, auth, { operation: "read", teamId });
+                return readTeamBillingCardIdentity(database, tx, teamId);
+            };
+            const result = database.__transactionActive ? await read(database.adapter) : await database.adapter.withTransaction(read);
+            requireActiveContext();
+            return result;
+        },
         async get(teamId) {
             requireActiveContext();
             const result = database.__transactionActive

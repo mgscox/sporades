@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactStripeCardEvidence } from "./stripe-events-runtime.js";
 import { createStripePaymentIntegration } from "./stripe-payment-integration.js";
 import { STRIPE_EVENT_JOB } from "./jobs-runtime.js";
 const STRIPE_EVENT_RETRY = Object.freeze({ maxAttempts: 5, delayMs: 1_000 });
@@ -29,7 +30,8 @@ export function createStripeCallbackEndpoint(payments, serverEnv, admissionFault
             const identity = createHash("sha256")
                 .update(JSON.stringify(["stripe-event", event.providerEventId]))
                 .digest("hex");
-            const admitted = await ctx.jobs.enqueue(STRIPE_EVENT_JOB, event, { idempotencyKey: `stripe-event:${identity}`, retry: STRIPE_EVENT_RETRY });
+            const admitted = await ctx.jobs.enqueue(STRIPE_EVENT_JOB, { ...event, raw: redactStripeCardEvidence(event.raw),
+                __sporadesProviderPayloadDigest: createHash("sha256").update(JSON.stringify(event.raw)).digest("hex") }, { idempotencyKey: `stripe-event:${identity}`, retry: STRIPE_EVENT_RETRY });
             await admissionFault?.("after-enqueue", { jobId: admitted.id, providerEventId: event.providerEventId });
             return { status: 200, body: { ok: true, jobId: admitted.id } };
         },

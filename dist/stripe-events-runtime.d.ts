@@ -12,5 +12,7 @@ export declare function dispatchVerifiedStripeEvent(ctx: LooseRecord, event: Loo
     providerEventId: any;
     type: any;
 }>>;
+/** Remove raw card fingerprints without changing provider object references. */
+export declare function redactStripeCardEvidence(value: any): any;
 export {};
 //# sourceMappingURL=stripe-events-runtime.d.ts.map

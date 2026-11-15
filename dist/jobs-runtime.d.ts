@@ -84,6 +84,7 @@ export declare function runtimeOwnedJobHandlers(runtime: {
     performTeamBillingPlanTransition: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
     performTeamBillingSeatConvergence: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
     performTeamBillingCurrencyHandover: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
+    performTeamBillingCardIdentity: (context: LooseRecord, payload: LooseRecord) => Promise<null>;
     performTeamBillingErasure: (context: LooseRecord, payload: LooseRecord) => Promise<LooseRecord | null>;
 }): {
     name: string;
