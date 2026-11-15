@@ -5947,16 +5947,11 @@ function renderRunningRoute(route: HostedCapsuleRoute) {
     "    header Cache-Control public,*",
     "  }",
     "}",
-    // Caddy 2.10 adds Vary only to encoded responses; identity must vary too.
+    // Identity must vary too. Defer preserves upstream Vary on Caddy 2.6.2;
+    // response-header match blocks require 2.9 and misparse on older Hosts.
     "header @sporadesStaticAssets {",
     "  +Vary Accept-Encoding",
-    "  match {",
-    "    header Content-Type text/javascript*",
-    "    header Content-Type application/javascript*",
-    "    header Content-Type text/css*",
-    "    header Cache-Control no-cache",
-    "    header Cache-Control public,*",
-    "  }",
+    "  defer",
     "}",
     `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
     `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,

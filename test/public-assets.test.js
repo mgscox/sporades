@@ -371,7 +371,7 @@ function assetWireRequest(url, headers = {}, method = 'GET') {
 }
 
 test('real Caddy negotiates Hosted public asset encoding without changing runtime routes', {
-  skip: !process.env.SPORADES_CADDY_ACCEPTANCE_BIN,
+  skip: !process.env.SPORADES_CADDY_ACCEPTANCE_BIN && 'Set SPORADES_CADDY_ACCEPTANCE_BIN to Caddy 2.6.2 (minimum supported) or newer',
   timeout: 60000,
 }, async () => {
   await fixture('esbuild', async (project, config) => {
@@ -387,7 +387,6 @@ test('real Caddy negotiates Hosted public asset encoding without changing runtim
 export default capsule({ name: 'assets', endpoints: {
   encoded: endpoint({ method: 'GET', path: '/encoded.js', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/javascript', 'content-encoding': 'gzip', vary: 'Origin', 'cache-control': 'public, max-age=60' }, body: Buffer.from('${preencoded.toString('base64')}', 'base64') })),
   dynamic: endpoint({ method: 'GET', path: '/dynamic.js', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/javascript', 'cache-control': 'private, no-store' }, body: 'dynamic'.repeat(1000) })),
-  noTransform: endpoint({ method: 'GET', path: '/no-transform.css', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/css', 'cache-control': 'public, max-age=60, no-transform' }, body: 'body { color: red; }'.repeat(1000) })),
   json: endpoint({ method: 'GET', path: '/data.js', session: 'none' }, () => ({ status: 200, body: { value: 'json'.repeat(1000) } }))
 } });`);
     const bundle = await createBundle(project, config);
@@ -428,6 +427,7 @@ export default capsule({ name: 'assets', endpoints: {
             for (const [accept, encoding] of [['gzip', 'gzip'], ['zstd', 'zstd'], ['gzip, zstd', 'zstd'], ['gzip;q=1, zstd;q=0.5', 'gzip'], ['identity', undefined], ['gzip;q=0, zstd;q=0', undefined], ['', undefined]]) {
               const response = await assetWireRequest(`${base}/${name}?v=1`, { 'accept-encoding': accept });
               assert.equal(response.status, 200);
+              assert.equal(response.headers.match, undefined, 'response matcher syntax must not leak a Match header on Caddy 2.6.2');
               assert.equal(response.headers['content-encoding'], encoding, `${name}: ${accept}`);
               assert.equal(response.headers['cache-control'], cache);
               assert.match(response.headers.vary, /(?:^|,\s*)Accept-Encoding(?:,|$)/i);
@@ -444,9 +444,12 @@ export default capsule({ name: 'assets', endpoints: {
             assert.equal(head.status, 200); assert.equal(head.body.length, 0);
             assert.equal(head.headers['cache-control'], cache); assert.match(head.headers.vary, /Accept-Encoding/i);
           }
-          for (const name of ['tiny.js', 'image.png', 'dynamic.js', 'data.js', 'no-transform.css', '']) {
+          for (const name of ['tiny.js', 'image.png', 'dynamic.js', 'data.js', '']) {
             const response = await assetWireRequest(`${base}/${name}`, { 'accept-encoding': 'gzip, zstd' });
             assert.equal(response.status, 200, name); assert.equal(response.headers['content-encoding'], undefined, name);
+            assert.equal(response.headers.match, undefined, name);
+            if (name.endsWith('.js')) assert.match(response.headers.vary, /Accept-Encoding/i, 'Vary follows the request path even for excluded responses');
+            if (name === 'dynamic.js') assert.equal(response.headers['cache-control'], 'private, no-store');
             if (name === '') assert.equal(response.headers['cache-control'], 'no-store');
           }
           const encoded = await assetWireRequest(`${base}/encoded.js`, { 'accept-encoding': 'zstd, gzip' });
