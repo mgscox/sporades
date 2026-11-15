@@ -1768,6 +1768,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
     assert.match(routeContents, /roll_size 10MiB/);
+    assert.match(routeContents, /encode @sporadesStaticAssets zstd gzip/);
     assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
     assert.match(routeContents, /header x-sporades-host-probe [a-f0-9]{64}/);
     assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
@@ -1888,12 +1889,12 @@ test("Hosted Capsule start uses request inspection metadata only for its exact u
 });
 
 
-test("sporades host helper refreshes a stale loopback route after Docker restarts on a new published port", async () => {
+for (const publishedPort of [49153, 49154]) test(`sporades host helper reconciles a legacy running route on published port ${publishedPort}`, async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const docker = await installFakeDocker(dir, {
       env: {
-        FAKE_DOCKER_PUBLISHED_PORT: "127.0.0.1:49154",
+        FAKE_DOCKER_PUBLISHED_PORT: `127.0.0.1:${publishedPort}`,
         FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({ State: { Running: true }, RestartCount: 1 })}\n`,
       },
     });
@@ -1963,8 +1964,8 @@ test("sporades host helper refreshes a stale loopback route after Docker restart
       assert.equal(health.code, 0, health.stderr);
       assert.equal(JSON.parse(health.stdout).ok, true);
       const route = await readFile(routeFile, "utf8");
-      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
-      assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
+      assert.equal((route.match(new RegExp(`reverse_proxy 127\\.0\\.0\\.1:${publishedPort}`, "g")) ?? []).length, 2);
+      assert.match(route, /encode @sporadesStaticAssets zstd gzip/);
       assert.match(route, new RegExp(`header x-sporades-host-probe ${"a".repeat(64)}`));
       assert.deepEqual(
         (await docker.caddyCalls()).map((call) => call.args),
@@ -4819,8 +4820,11 @@ test('concurrent sibling route recovery isolates routes and ignores replaced con
 
 test('recovery reloads matching route bytes when an interrupted worker left Caddy on the old upstream', () => withBackupRouteFixture(async f => {
   await writeFile(f.state, JSON.stringify({ running: true, port: '127.0.0.1:49154' }));
-  const route = (await readFile(f.routeFile, 'utf8')).replace('49153', '49154');
-  await writeFile(f.routeFile, route);
+  const initial = await runRouteRecoveryPass(f);
+  assert.equal(JSON.parse(initial.stdout).ok, true, initial.stdout);
+  const route = await readFile(f.routeFile, 'utf8');
+  // Model a published current route whose proxy reload was lost after publication.
+  await writeFile(f.docker.caddyLogPath, '');
   const pass = await runRouteRecoveryPass(f, { FAKE_HOST_ROUTE_PROBE_REQUIRE_RELOAD: '1' });
   assert.equal(JSON.parse(pass.stdout).ok, true, pass.stdout);
   assert.equal(await readFile(f.routeFile, 'utf8'), route);

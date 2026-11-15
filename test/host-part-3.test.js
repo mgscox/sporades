@@ -2510,7 +2510,8 @@ test("sporades host helper serializes two stale health route repairs across help
         assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
       }
       const route = await readFile(routeFile, "utf8");
-      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 2);
+      assert.equal((route.match(/reverse_proxy 127\.0\.0\.1:49154/g) ?? []).length, 4);
+      assert.equal((route.match(/encode @sporadesStaticAssets zstd gzip/g) ?? []).length, 2);
       assert.ok(route.includes("fourteen.example {\n"));
       assert.doesNotMatch(route, /127\.0\.0\.1:49153/);
       assert.deepEqual(

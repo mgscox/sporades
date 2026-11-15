@@ -440,6 +440,29 @@ sporades host stop team-notes --host personal --json
 sporades host reconcile team-notes --host personal --json
 ```
 
+### Public asset compression
+
+Generated Capsule routes negotiate Zstandard or gzip for GET/HEAD requests whose
+paths end in `.js`, `.mjs`, or `.css` (case-insensitive) and whose response type is
+JavaScript or CSS with the public tree's `no-cache` or `public, ...` cache policy.
+Private and no-store responses are excluded. Caddy prefers Zstandard when the
+client gives both encodings the same weight; explicit identity requests remain uncompressed. Responses below
+Caddy's default 512-byte minimum and responses with an existing `Content-Encoding`
+or `Cache-Control: no-transform` remain uncompressed. HTML, JSON, images, runtime
+health probes, and WebSocket traffic keep their existing behavior.
+
+Cache-Control is preserved: hashed public assets remain immutable, stable names
+retain revalidation, and HTML remains no-store. Matching asset responses include
+`Vary: Accept-Encoding` for both encoded and identity variants, retaining other
+Vary fields. Caddy owns encoding; Capsule releases still contain original bytes.
+
+After updating the Host helper, start/restart generates the new routes. Existing
+running routes receive the same configuration through health checks or the Host's
+route reconciliation worker, even when Docker's published port has not changed.
+The existing validation, reload, and rollback path applies; current routes avoid
+unnecessary reloads. This also updates custom-domain alias routes and works with
+Capsule Bundles built before compression was enabled.
+
 ### Hosted Capsule database
 
 `sporades host db list|dump|query` reads a running Hosted Capsule's database
