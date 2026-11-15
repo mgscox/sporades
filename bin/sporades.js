@@ -153503,6 +153503,7 @@ async function runEndpoint(database, endpoint, requestUrl, request, requestPath 
     await flushAccessKeyLifecycleAuditEvents(database, context2);
     flushTeamSecurityEvents(database, context2);
     await dispatchPendingJobs(context2);
+    database.__notifyJobStateQueries?.();
     if (resourceLogPublicationError) throw resourceLogPublicationError;
     return sealCommittedAttachmentResult(result);
   } catch (error) {
@@ -153865,9 +153866,20 @@ async function runSessionlessEndpoint(database, handler, requestUrl, request, re
 function createEndpointContext(database, endpointRequest, session, options = {}) {
   const auth = protectContextIdentity({ ...contextAuthIdentity(session.auth), ...endpointRequest.clientAddress ? { clientAddress: endpointRequest.clientAddress } : {} });
   const credential = options.ordinaryCredential === false ? null : protectContextIdentity(options.credential ?? { kind: "session" });
+  const admittedGrants = credential?.kind === "access-key" ? options.accessKeyGrants : null;
+  const declaredScopes = database.accessKeyScopes ?? [];
+  const hasAccessKeyScopes = (requiredScopes) => {
+    if (!Array.isArray(admittedGrants) || !Array.isArray(requiredScopes) || requiredScopes.length === 0 || requiredScopes.length > declaredScopes.length) return false;
+    for (let index = 0; index < requiredScopes.length; index++) {
+      const scope = requiredScopes[index];
+      if (typeof scope !== "string" || !scope || scope.includes("*") || !declaredScopes.includes(scope) || requiredScopes.indexOf(scope) !== index) return false;
+    }
+    return accessKeyGrantsSatisfyScopes(admittedGrants, requiredScopes);
+  };
   const context2 = {
     auth,
     ...credential ? { credential } : {},
+    hasAccessKeyScopes,
     app: database.app,
     signal: options.signal,
     rateLimit: database.capsuleRateLimiter.consume,
