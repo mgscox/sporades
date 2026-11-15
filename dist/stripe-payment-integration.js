@@ -46,6 +46,12 @@ export function createStripePaymentIntegration(options) {
                 try {
                     session = await waitForStripeRequest(stripe.checkout.sessions.create({
                         mode: checkout.mode,
+                        automatic_tax: { enabled: enabledConfig.tax.enabled },
+                        ...(enabledConfig.tax.enabled ? {
+                            tax_id_collection: { enabled: true },
+                            billing_address_collection: "required",
+                            ...(checkout.mode === "payment" ? { customer_creation: "always" } : {}),
+                        } : {}),
                         line_items: [{ price: checkout.priceId, quantity: checkout.quantity }],
                         success_url: checkout.successUrl,
                         cancel_url: checkout.cancelUrl,
