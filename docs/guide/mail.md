@@ -91,6 +91,16 @@ Unicode subjects and display names are MIME encoded. Envelope email addresses
 must currently be ASCII; internationalized local parts and domains are rejected
 before Sporades opens an SMTP connection.
 
+Generated `Message-ID` headers and SMTP `EHLO` greetings use the domain of the
+effective From address: the message's `from`, or `mail.smtp.defaultFrom` when
+omitted. For example, `no-reply@example.com` produces `<uuid@example.com>` and
+`EHLO example.com`, including after STARTTLS. If the sender has no DNS-safe domain,
+the runtime uses the Capsule's canonical public origin hostname, then
+`sporades.local` as a local development fallback. This requires no additional
+configuration or DNS lookup. Durable notification intents use the same rule when
+accepted and retain their Message-ID across recipients, retries, and restarts.
+Existing explicit Message-IDs supplied to the internal SMTP transport are preserved.
+
 SMTP delivery is an external, non-transactional side effect. A later mutation
 rollback cannot recall a message that has already left the SMTP server. For
 important notifications, enqueue a durable Job, send from its handler, and use

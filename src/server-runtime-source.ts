@@ -780,6 +780,7 @@ export async function openDevDatabase(
   let mailLogSink: LooseRecord | undefined;
   const mail = createMailRuntime(mailConfig, serverEnv, {
     ...options,
+    publicOrigin: resolvePublicOrigin(config),
     mailLog: options.mailLog ?? ((event: LooseRecord) => mailLogSink?.emit(event)),
   });
   const capsuleEndpoints = capsuleDefinition

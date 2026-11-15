@@ -506,6 +506,7 @@ export type MailSendInput = {
   to: MailAddress | MailAddress[];
   cc?: MailAddress | MailAddress[];
   bcc?: MailAddress | MailAddress[];
+  /** Overrides mail.smtp.defaultFrom; its domain supplies generated Message-IDs and SMTP EHLO. */
   from?: MailAddress;
   replyTo?: MailAddress;
   subject: string;
