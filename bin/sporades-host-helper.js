@@ -46633,7 +46633,7 @@ var mutationExecution = new MutationExecutionStorage();
 init_cli_support();
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.51";
+var CLI_VERSION = "0.9.52";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([

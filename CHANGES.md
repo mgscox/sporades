@@ -1,5 +1,42 @@
 # Changes
 
+## v0.9.52 - 2026-11-15
+
+Changes since v0.9.51.
+
+### 🚀 Features
+
+- Add Capsule-owned MCP Todo pilot (#413) (e6f84d21).
+- Add user-level Stripe trials with required card collection (#409) (58229869).
+- Period-end Team Billing plan changes through Subscription Schedules (#393) (d30fa5be).
+
+### 🐛 Bug Fixes
+
+- Keep asset encoding compatible with Caddy 2.6 (69f69d66).
+- Compress Hosted Capsule static assets (413b05d4).
+- Derive mail identity from effective sender domain (#416) (ff118aa3).
+- Keep initial Todo key load silent (#418) (#420) (6591e8af).
+- Disable Todo agent creation without selected scopes (#419) (f3aba0d6).
+
+### 🔧 Improvements
+
+- Regenerate dist and bin [skip ci] (beab80ef).
+- Regenerate dist and bin [skip ci] (f75d5d4f).
+- Regenerate dist and bin [skip ci] (3b2782cd).
+- Regenerate dist and bin [skip ci] (aaf8c4d3).
+- Use GLM 5.3 Flash exclusively for PR-Agent (#415) (5692cb6c).
+- Regenerate dist and bin [skip ci] (c7afd7ae).
+- Regenerate dist and bin [skip ci] (25a11d71).
+- Install PR-Agent with OpenRouter for Sporades QA (#403) (515b2dc7).
+- Regenerate dist and bin [skip ci] (4ff9c4bb).
+
+### 📝 Documentation
+
+- Expose server-only card identity tokens (#410) (1367df14).
+- Require explicit Stripe Tax configuration for Checkout (#411) (c2dfbb13).
+- GlitchTip WebSocket constructor failures (#405) (dc489d46).
+- Add verification points for publishing a new Capsule (#402) (536f60c7).
+
 ## Unreleased
 
 - Add server-only keyed card identity reads and durable Team Billing capture (#406).
