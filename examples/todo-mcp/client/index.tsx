@@ -30,7 +30,15 @@ function Keys() {
       setNotice("Saved");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Operation failed"); }
   }
-  useEffect(() => { void perform(async () => null); }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const listed = await accessKeys.list();
+        if (listed.error) throw new Error(listed.error.message);
+        setKeys(listed.data?.accessKeys ?? []);
+      } catch (error) { setNotice(error instanceof Error ? error.message : "Operation failed"); }
+    })();
+  }, []);
   return <section aria-labelledby="keys-title"><h2 id="keys-title">Agent access</h2>
     <p>Start with read permission. Add permission allows an agent to capture todos for your list.</p>
     <form onSubmit={event => { event.preventDefault(); void perform(() => accessKeys.issue({ name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] })); }}>
@@ -43,7 +51,7 @@ function Keys() {
     <p role="status">{notice}</p>
     <ul>{keys.map(key => <li key={key.id}>{key.name} ({key.status}) <button disabled={key.status !== "active"} onClick={() => void perform(() => accessKeys.rotate(key.id, { lifecycleRevision: key.lifecycleRevision }))}>Rotate {key.name}</button> <button disabled={key.status === "revoked"} onClick={() => void perform(() => accessKeys.revoke(key.id))}>Revoke {key.name}</button></li>)}</ul>
     <h3>Separate automation list</h3><p>A Service User starts with its own empty list. It uses the name and permissions selected above.</p>
-    <button onClick={() => void perform(() => createAgent.run({ displayName: name, accessKey: { name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] } }))}>Create Todo agent</button>
+    <button disabled={!name.trim() || (!read && !add)} onClick={() => void perform(() => createAgent.run({ displayName: name, accessKey: { name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] } }))}>Create Todo agent</button>
     <ul>{(agents.data ?? []).map(agent => <li key={agent.id}>{agent.displayName} <button onClick={() => void perform(() => disableAgent.run(agent.serviceUserId))}>Disable {agent.displayName}</button></li>)}</ul>
   </section>;
 }

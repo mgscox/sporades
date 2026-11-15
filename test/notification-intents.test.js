@@ -245,8 +245,8 @@ test('independent intent acceptances mint globally unique persisted Message-IDs'
     await runMutation(second.database, actor, 'accept', [notification({ to: ['second@example.com'], text: 'Second deployment' })]);
     const firstMessageId = first.database.adapter.prepare('SELECT messageId FROM sporades_notification_intents').get().messageId;
     const secondMessageId = second.database.adapter.prepare('SELECT messageId FROM sporades_notification_intents').get().messageId;
-    assert.match(firstMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@sporades\.local>$/);
-    assert.match(secondMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@sporades\.local>$/);
+    assert.match(firstMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@example\.com>$/);
+    assert.match(secondMessageId, /^<[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}@example\.com>$/);
     assert.notEqual(firstMessageId, secondMessageId);
   } finally { await first.close(); await second.close(); }
 });
@@ -315,6 +315,7 @@ test('recipient delivery is isolated, retries uncertainty with persisted backoff
     ]);
     assert.equal(f.deliveries.length, 2);
     assert.equal(new Set(f.deliveries.map(message => message.messageId)).size, 1, 'immutable Message-ID across recipients and attempts');
+    assert.match(f.deliveries[0].messageId, /^<[0-9a-f-]{36}@example\.com>$/);
     f.clock.advanceBy(30_000);
     assert.equal(await runNotificationIntentDeliveryPass(f.database), true);
     status = (await runMutation(f.database, actor, 'status', [])).data;
@@ -701,6 +702,7 @@ test('controlled SMTP receiver proves lost-reply duplicate acceptance and no-acc
     assert.equal(receiver.messages.length, 3, 'accepted twin is duplicated and the not-accepted twin succeeds');
     const messageIds = receiver.messages.map(raw => raw.match(/^Message-ID: (.+)$/m)?.[1]?.trim());
     assert.equal(new Set(messageIds).size, 1, 'all retry envelopes retain the immutable intent Message-ID');
+    assert.match(messageIds[0], /^<[0-9a-f-]{36}@example\.com>$/);
     const status = (await runMutation(f.database, actor, 'status', [])).data;
     assert.equal(status.intents[0].state, 'acknowledged');
     assert.deepEqual(status.intents[0].recipients.map(row => row.attemptCount), [2, 2]);

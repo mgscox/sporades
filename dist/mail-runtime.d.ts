@@ -54,6 +54,9 @@ export declare function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv
     abortActiveDeliveries(): void;
     close(): any;
 };
+export declare function resolveMailIdentityDomain(from: {
+    email: string;
+} | undefined, publicOrigin?: string): string;
 export declare function createMailTransport(smtp: any): {
     send(message: any, options?: any): Promise<{
         messageId: any;

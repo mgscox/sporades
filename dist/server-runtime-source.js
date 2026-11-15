@@ -643,6 +643,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     let mailLogSink;
     const mail = createMailRuntime(mailConfig, serverEnv, {
         ...options,
+        publicOrigin: resolvePublicOrigin(config),
         mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event)),
     });
     const capsuleEndpoints = capsuleDefinition

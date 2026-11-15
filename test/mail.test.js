@@ -137,21 +137,21 @@ async function withDatabase(config, capsule, options, run) {
   }
 }
 
-async function startTestSmtpServer({ implicitTls = false, authReject = false, recipientReject = false, recipientReply = null } = {}) {
+async function startTestSmtpServer({ implicitTls = false, starttls = false, authReject = false, recipientReject = false, recipientReply = null } = {}) {
   const commands = [];
   const messages = [];
-  const tlsOptions = implicitTls ? {
+  const tlsOptions = implicitTls || starttls ? {
     key: await readFile(new URL("./fixtures/smtp-test-key.pem", import.meta.url)),
     cert: await readFile(new URL("./fixtures/smtp-test-cert.pem", import.meta.url)),
   } : undefined;
-  const handle = (socket) => {
+  const handle = (socket, greeting = true) => {
     let buffer = "";
     let inData = false;
     socket.on("error", (error) => {
       if (error.code !== "ECONNRESET") throw error;
     });
     socket.setEncoding("utf8");
-    socket.write("220 smtp.test ESMTP\r\n");
+    if (greeting) socket.write("220 smtp.test ESMTP\r\n");
     socket.on("data", (chunk) => {
       buffer += chunk;
       while (true) {
@@ -169,7 +169,14 @@ async function startTestSmtpServer({ implicitTls = false, authReject = false, re
         const command = buffer.slice(0, end);
         buffer = buffer.slice(end + 2);
         commands.push(command);
-        if (/^EHLO /i.test(command)) socket.write("250-smtp.test\r\n250 PIPELINING\r\n");
+        if (/^EHLO /i.test(command)) socket.write(starttls && !socket.encrypted
+          ? "250-smtp.test\r\n250 STARTTLS\r\n" : "250-smtp.test\r\n250 PIPELINING\r\n");
+        else if (command === "STARTTLS" && starttls) {
+          socket.write("220 upgrade\r\n");
+          socket.removeAllListeners("data");
+          handle(new tls.TLSSocket(socket, { isServer: true, ...tlsOptions }), false);
+          return;
+        }
         else if (/^MAIL FROM:/i.test(command)) socket.write("250 ok\r\n");
         else if (/^RCPT TO:/i.test(command)) {
           const address = command.slice(command.indexOf("<") + 1, command.lastIndexOf(">"));
@@ -544,6 +551,8 @@ test("explicitly unauthenticated plaintext and opportunistic local relays never 
       assert.equal(server.commands.some((command) => /^AUTH /i.test(command)), false);
       assert.equal(server.commands.some((command) => /^MAIL FROM:/i.test(command)), true);
       assert.equal(server.messages.length, 1);
+      assert.equal(readMimeHeader(server.messages[0], "Message-ID").endsWith("@example.com>"), true);
+      assert.ok(server.commands.includes("EHLO example.com"));
     } finally {
       await server.close();
     }
@@ -646,6 +655,66 @@ test("implicit TLS rejects an untrusted certificate by default on every supporte
 test("TLS server name is forwarded for implicit and upgraded STARTTLS sockets", () => {
   assert.match(String(connectSmtpSocket), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
   assert.match(String(createMailTransport), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
+});
+
+test("mail identity follows the effective sender, then the canonical public origin", async () => {
+  const server = await startTestSmtpServer();
+  const cases = [
+    { defaultFrom: "No Reply <no-reply@example.com>", domain: "example.com" },
+    { defaultFrom: "default@example.com", from: { email: "no-reply@Example.COM", name: "Name @ignored.test" }, domain: "example.com" },
+    { defaultFrom: "default@example.com", from: "Override <sender@override.example>", domain: "override.example" },
+    { from: { email: "sender@dev.example", name: "Dev" }, domain: "dev.example" },
+    { defaultFrom: "sender@local:relay", domain: "capsule.example.net" },
+  ];
+  try {
+    for (const [index, { defaultFrom, from, domain }] of cases.entries()) {
+      await withDatabase({
+        name: "mail-identity", deploy: { publicOrigin: "https://capsule.example.net:8443" },
+        mail: { smtp: { vendor: "generic", host: "127.0.0.1", port: server.port,
+          tls: { mode: "disabled" }, auth: { method: "none" }, ...(defaultFrom ? { defaultFrom } : {}) } },
+      }, { mutations: { send: mutation(ctx => ctx.mail.send({
+        to: "recipient@example.com", subject: "Identity", textBody: "Hello", ...(from ? { from } : {}),
+      })) } }, {}, async database => {
+        assert.equal((await runMutation(database, user, "send", [])).ok, true);
+      });
+      assert.match(readMimeHeader(server.messages[index], "Message-ID"), new RegExp(`^<[0-9a-f-]{36}@${domain.replaceAll(".", "\\.")}>$`));
+      assert.equal(server.commands.filter(command => command.startsWith("EHLO "))[index], `EHLO ${domain}`);
+    }
+  } finally { await server.close(); }
+});
+
+test("STARTTLS retains the sender domain in both EHLO greetings and Message-ID", async () => {
+  const server = await startTestSmtpServer({ starttls: true });
+  try {
+    await withDatabase({ mail: { smtp: { vendor: "generic", host: "127.0.0.1", port: server.port,
+      tls: { mode: "required-starttls", rejectUnauthorized: false, servername: "smtp.internal.example" }, auth: { method: "none" },
+      defaultFrom: "no-reply@example.com" } } }, {
+      mutations: { send: mutation(ctx => ctx.mail.send({ to: "recipient@example.com", subject: "TLS", textBody: "Hello" })) },
+    }, {}, async database => {
+      assert.equal((await runMutation(database, user, "send", [])).ok, true);
+    });
+    assert.deepEqual(server.commands.filter(command => command.startsWith("EHLO ")), ["EHLO example.com", "EHLO example.com"]);
+    assert.match(readMimeHeader(server.messages[0], "Message-ID"), /^<[0-9a-f-]{36}@example\.com>$/);
+  } finally { await server.close(); }
+});
+
+test("SMTP preserves explicit Message-IDs and retains the local identity fallback", async () => {
+  const server = await startTestSmtpServer();
+  const transport = createMailTransport({ host: "127.0.0.1", port: server.port, tls: { mode: "disabled" },
+    auth: { method: "none" }, connectionTimeoutMs: 1_000, socketTimeoutMs: 1_000 });
+  const message = { from: { email: "sender@example.com" }, to: [{ email: "recipient@example.com" }],
+    cc: [], bcc: [], subject: "Identity", textBody: "Hello" };
+  try {
+    await transport.send({ ...message, messageId: "<caller@custom.example>" });
+    assert.equal(readMimeHeader(server.messages[0], "Message-ID"), "<caller@custom.example>");
+    assert.equal(readMimeHeader(buildSmtpMessage({ ...message, messageId: "<caller@custom.example>" }), "Message-ID"), "<caller@custom.example>");
+    assert.match(readMimeHeader(buildSmtpMessage(message), "Message-ID"), /^<[0-9a-f-]{36}@example\.com>$/);
+    const local = { ...message, from: { email: "sender@local:relay" } };
+    await transport.send(local);
+    assert.match(readMimeHeader(server.messages[1], "Message-ID"), /^<[0-9a-f-]{36}@sporades\.local>$/);
+    assert.ok(server.commands.includes("EHLO sporades.local"));
+    assert.match(readMimeHeader(buildSmtpMessage(local), "Message-ID"), /^<[0-9a-f-]{36}@sporades\.local>$/);
+  } finally { transport.close(); await server.close(); }
 });
 
 test("ctx.mail remains present while disabled and returns a stable error", async () => {
@@ -1535,11 +1604,13 @@ export default capsule({ name: 'mail-job-206', jobs: {
       assert.equal((raw.match(/^X-Sporades-Correlation-Id:/gmi) ?? []).length, 1);
       assert.equal(readMimeHeader(raw, "X-Sporades-Correlation-Id"), `intent-${index === 0}`);
       assert.equal(readMimeHeader(raw, "From"), '"Refusals" <refusals@example.com>');
+      assert.match(readMimeHeader(raw, "Message-ID"), /^<[0-9a-f-]{36}@example\.com>$/);
       assert.equal(readMimeHeader(raw, "Content-Type"), "text/plain; charset=utf-8");
       assert.equal(Buffer.from(raw.split("\r\n\r\n")[1].replace(/\s/g, ""), "base64").toString(), "This ticket is closed.");
     }
     assert.doesNotMatch(ordinary, /^Auto-Submitted:/mi);
     assert.equal(smtp.commands.filter(command => command === "DATA").length, 2);
+    assert.equal(smtp.commands.filter(command => command === "EHLO example.com").length, 2);
     assert.equal(smtp.commands.filter(command => command === "MAIL FROM:<refusals@example.com>").length, 2);
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) {
