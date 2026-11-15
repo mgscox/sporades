@@ -6,8 +6,13 @@ import { createServer } from 'node:net';
 import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
+import { request as httpRequest } from 'node:http';
+import * as zlib from 'node:zlib';
+import { withTempDir, installFakeDocker, installFakeCaddyUserCommands, runHostHelper, openRawWebSocketHandshake } from './support/host-fixture.js';
 import { fileURLToPath } from 'node:url';
 import { createBundle } from '../dist/bundle-pipeline.js';
+
+const { gunzipSync, gzipSync } = zlib;
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cli = path.join(repo, 'bin/sporades.js');
@@ -80,11 +85,11 @@ async function assertAssets(url) {
   }
 }
 
-async function withGeneratedServer(project, bundle, fn) {
+async function withGeneratedServer(project, bundle, fn, runtimeEnv = {}) {
   const probe = createServer(); probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
   const port = probe.address().port; probe.close(); await once(probe, 'close');
   const url = `http://127.0.0.1:${port}`;
-  const runtime = spawn(process.execPath, [bundle.paths.serverBundle], { cwd: project, env: { ...env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(project, '.sporades', 'generated.db') }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const runtime = spawn(process.execPath, [bundle.paths.serverBundle], { cwd: project, env: { ...env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(project, '.sporades', 'generated.db'), ...runtimeEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     await waitForHttp(url, runtime, 'any');
     await fn(url);
@@ -346,5 +351,123 @@ test('unsafe public candidates and combined output limits never replace the acti
     await symlink(project, publicDir);
     await assert.rejects(createBundle(project, config), error => /real directory/.test(error.hint));
     assert.deepEqual(await readFile(reference), before);
+  });
+});
+
+
+// Raw HTTP retains encoded wire bytes; fetch would transparently decode them.
+function assetWireRequest(url, headers = {}, method = 'GET') {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(url, { headers, method }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) }));
+      response.on('error', reject);
+    });
+    request.on('error', reject);
+    request.setTimeout(5000, () => request.destroy(new Error('Asset request timed out')));
+    request.end();
+  });
+}
+
+test('real Caddy negotiates Hosted public asset encoding without changing runtime routes', {
+  skip: !process.env.SPORADES_CADDY_ACCEPTANCE_BIN,
+  timeout: 60000,
+}, async () => {
+  await fixture('esbuild', async (project, config) => {
+    const javascript = Buffer.from('console.log("compressible public asset");\n'.repeat(1000));
+    const stylesheet = Buffer.from('body { color: rebeccapurple; }\n'.repeat(1000));
+    const preencoded = gzipSync(Buffer.from(Array.from({ length: 1000 }, (_, i) => `console.log(${i});`).join('\n')));
+    await mkdir(path.join(project, 'public/assets'), { recursive: true });
+    for (const [name, bytes] of [['assets/main-abcdefgh.js', javascript], ['stable.css', stylesheet], ['upper.CSS', stylesheet], ['tiny.js', Buffer.from('1;')], ['image.png', javascript]]) {
+      await writeFile(path.join(project, 'public', name), bytes);
+    }
+    // Custom endpoints prove existing encoding and ordinary dynamic responses survive proxying.
+    await writeFile(path.join(project, 'server/index.ts'), `import { capsule, endpoint } from 'sporades/server';
+export default capsule({ name: 'assets', endpoints: {
+  encoded: endpoint({ method: 'GET', path: '/encoded.js', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/javascript', 'content-encoding': 'gzip', vary: 'Origin', 'cache-control': 'public, max-age=60' }, body: Buffer.from('${preencoded.toString('base64')}', 'base64') })),
+  dynamic: endpoint({ method: 'GET', path: '/dynamic.js', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/javascript', 'cache-control': 'private, no-store' }, body: 'dynamic'.repeat(1000) })),
+  noTransform: endpoint({ method: 'GET', path: '/no-transform.css', session: 'none' }, () => ({ status: 200, headers: { 'content-type': 'text/css', 'cache-control': 'public, max-age=60, no-transform' }, body: 'body { color: red; }'.repeat(1000) })),
+  json: endpoint({ method: 'GET', path: '/data.js', session: 'none' }, () => ({ status: 200, body: { value: 'json'.repeat(1000) } }))
+} });`);
+    const bundle = await createBundle(project, config);
+    const token = 'a'.repeat(64);
+    await withGeneratedServer(project, bundle, async upstream => {
+      await withTempDir(async dir => {
+        const remoteRoot = path.join(dir, 'remote-root');
+        const domain = 'capsules.example.dev';
+        const capsuleDir = path.join(remoteRoot, 'hosts', domain, 'capsules/assets');
+        const releaseDir = path.join(capsuleDir, 'releases/20260630T221500Z-feedface');
+        const recordPath = path.join(remoteRoot, 'hosts', domain, 'registry/capsules/assets.json');
+        const routeFile = path.join(remoteRoot, 'caddy/hosts', domain, 'assets.caddy');
+        await mkdir(releaseDir, { recursive: true });
+        await writeFile(path.join(releaseDir, 'sporades.json'), '{}');
+        await writeFile(path.join(releaseDir, 'server.mjs'), 'export default {};');
+        await symlink(releaseDir, path.join(capsuleDir, 'current'));
+        await mkdir(path.dirname(recordPath), { recursive: true });
+        await writeFile(recordPath, JSON.stringify({ subname: 'assets', domain, aliasDomains: ['alias.example.test'], runtimeProbe: { header: 'x-sporades-host-probe', token } }));
+        const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_PUBLISHED_PORT: `127.0.0.1:${new URL(upstream).port}` } });
+        const caddyUser = await installFakeCaddyUserCommands(path.join(dir, 'caddy-user'));
+        const result = await runHostHelper({ action: 'capsule.start', host: { alias: 'local', domain, scheme: 'https', remoteRoot }, capsule: { subname: 'assets' } }, {
+          cwd: dir, env: { ...docker.env, ...caddyUser.env, PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}` },
+        });
+        assert.equal(JSON.parse(result.stdout).ok, true, result.stdout);
+        const generated = await readFile(routeFile, 'utf8');
+        assert.equal((generated.match(/encode @sporadesStaticAssets zstd gzip/g) ?? []).length, 2, 'canonical and alias routes encode');
+        const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
+        const port = reservation.address().port; reservation.close(); await once(reservation, 'close');
+        const base = `http://127.0.0.1:${port}`;
+        // Keep the complete canonical route, changing only its listening address for local HTTP.
+        const route = generated.slice(0, generated.indexOf('alias.example.test {')).replace('assets.capsules.example.dev {', `${base} {`);
+        const configPath = path.join(dir, 'Caddyfile');
+        await writeFile(configPath, `{\n admin off\n auto_https off\n}\n${route}`);
+        const proxy = spawn(process.env.SPORADES_CADDY_ACCEPTANCE_BIN, ['run', '--config', configPath, '--adapter', 'caddyfile'], { env: { ...process.env, XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_DATA_HOME: path.join(dir, 'data') }, stdio: ['ignore', 'ignore', 'pipe'] });
+        try {
+          await waitForHttp(base, proxy);
+          for (const [name, bytes, cache] of [['assets/main-abcdefgh.js', javascript, 'public, max-age=31536000, immutable'], ['stable.css', stylesheet, 'no-cache'], ['upper.CSS', stylesheet, 'no-cache']]) {
+            for (const [accept, encoding] of [['gzip', 'gzip'], ['zstd', 'zstd'], ['gzip, zstd', 'zstd'], ['gzip;q=1, zstd;q=0.5', 'gzip'], ['identity', undefined], ['gzip;q=0, zstd;q=0', undefined], ['', undefined]]) {
+              const response = await assetWireRequest(`${base}/${name}?v=1`, { 'accept-encoding': accept });
+              assert.equal(response.status, 200);
+              assert.equal(response.headers['content-encoding'], encoding, `${name}: ${accept}`);
+              assert.equal(response.headers['cache-control'], cache);
+              assert.match(response.headers.vary, /(?:^|,\s*)Accept-Encoding(?:,|$)/i);
+              if (encoding === 'zstd' && !zlib.zstdDecompressSync) {
+                // Node 22.13 supports the package but predates its Zstandard decoder.
+                assert.deepEqual(response.body.subarray(0, 4), Buffer.from([0x28, 0xb5, 0x2f, 0xfd]));
+              } else {
+                const decoded = encoding === 'gzip' ? gunzipSync(response.body) : encoding === 'zstd' ? zlib.zstdDecompressSync(response.body) : response.body;
+                assert.deepEqual(decoded, bytes);
+              }
+              if (encoding) assert.ok(response.body.length < bytes.length / 2);
+            }
+            const head = await assetWireRequest(`${base}/${name}`, { 'accept-encoding': 'identity' }, 'HEAD');
+            assert.equal(head.status, 200); assert.equal(head.body.length, 0);
+            assert.equal(head.headers['cache-control'], cache); assert.match(head.headers.vary, /Accept-Encoding/i);
+          }
+          for (const name of ['tiny.js', 'image.png', 'dynamic.js', 'data.js', 'no-transform.css', '']) {
+            const response = await assetWireRequest(`${base}/${name}`, { 'accept-encoding': 'gzip, zstd' });
+            assert.equal(response.status, 200, name); assert.equal(response.headers['content-encoding'], undefined, name);
+            if (name === '') assert.equal(response.headers['cache-control'], 'no-store');
+          }
+          const encoded = await assetWireRequest(`${base}/encoded.js`, { 'accept-encoding': 'zstd, gzip' });
+          assert.equal(encoded.headers['content-encoding'], 'gzip');
+          const directEncoded = await assetWireRequest(`${upstream}/encoded.js`);
+          assert.ok(directEncoded.body.length > 512, 'fixture exceeds the encoder threshold');
+          assert.deepEqual(encoded.body, directEncoded.body, 'already encoded upstream bytes are forwarded exactly');
+          assert.match(encoded.headers.vary, /Origin/); assert.match(encoded.headers.vary, /Accept-Encoding/);
+          assert.equal(encoded.headers['cache-control'], 'public, max-age=60');
+          assert.equal((await fetch(`${base}/__sporades/health/runtime`)).status, 404);
+          const health = await assetWireRequest(`${base}/__sporades/health/runtime`, { 'x-sporades-host-probe': token, 'accept-encoding': 'gzip, zstd' });
+          assert.equal(health.status, 200); assert.equal(health.headers['content-encoding'], undefined);
+          const document = await (await fetch(base, { headers: { 'sec-fetch-dest': 'document' } })).text();
+          const connectionToken = document.match(/window\.__SPORADES_CONNECTION_TOKEN\s*=\s*"([^"]+)"/)[1];
+          const handshake = await openRawWebSocketHandshake(base, { 'accept-encoding': 'gzip, zstd' }, connectionToken);
+          assert.match(handshake, /^HTTP\/1\.1 101 /);
+          assert.doesNotMatch(handshake, /Content-Encoding:/i);
+        } finally {
+          if (proxy.exitCode === null) { proxy.kill('SIGTERM'); await once(proxy, 'exit'); }
+        }
+      });
+    }, { SPORADES_RUNTIME_PROBE_TOKEN: token });
   });
 });
