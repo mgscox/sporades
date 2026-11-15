@@ -121,6 +121,7 @@ if [ "$1" = network ] && [ "$2" = inspect ]; then
 elif [ "$1" = container ] && [ "$2" = inspect ]; then echo '[]'; fi
 `, { mode: 0o755 });
   await writeFile(path.join(bin, 'caddy'), `#!/bin/sh
+if [ "$1" = version ]; then echo 'v2.11.9 h1:fake='; fi
 if [ "$1" = adapt ]; then echo '{"apps":{"http":{"servers":{"metrics":{"listen":["127.0.0.1:20190"]}}}}}'; fi
 `, { mode: 0o755 });
   // This local fake prevents the Linux-only boot-order path from writing /etc.

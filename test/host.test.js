@@ -1769,7 +1769,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
     assert.match(routeContents, /roll_size 10MiB/);
     assert.match(routeContents, /encode @sporadesStaticAssets zstd gzip/);
-    assert.match(routeContents, /header @sporadesStaticAssets \{\s+\+Vary Accept-Encoding\s+defer\s+\}/);
+    assert.match(routeContents, /header @sporadesStaticAssets \{\s+\+Vary Accept-Encoding\s+match \{\s+header Content-Type text\/javascript\*\s+header Content-Type application\/javascript\*\s+header Content-Type text\/css\*\s+header Cache-Control no-cache\s+header Cache-Control public,\*\s+\}\s+\}/);
+    assert.doesNotMatch(routeContents, /\bdefer\b/);
     assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
     assert.match(routeContents, /header x-sporades-host-probe [a-f0-9]{64}/);
     assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);

@@ -3187,7 +3187,7 @@ test("sporades host helper reports Host server resource and Hosted Capsule count
         host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
         capsule: null,
       },
-      { cwd: dir, env: docker.env },
+      { cwd: dir, env: { ...docker.env, FAKE_CADDY_LOG_VERSION: "1" } },
     );
 
     assert.equal(stats.code, 0, stats.stderr);
@@ -3205,7 +3205,7 @@ test("sporades host helper reports Host server resource and Hosted Capsule count
     assert.deepEqual(Object.keys(output.data.resources.load), ["oneMinute", "fiveMinutes", "fifteenMinutes"]);
     assert.deepEqual(output.data.services, {
       docker: { available: true },
-      caddy: { available: true },
+      caddy: { available: true, version: "2.11.9", minimumVersion: "2.9.1", supported: true },
     });
     assert.deepEqual(output.data.capsules, {
       total: 2,

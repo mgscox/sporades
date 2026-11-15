@@ -4,6 +4,7 @@ import { mkdir, lstat, readFile, writeFile, rename, rm, access, chmod } from "no
 import { isIP } from "node:net";
 import path from "node:path";
 import { helperError } from "./cli-support.js";
+import { assertSupportedCaddy } from "./host-caddy-version.js";
 
 export const HOST_METRICS_NETWORK = "sporades-host-metrics";
 const NAME = "sporades-node-exporter";
@@ -65,37 +66,33 @@ const END = "# END Sporades Host metrics";
 function stripManaged(s: string) {
   return s.replace(/# BEGIN Sporades Host metrics[\s\S]*?# END Sporades Host metrics\n?/g, "");
 }
-function enableCaddy(s: string, address: string) {
-  if (s.includes(`${BEGIN}\nhttp://${address}:20190 {\n bind ${address}\n metrics /metrics\n}\n${END}`)) return s;
+// The global `metrics` option (Caddy 2.9.0) replaces the nested `servers { metrics }`
+// form, which Caddy deprecates and removes in its next major version. Rendering
+// from the stripped file migrates blocks written by older helpers.
+export function renderHostMetricsCaddyfile(s: string, address: string) {
   s = stripManaged(s);
   const t = tokens(s);
-  const additions: { at: number; text: string }[] = [];
-  const metric = `\n${BEGIN}\nmetrics\n${END}\n`;
+  const metric = `${BEGIN}\nmetrics\n${END}\n`;
   if (t[0]?.value !== "{") {
-    s = `{\n${BEGIN}\nservers {\n metrics\n}\n${END}\n}\n${s}`;
+    s = `{\n${metric}}\n${s}`;
   } else {
-    let depth = 1, globalEnd = -1, catchall = false;
+    let depth = 1, globalEnd = -1, operatorMetrics = false;
     for (let i = 1; i < t.length; i++) {
-      if (depth === 1 && t[i].value === "servers") {
-        let open = i + 1;
-        while (open < t.length && t[open].value !== "{") open++;
-        if (open === t.length) fail("Cannot locate Caddy servers options.");
-        if (open === i + 1) catchall = true;
-        let d = 1, hasMetrics = false;
-        for (let j = open + 1; j < t.length && d; j++) {
-          if (d === 1 && t[j].value === "metrics") hasMetrics = true;
+      if (depth === 1 && t[i].value === "metrics") operatorMetrics = true;
+      // An operator's catch-all `servers { metrics }` already enables metrics.
+      if (depth === 1 && t[i].value === "servers" && t[i + 1]?.value === "{") {
+        for (let j = i + 2, d = 1; j < t.length && d; j++) {
+          if (d === 1 && t[j].value === "metrics") operatorMetrics = true;
           if (t[j].value === "{") d++;
           if (t[j].value === "}") d--;
         }
-        if (!hasMetrics) additions.push({ at: t[open].end, text: metric });
       }
       if (t[i].value === "{") depth++;
       if (t[i].value === "}") depth--;
       if (depth === 0) { globalEnd = t[i].start; break; }
     }
     if (globalEnd < 0) fail("Unclosed Caddy global options.");
-    if (!catchall) additions.push({ at: globalEnd, text: `${BEGIN}\nservers {\n metrics\n}\n${END}\n` });
-    for (const a of additions.sort((a,b) => b.at - a.at)) s = s.slice(0,a.at) + a.text + s.slice(a.at);
+    if (!operatorMetrics) s = s.slice(0, globalEnd) + metric + s.slice(globalEnd);
   }
   return `${s.trimEnd()}\n\n${BEGIN}\nhttp://${address}:20190 {\n bind ${address}\n metrics /metrics\n}\n${END}\n`;
 }
@@ -121,7 +118,8 @@ async function configureCaddy(root: string, address: string, enabled: boolean) {
   const file = path.join(dir, "Caddyfile");
   await trusted(root); await trusted(dir); await trusted(file);
   const before = await readFile(file, "utf8");
-  const after = enabled ? enableCaddy(before, address) : stripManaged(before);
+  if (enabled) assertSupportedCaddy("retry `sporades host telemetry reconcile`");
+  const after = enabled ? renderHostMetricsCaddyfile(before, address) : stripManaged(before);
   if (before === after) return enabled ? metricsServer(file, address) : undefined;
   const candidate = path.join(dir, `.telemetry-${randomBytes(8).toString("hex")}.tmp`);
   await writeFile(candidate, after, { flag: "wx", mode: 0o644 });
