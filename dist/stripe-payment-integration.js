@@ -56,6 +56,11 @@ export function createStripePaymentIntegration(options) {
                         success_url: checkout.successUrl,
                         cancel_url: checkout.cancelUrl,
                         client_reference_id: checkout.businessReference,
+                        ...(checkout.trialDays === undefined ? {} : {
+                            subscription_data: { trial_period_days: checkout.trialDays },
+                            payment_method_collection: "always",
+                            payment_method_types: ["card"],
+                        }),
                     }, {
                         idempotencyKey: checkout.idempotencyKey,
                     }), options.signal);
@@ -180,11 +185,17 @@ function validateCustomerPortalInput(input, publicOrigin) {
 }
 function validateCheckoutInput(input, publicOrigin) {
     const keys = ["businessReference", "cancelPath", "idempotencyKey", "mode", "priceId", "quantity", "successPath"];
+    const hasTrial = input != null && Object.hasOwn(input, "trialDays");
+    if (hasTrial)
+        keys.push("trialDays");
     if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join("\0") !== keys.join("\0")) {
-        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout input.", "Pass only the server-owned Checkout mode, Price, quantity, return paths, idempotency key, and business reference.", false);
+        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout input.", "Pass only the server-owned Checkout mode, Price, quantity, return paths, idempotency key, business reference, and optional subscription trialDays.", false);
     }
     if (input.mode !== "payment" && input.mode !== "subscription") {
         throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout mode.", "Use the explicit mode attached to the server-owned Capsule product.", false);
+    }
+    if (hasTrial && (input.mode !== "subscription" || !Number.isInteger(input.trialDays) || input.trialDays < 1 || input.trialDays > 90)) {
+        throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid Stripe Checkout trial.", "Use server-owned trialDays from 1 through 90 only with subscription mode, or omit it.", false);
     }
     if (typeof input.priceId !== "string" || !/^price_[A-Za-z0-9_]{1,120}$/.test(input.priceId)) {
         throw paymentError("STRIPE_CHECKOUT_INPUT_INVALID", "Invalid server-owned Stripe Price.", "Map a Capsule product key to one configured Stripe Price before calling the integration.", false);
@@ -200,6 +211,7 @@ function validateCheckoutInput(input, publicOrigin) {
     }
     return {
         mode: input.mode,
+        trialDays: hasTrial ? input.trialDays : undefined,
         priceId: input.priceId,
         quantity: input.quantity,
         idempotencyKey: input.idempotencyKey,
