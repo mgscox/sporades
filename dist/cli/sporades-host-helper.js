@@ -5517,20 +5517,24 @@ async function refreshLoopbackRunningRoute(request, registryRecord, containerNam
             }
             throw error;
         }
-        const loopbackUpstream = /(reverse_proxy\s+)127\.0\.0\.1:[1-9][0-9]*(\s+\{)/g;
+        const loopbackUpstream = /reverse_proxy\s+127\.0\.0\.1:[1-9][0-9]*\s+\{/;
         if (!loopbackUpstream.test(currentRoute)) {
             return { ok: true, refreshed: false };
         }
-        loopbackUpstream.lastIndex = 0;
         const publishedPort = inspectLoopbackPublishedPort(containerName, lifecycle.routes.running.port ?? 4000);
         if (!publishedPort) {
             return { ok: false, refreshed: false };
         }
-        const currentUpstream = `${publishedPort.hostIp}:${publishedPort.hostPort}`;
-        const refreshedRoute = currentRoute.replace(loopbackUpstream, `$1${currentUpstream}$2`);
+        // Refresh generated policy as well as the port for already-running Capsules.
+        const route = loopbackRunningRoute({
+            ...lifecycle.routes.running,
+            runtimeProbe: readRuntimeProbeCredential(registryRecord) ?? undefined,
+        }, publishedPort);
+        const refreshedRoute = routeVariants(route).map(renderRunningRoute).join("\n");
         if (refreshedRoute === currentRoute) {
             return { ok: true, refreshed: false, publishedPort };
         }
+        await provisionRouteLogFile(route, "capsule-running-http-log-descriptor-mutate");
         await applyManagedRouteLocked(lifecycle, routeFile, refreshedRoute);
         return { ok: true, refreshed: true, publishedPort };
     });
@@ -5558,6 +5562,25 @@ function renderRunningRoute(route) {
     // Separate request operations run before proxy operations. Deleting and setting
     // the same field inside header_up would delete the newly set value in Caddy.
     const routeHandler = [
+        "@sporadesStaticAssets {",
+        "  method GET HEAD",
+        "  path_regexp \\.(?i:js|mjs|css)$",
+        "}",
+        "encode @sporadesStaticAssets zstd gzip {",
+        "  match {",
+        "    header Content-Type text/javascript*",
+        "    header Content-Type application/javascript*",
+        "    header Content-Type text/css*",
+        "    header Cache-Control no-cache",
+        "    header Cache-Control public,*",
+        "  }",
+        "}",
+        // Identity must vary too. Defer preserves upstream Vary on Caddy 2.6.2;
+        // response-header match blocks require 2.9 and misparse on older Hosts.
+        "header @sporadesStaticAssets {",
+        "  +Vary Accept-Encoding",
+        "  defer",
+        "}",
         `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
         `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
         renderRunningRouteHandler(route, proxyLine),
