@@ -603,7 +603,7 @@ async function fixture(t, source = 'basic', checkoutOnly = false, options = {}) 
       prices: { 'month:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_month`, ...priceCurrencyFor(key) }, 'year:1': { priceId: `price_${mode === 'live' ? 'live_' : ''}${key}_year`, ...priceCurrencyFor(key) } },
     }])),
   }]));
-  const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
+  const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
   const env = { STRIPE_SECRET_KEY: 'sk_test_transitions', STRIPE_WEBHOOK_SECRET: 'whsec_transitions' };
   const openDatabase = () => openDevDatabase(path.join(dir, 'data.db'), '', env, { name: 'transitions', auth: { providers: { email: true } }, payments: { stripe: config } }, {
     name: 'transitions', schema: {}, teamBilling: {

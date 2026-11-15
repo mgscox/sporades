@@ -170,9 +170,9 @@ export type Subscription = {
   unsubscribe(): void;
 };
 
-/** Public payment activation only. Dormant, unknown, or disconnected state is disabled with a null mode. */
+/** Public payment activation and tax decision. Dormant, unknown, or disconnected state disables both. */
 export type PaymentsState = Readonly<{
-  stripe: Readonly<{ enabled: boolean; livemode: boolean | null }>;
+  stripe: Readonly<{ enabled: boolean; livemode: boolean | null; tax: Readonly<{ enabled: boolean }> }>;
 }>;
 
 /** Runtime-owned activation metadata; never grants billing authority or exposes provider credentials or IDs. */

@@ -15,6 +15,7 @@ const enabledConfig = {
   webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
   publicOrigin: "https://payments.example.test",
   callbackPath: "/stripe/webhook",
+  tax: { enabled: false },
   apiVersion: "2026-08-26.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
@@ -38,6 +39,30 @@ function portalInput(intent = "intent-portal-1") {
     returnPath: "/account/billing",
     idempotencyKey: `capsule:portal:user-1:${intent}`,
   };
+}
+
+for (const enabled of [true, false]) for (const mode of ["payment", "subscription"]) {
+  test(`${mode} Checkout sends the explicit tax decision (${enabled})`, async () => {
+    let payload;
+    await withStripeFake(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      payload = new URLSearchParams(body);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id: "cs_test_tax", object: "checkout.session", livemode: false, mode,
+        url: "https://checkout.stripe.com/c/pay/cs_test_tax" }));
+    }, async apiBaseUrl => {
+      const integration = createStripePaymentIntegration({ enabled: true,
+        config: { ...enabledConfig, tax: { enabled } },
+        env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" }, apiBaseUrl });
+      await integration.createCheckoutSession({ ...checkoutInput(), mode });
+    });
+    assert.equal(payload.get("automatic_tax[enabled]"), String(enabled));
+    assert.equal(payload.get("tax_id_collection[enabled]"), enabled ? "true" : null);
+    assert.equal(payload.get("billing_address_collection"), enabled ? "required" : null);
+    assert.equal(payload.get("customer_creation"), enabled && mode === "payment" ? "always" : null);
+    assert.equal(payload.has("customer_update[address]"), false);
+  });
 }
 
 async function withStripeFake(handler, run) {
@@ -294,7 +319,7 @@ test("subscription Checkout uses the same narrow operation with explicit server-
   assert.equal(providerRequest.body.get("payment_method_types[0]"), null);
 });
 
-test("subscription trials explicitly collect a card even when nothing is due", async () => {
+for (const taxEnabled of [false, true]) test(`subscription trials explicitly collect a card even when nothing is due (tax ${taxEnabled})`, async () => {
   const requests = [];
   await withStripeFake(async (request, response) => {
     let body = "";
@@ -304,7 +329,7 @@ test("subscription trials explicitly collect a card even when nothing is due", a
     response.end(JSON.stringify({ id: "cs_test_trial", mode: "subscription", livemode: false,
       url: "https://checkout.stripe.com/c/pay/cs_test_trial" }));
   }, async (apiBaseUrl) => {
-    const integration = createStripePaymentIntegration({ enabled: true, config: enabledConfig,
+    const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, tax: { enabled: taxEnabled } },
       env: { STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture" }, apiBaseUrl });
     for (const trialDays of [1, 14, 90]) {
       const result = await integration.createCheckoutSession({ ...checkoutInput(`intent-trial-${trialDays}`), mode: "subscription", trialDays });
@@ -315,12 +340,16 @@ test("subscription trials explicitly collect a card even when nothing is due", a
   assert.equal(requests.length, 3);
   for (const [index, { headers, body }] of requests.entries()) {
     assert.equal(body.get("subscription_data[trial_period_days]"), String([1, 14, 90][index]));
+    assert.equal(body.get("automatic_tax[enabled]"), String(taxEnabled));
+    assert.equal(body.get("tax_id_collection[enabled]"), taxEnabled ? "true" : null);
+    assert.equal(body.get("billing_address_collection"), taxEnabled ? "required" : null);
     assert.equal(body.get("payment_method_collection"), "always");
     assert.equal(body.get("payment_method_types[0]"), "card");
     assert.equal(headers["stripe-version"], "2026-08-26.dahlia");
     assert.equal(headers["idempotency-key"], `capsule:checkout:user-1:intent-trial-${[1, 14, 90][index]}`);
     assert.deepEqual([...body.keys()].sort(), ["mode", "line_items[0][price]", "line_items[0][quantity]", "success_url", "cancel_url", "client_reference_id",
-      "subscription_data[trial_period_days]", "payment_method_collection", "payment_method_types[0]"].sort());
+      "subscription_data[trial_period_days]", "payment_method_collection", "payment_method_types[0]", "automatic_tax[enabled]",
+      ...(taxEnabled ? ["tax_id_collection[enabled]", "billing_address_collection"] : [])].sort());
   }
 });
 
@@ -341,6 +370,7 @@ test("invalid trials and raw Stripe options fail before provider access", async 
       { ...subscription, trialDays: 14, payment_method_collection: "if_required" },
       { ...subscription, trialDays: 14, payment_method_types: ["sepa_debit"] },
       { ...subscription, trialDays: 14, trialEnd: 2_000_000_000 },
+      { ...subscription, trialDays: 14, automatic_tax: { enabled: true } },
     ]) {
       await assert.rejects(integration.createCheckoutSession(input), (error) => {
         assert.equal(error.code, "STRIPE_CHECKOUT_INPUT_INVALID");

@@ -220,12 +220,17 @@ export const teamBilling = {
   },
 };
 
-const dormantPayments = Object.freeze({ stripe: Object.freeze({ enabled: false, livemode: null }) });
-const testPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false }) });
-const livePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true }) });
+const taxDisabled = Object.freeze({ enabled: false });
+const taxEnabled = Object.freeze({ enabled: true });
+const dormantPayments = Object.freeze({ stripe: Object.freeze({ enabled: false, livemode: null, tax: taxDisabled }) });
+const testPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false, tax: taxDisabled }) });
+const livePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true, tax: taxDisabled }) });
+const taxedTestPayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: false, tax: taxEnabled }) });
+const taxedLivePayments = Object.freeze({ stripe: Object.freeze({ enabled: true, livemode: true, tax: taxEnabled }) });
 
 function paymentState(value) {
-  if (value?.stripe?.enabled !== true || typeof value.stripe.livemode !== "boolean") return dormantPayments;
+  if (value?.stripe?.enabled !== true || typeof value.stripe.livemode !== "boolean" || typeof value.stripe.tax?.enabled !== "boolean") return dormantPayments;
+  if (value.stripe.tax.enabled) return value.stripe.livemode ? taxedLivePayments : taxedTestPayments;
   return value.stripe.livemode ? livePayments : testPayments;
 }
 

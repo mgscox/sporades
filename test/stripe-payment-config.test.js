@@ -14,7 +14,18 @@ const enabledStripeConfig = {
   apiVersion: "2026-08-26.dahlia",
   livemode: false,
   requestTimeoutMs: 10_000,
+  tax: { enabled: false },
 };
+
+test("enabled Stripe payments require an explicit tax decision", () => {
+  const { tax, ...stripe } = enabledStripeConfig;
+  assert.throws(() => validatePaymentsConfig({ stripe }), error => {
+    assert.equal(error.code, "INVALID_STRIPE_PAYMENTS_CONFIG");
+    assert.equal(error.message, "Missing Stripe tax configuration.");
+    assert.equal(error.hint, "Set `payments.stripe.tax` to `{ enabled: true }` or `{ enabled: false }`. Tax must be an explicit decision, never a default.");
+    return true;
+  });
+});
 
 test("Stripe payment configuration is optional and preserves the exact dormant shape", () => {
   assert.equal(validatePaymentsConfig(undefined), undefined);
@@ -74,6 +85,21 @@ test("complete Stripe activation resolves only named Sealed Server env credentia
         return true;
       },
     );
+  }
+});
+
+test("Stripe tax accepts only an explicit boolean and preserves it through runtime validation", () => {
+  for (const enabled of [false, true]) {
+    const stripe = { ...enabledStripeConfig, tax: { enabled } };
+    const normalized = validateStripePaymentsRuntimeConfig({ stripe }, {
+      STRIPE_SECRET_KEY: "sk_test_protocol_fixture", STRIPE_WEBHOOK_SECRET: "whsec_protocol_fixture",
+    });
+    assert.deepEqual(normalized.stripe.tax, { enabled });
+    assert.notEqual(normalized.stripe.tax, stripe.tax);
+  }
+  for (const tax of [undefined, null, true, [], {}, { enabled: "true" }, { enabled: 1 }, { enabled: false, rate: 20 }]) {
+    assert.throws(() => validatePaymentsConfig({ stripe: { ...enabledStripeConfig, tax } }), error =>
+      error.code === "INVALID_STRIPE_PAYMENTS_CONFIG" && /Stripe tax configuration/.test(error.message));
   }
 });
 

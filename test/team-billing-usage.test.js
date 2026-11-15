@@ -93,7 +93,7 @@ async function fixture(t, run, { intervals = false, regional = false, trialDays 
     STRIPE_SECRET_KEY: "sk_test_usage", STRIPE_WEBHOOK_SECRET: "whsec_usage",
   }, { name: capsule.name, auth: { providers: { email: true } }, payments: { stripe: {
     enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
-    publicOrigin: "https://usage.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", requestTimeoutMs: 1000, livemode: false,
+    publicOrigin: "https://usage.example.test", callbackPath: "/stripe/webhook", tax: { enabled: false }, apiVersion: "2026-08-26.dahlia", requestTimeoutMs: 1000, livemode: false,
   } } }, capsule, { createStripeTeamBillingProvider, createStripeCallbackEndpoint });
   const hub = createWebSocketHub(() => database);
   const server = createServer(async (req, res) => {

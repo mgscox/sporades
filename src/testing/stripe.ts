@@ -408,7 +408,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     switch (operation) {
       case "checkout.sessions.create": {
         if (p.mode === "setup") {
-          exactKeys(p, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"]);
+          exactKeys(p, ["mode", "customer", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata"], ["tax_id_collection", "billing_address_collection", "customer_update"]);
+          validateCheckoutTax(p);
           get(customers, p.customer); exactKeys(p.metadata, ["sporades_team_billing_operation"]);
           requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation);
           const sessionId = id("cs_test");
@@ -419,7 +420,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         }
         const foundation = !Object.hasOwn(p, "metadata");
         if (foundation) {
-          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id"], ["subscription_data", "payment_method_collection", "payment_method_types"]);
+          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "automatic_tax"], ["subscription_data", "payment_method_collection", "payment_method_types", "tax_id_collection", "billing_address_collection"]);
           if (p.subscription_data) {
             exactKeys(p.subscription_data, ["trial_period_days"]);
             integer(p.subscription_data.trial_period_days, 90);
@@ -429,13 +430,14 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
             requireValue(p.payment_method_collection === undefined && p.payment_method_types === undefined);
           }
         } else {
-          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency"]);
+          exactKeys(p, ["mode", "line_items", "success_url", "cancel_url", "client_reference_id", "expires_at", "metadata", "subscription_data"], ["customer", "currency", "automatic_tax", "tax_id_collection", "billing_address_collection", "customer_update"]);
           exactKeys(p.metadata, ["sporades_team_billing_operation"]); exactKeys(p.subscription_data, ["metadata"], ["trial_period_days"]);
           if (p.subscription_data.trial_period_days !== undefined) integer(p.subscription_data.trial_period_days, 90);
           exactKeys(p.subscription_data.metadata, ["sporades_team_billing_operation"]);
           requireValue(p.client_reference_id === p.metadata.sporades_team_billing_operation
             && p.client_reference_id === p.subscription_data.metadata.sporades_team_billing_operation);
         }
+        validateCheckoutTax(p);
         requireValue(p.mode === "subscription"); exactKeys(p.line_items, ["0"]); exactKeys(p.line_items[0], ["price", "quantity"]);
         if (p.customer) get(customers, p.customer);
         const { entry } = catalogueEntry(p.line_items[0].price);
@@ -486,7 +488,8 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         if (p.expand) { exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "invoice_credit_balance"); }
         return copy(get(customers, resourceId));
       case "subscriptions.create": {
-        exactKeys(p, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"]);
+        exactKeys(p, ["customer", "currency", "items", "default_payment_method", "billing_cycle_anchor", "proration_behavior", "metadata"], ["automatic_tax"]);
+        validateCheckoutTax(p);
         const customer = get(customers, p.customer);
         assertCustomerCurrency(customer.id, p.currency);
         exactKeys(p.items, ["0"]); exactKeys(p.items[0], ["price", "quantity"]);
@@ -833,6 +836,23 @@ function flatten(object: Obj, prefix = ""): Array<[string, string]> {
     const name = prefix ? `${prefix}[${key}]` : key;
     return typeof value === "object" ? flatten(value, name) : [[name, String(value)]];
   });
+}
+
+function validateCheckoutTax(p: Obj) {
+  if (p.automatic_tax !== undefined) {
+    exactKeys(p.automatic_tax, ["enabled"]);
+    requireValue(["true", "false"].includes(p.automatic_tax.enabled));
+  }
+  if (p.tax_id_collection !== undefined) {
+    exactKeys(p.tax_id_collection, ["enabled"]);
+    requireValue(["true", "false"].includes(p.tax_id_collection.enabled));
+  }
+  if (p.billing_address_collection !== undefined) requireValue(["auto", "required"].includes(p.billing_address_collection));
+  if (p.customer_update !== undefined) {
+    requireValue(Boolean(p.customer));
+    exactKeys(p.customer_update, [], ["address", "name"]);
+    requireValue(Object.values(p.customer_update).every(value => ["auto", "never"].includes(value as string)));
+  }
 }
 
 // Serialize HTTP execution through the idempotency commit, including overlapping SDK retries.

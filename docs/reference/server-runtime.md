@@ -902,7 +902,12 @@ authority.
 
 Complete `enabled: true` options contain the validated project configuration,
 the runtime's Sealed Server env view, and the durable Job AbortSignal. The
-enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
+configuration requires an explicit `tax: { enabled: boolean }` decision.
+Checkout sends this as `automatic_tax.enabled`; enabling it also collects tax
+IDs and requires a billing address. One-time Checkout creates a Customer to
+retain these details. Stripe account setup and active registrations remain
+[operator prerequisites](./projects-and-configuration.md#built-in-stripe-payments-in-blank-capsules).
+The enabled `createCheckoutSession` accepts only an explicit server-owned `payment`
 or `subscription` mode, server-owned Price ID, bounded quantity, trusted
 same-origin return paths, stable business idempotency key, and opaque business
 reference. Both modes use the same provider operation and durable Job; there is
@@ -952,6 +957,9 @@ The integration sends `subscription_data.trial_period_days`, explicitly sets
 it does not charge the recurring Price until the trial ends. Omitting
 `trialDays` sends none of these extra provider fields and preserves existing
 payment-method selection. The result remains `{ ok: true, sessionId, url }`.
+Trial Checkout honors the same required `payments.stripe.tax` decision as
+ordinary Checkout: `automatic_tax.enabled` is explicit, and enabling it also
+collects tax IDs and a required billing address even when nothing is due now.
 Use the same business idempotency key and the same server-owned inputs across
 retries; changing trial terms is a new business intent.
 

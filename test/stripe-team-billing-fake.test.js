@@ -25,7 +25,7 @@ const catalogue = {
   ] }],
 };
 const config = { enabled: true, secretKeyEnv: "STRIPE_SECRET_KEY", webhookSecretEnv: "STRIPE_WEBHOOK_SECRET",
-  publicOrigin: "https://billing.example.test", callbackPath: "/stripe/webhook", apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 100 };
+  publicOrigin: "https://billing.example.test", callbackPath: "/stripe/webhook", tax: { enabled: false }, apiVersion: "2026-08-26.dahlia", livemode: false, requestTimeoutMs: 100 };
 const input = { operationId: "11111111-1111-4111-8111-111111111111", teamId: "22222222-2222-4222-8222-222222222222",
   productKey: "team", mode: "subscription", priceId: "price_team", quantity: 2, successPath: "/billing/success", cancelPath: "/billing/cancel",
   idempotencyKey: "fake-checkout-stable-key", businessReference: "11111111-1111-4111-8111-111111111111", providerExpiresAt: 2_000_000_000 };
@@ -54,6 +54,90 @@ async function paid(f, options, checkoutInput = {}) {
   const subscription = f.fake.subscriptions.get(session.subscription);
   return { session, subscription, item: subscription.items.data[0] };
 }
+
+for (const enabled of [true, false]) for (const existingCustomer of [false, true]) {
+  test(`Team Checkout tax (${enabled}) with ${existingCustomer ? "existing" : "new"} Customer`, async t => {
+    const f = await fixture(t);
+    const { session } = await paid(f);
+    const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled } }, env, apiBaseUrl: f.fake.origin });
+    const checkout = { ...input, idempotencyKey: "tax-checkout-key",
+      ...(existingCustomer ? { customerId: session.customer } : {}) };
+    await provider.create(checkout);
+    const payload = f.fake.requests().filter(r => r.operation === "checkout.sessions.create").at(-1).parameters;
+    assert.deepEqual(payload.automatic_tax, { enabled: String(enabled) });
+    assert.deepEqual(payload.tax_id_collection, enabled ? { enabled: "true" } : undefined);
+    assert.equal(payload.billing_address_collection, enabled ? "required" : undefined);
+    assert.deepEqual(payload.customer_update, enabled && existingCustomer ? { address: "auto", name: "auto" } : undefined);
+    assert.equal(payload.customer_creation, undefined);
+    const recovered = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [checkout] }));
+    assert.equal(recovered.checkouts[0].state, "expired", "recovery must replay the identical tax parameters");
+  });
+}
+
+for (const enabled of [false, true]) {
+  test(`pre-tax Checkout requests remain recoverable after upgrade with tax ${enabled}`, async t => {
+    const f = await fixture(t);
+    const legacy = await f.stripe.checkout.sessions.create({ mode: "subscription",
+      line_items: [{ price: input.priceId, quantity: input.quantity }],
+      success_url: "https://billing.example.test/billing/success", cancel_url: "https://billing.example.test/billing/cancel",
+      client_reference_id: input.businessReference, expires_at: input.providerExpiresAt,
+      metadata: { sporades_team_billing_operation: input.operationId },
+      subscription_data: { metadata: { sporades_team_billing_operation: input.operationId } },
+    }, { idempotencyKey: input.idempotencyKey });
+    const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled } }, env, apiBaseUrl: f.fake.origin });
+    const recovered = await provider.create({ ...input, taxEnabled: null });
+    assert.equal(recovered.sessionId, legacy.id, "upgrade must recover the original Session without starting a new sale");
+    const erased = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [{ ...input, taxEnabled: null }] }));
+    assert.equal(erased.checkouts[0].id, legacy.id);
+    assert.equal(erased.checkouts[0].state, "expired");
+    assert.equal(f.fake.state().checkouts.length, 1);
+  });
+}
+
+test("tax compatibility replay cannot change the Price or create a second Checkout", async t => {
+  const f = await fixture(t);
+  await f.provider.create(input);
+  const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled: true } }, env, apiBaseUrl: f.fake.origin });
+  await assert.rejects(provider.create({ ...input, priceId: "price_studio" }), error => error.code === "TEAM_BILLING_PROVIDER_REJECTED");
+  assert.equal(f.fake.state().checkouts.length, 1);
+});
+
+for (const enabled of [true, false]) for (const legacy of [false, true]) {
+  test(`currency handover tax (${enabled}) preserves ${legacy ? "pre-upgrade" : "current"} setup and taxes the replacement`, async t => {
+    const f = await fixture(t, { catalogue: { products: [{ id: "prod_team", prices: [{ id: "price_team", recurring: "month",
+      currency: "gbp", unitAmount: 1900, currencyOptions: { eur: { unitAmount: 2500 } } }] }], portalConfigurations: [] } });
+    const { session, subscription, item } = await paid(f, {}, { currency: "gbp" });
+    const provider = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled } }, env, apiBaseUrl: f.fake.origin });
+    const handover = { operationId: input.operationId, customerId: session.customer, sourceSubscriptionId: subscription.id,
+      sourcePriceId: item.price.id, sourceItemId: item.id, sourceCurrency: "gbp", sourceQuantity: item.quantity,
+      anchor: item.current_period_end, currency: "eur", priceId: "price_team", quantity: item.quantity, idempotencyKey: "tax-handover",
+      taxEnabled: legacy ? null : enabled };
+    if (legacy) await f.stripe.checkout.sessions.create({ mode: "setup", customer: session.customer,
+      success_url: "https://billing.example.test/billing", cancel_url: "https://billing.example.test/billing",
+      client_reference_id: input.operationId, expires_at: input.providerExpiresAt,
+      metadata: { sporades_team_billing_operation: input.operationId },
+    }, { idempotencyKey: `${handover.idempotencyKey}:setup` });
+    const setup = await provider.createCurrencySetup({ ...handover, successPath: "/billing", cancelPath: "/billing", providerExpiresAt: input.providerExpiresAt });
+    const payload = f.fake.requests().filter(r => r.operation === "checkout.sessions.create").at(-1).parameters;
+    assert.equal(payload.automatic_tax, undefined, "setup saves a payment method; automatic tax belongs on the Subscription");
+    assert.deepEqual(payload.tax_id_collection, enabled && !legacy ? { enabled: "true" } : undefined);
+    assert.equal(payload.billing_address_collection, enabled && !legacy ? "required" : undefined);
+    assert.deepEqual(payload.customer_update, enabled && !legacy ? { address: "auto", name: "auto" } : undefined);
+    await f.fake.checkout.complete(setup.sessionId);
+    const replacementInput = { ...handover, setupSessionId: setup.sessionId };
+    f.fake.faults.inject({ operation: "subscriptions.create", status: 500, when: "after" });
+    await assert.rejects(provider.replaceCurrencySubscription(replacementInput), error => error.retryable === true);
+    const restarted = createStripeTeamBillingProvider({ config: { ...config, tax: { enabled: !enabled } }, env, apiBaseUrl: f.fake.origin });
+    await restarted.replaceCurrencySubscription(replacementInput);
+    const replacements = f.fake.requests().filter(r => r.operation === "subscriptions.create");
+    assert.deepEqual(replacements.at(-1).parameters, replacements[0].parameters);
+    assert.deepEqual(replacements[0].parameters.automatic_tax, legacy ? undefined : { enabled: String(enabled) });
+    const recovery = { ...input, taxEnabled: legacy ? null : enabled, mode: "setup", customerId: session.customer, successPath: "/billing", cancelPath: "/billing",
+      idempotencyKey: `${handover.idempotencyKey}:setup` };
+    const erased = await provider.quiesceTeamBilling(erasure({ checkoutRecoveries: [recovery] }));
+    assert.equal(erased.checkouts[0].id, setup.sessionId);
+  });
+}
 function updateInput(subscription, item, overrides = {}) {
   return { mode: "sandbox", customerId: subscription.customer, subscriptionId: subscription.id, subscriptionItemId: item.id,
     sourcePriceId: item.price.id, targetPriceId: "price_studio", targetProductId: "prod_studio", targetQuantity: 5,
@@ -63,14 +147,18 @@ const periodEndInput = (subscription, item, overrides = {}) => ({ ...updateInput
 const erasure = (overrides = {}) => ({ mode: "sandbox", checkoutSessionIds: [], subscriptionIds: [], idempotencyKey: "fake-quiescence-key", ...overrides });
 const unavailable = (error) => error.code === "TEAM_BILLING_PROVIDER_UNAVAILABLE" && error.retryable;
 
-test("user-level trial Checkout completes without a charge and retains card collection", async t => {
+for (const enabled of [false, true]) test(`user-level trial Checkout completes without a charge and retains card collection (tax ${enabled})`, async t => {
   const { fake } = await fixture(t);
-  const integration = createStripePaymentIntegration({ enabled: true, config: { ...config, requestTimeoutMs: 1000 }, env, apiBaseUrl: fake.origin });
+  const integration = createStripePaymentIntegration({ enabled: true, config: { ...config, tax: { enabled }, requestTimeoutMs: 1000 }, env, apiBaseUrl: fake.origin });
   const checkoutInput = { mode: "subscription", priceId: "price_team", quantity: 2, trialDays: 14,
     successPath: "/billing/success", cancelPath: "/billing/cancel", businessReference: "trial-intent-1", idempotencyKey: "trial-intent-1" };
   const result = await integration.createCheckoutSession(checkoutInput);
   assert.deepEqual(await integration.createCheckoutSession(checkoutInput), result);
   assert.equal(fake.state().checkouts.length, 1);
+  const payload = fake.requests().find(request => request.operation === "checkout.sessions.create").parameters;
+  assert.deepEqual(payload.automatic_tax, { enabled: String(enabled) });
+  assert.deepEqual(payload.tax_id_collection, enabled ? { enabled: "true" } : undefined);
+  assert.equal(payload.billing_address_collection, enabled ? "required" : undefined);
   const checkout = fake.state().checkouts[0];
   assert.equal(checkout.amount_total, 0);
   assert.equal(checkout.payment_method_collection, "always");
@@ -93,7 +181,7 @@ test("user-level trial Checkout completes without a charge and retains card coll
 
 test("user-level subscription fake preserves ordinary Checkout and rejects trial protocol drift", async t => {
   const { fake, stripe } = await fixture(t);
-  const ordinary = { mode: "subscription", line_items: [{ price: "price_team", quantity: 1 }],
+  const ordinary = { mode: "subscription", automatic_tax: { enabled: false }, line_items: [{ price: "price_team", quantity: 1 }],
     success_url: "https://billing.example.test/billing/success", cancel_url: "https://billing.example.test/billing/cancel",
     client_reference_id: "ordinary-intent" };
   const checkout = await stripe.checkout.sessions.create(ordinary);
@@ -110,6 +198,8 @@ test("user-level subscription fake preserves ordinary Checkout and rejects trial
     { ...trial, subscription_data: { trial_period_days: 14, trial_end: 2_000_000_000 } },
     { ...ordinary, payment_method_collection: "always" },
     { ...trial, customer: completed.customer },
+    { ...trial, automatic_tax: undefined },
+    { ...trial, automatic_tax: { enabled: "invalid" } },
   ]) {
     await assert.rejects(stripe.checkout.sessions.create(request), error => error.code === "sporades_fake_unsupported");
   }

@@ -197,6 +197,8 @@ request, including the optional [card-collecting trial](./server-runtime.md#card
 Pass `fake.origin` explicitly as the integration's `apiBaseUrl`; the Dev origin
 override applies only to runtime-owned Team Billing. Use fixture Sealed Server
 env and a valid enabled configuration with `requestTimeoutMs` of at least 1000.
+That configuration must explicitly select `tax: { enabled: false }` or
+`tax: { enabled: true }`; trials retain the ordinary Checkout tax fields.
 With `stripe` as that enabled integration and a matching fake Catalogue Price:
 
 ```ts

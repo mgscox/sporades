@@ -12,6 +12,9 @@ export type StripeEnabledPaymentsConfig = Readonly<{
     apiVersion: typeof STRIPE_API_VERSION;
     livemode: boolean;
     requestTimeoutMs: number;
+    tax: Readonly<{
+        enabled: boolean;
+    }>;
 }>;
 export type StripePaymentsConfig = DormantStripePaymentsConfig | StripeEnabledPaymentsConfig;
 export type PaymentsConfig = Readonly<{

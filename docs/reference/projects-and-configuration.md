@@ -789,7 +789,8 @@ writing an application query. Activation is all-or-nothing:
       "callbackPath": "/stripe/webhook",
       "apiVersion": "2026-08-26.dahlia",
       "livemode": false,
-      "requestTimeoutMs": 10000
+      "requestTimeoutMs": 10000,
+      "tax": { "enabled": true }
     }
   }
 }
@@ -804,6 +805,45 @@ paths are resolved only against that trusted origin, never an incoming Host
 header. Unknown providers, undeclared options, partial activation, mode-mismatched
 credentials, malformed origins, and unsupported compatibility versions fail as
 `INVALID_STRIPE_PAYMENTS_CONFIG`.
+
+`payments.stripe.tax` is required whenever Stripe payments are enabled. Choose
+`{ "enabled": true }` to request Stripe Tax or explicitly choose
+`{ "enabled": false }` to leave it off; omission fails closed with an actionable
+hint. No other tax keys are accepted. Existing activated Capsules must add this
+decision before upgrading. Both Checkout paths send `automatic_tax.enabled`
+from this setting. When enabled, Checkout collects tax IDs and requires a full
+billing address. Team Checkout also saves the address and name on an existing
+Customer; one-time Checkout creates a Customer. Currency handover collects these
+details in setup Checkout and sets automatic tax on the replacement Subscription,
+because setup mode only saves a payment method and cannot calculate tax.
+Team Checkout and currency handover record their tax decision with the durable
+operation before provider work. Retries, erasure recovery, setup Checkout, and
+replacement Subscriptions reuse that decision after a restart, even if project
+tax configuration changes. New operations use the new decision. Operations
+admitted by the released pre-tax runtime retain their original taxless request
+shape, including queued operations that have not dispatched. Recovery retains
+the same idempotency key and does not probe alternative tax envelopes.
+For Capsule-owned Checkout Jobs using `sporades/server/stripe`, drain or
+reconcile pending requests before upgrading or changing the tax flag. Changing
+configuration does not retax existing Sessions or Subscriptions.
+
+This flag requests calculation; it does not configure the Stripe account or
+guarantee a non-zero tax amount. Before activation, the operator must configure
+Stripe Tax's origin address, appropriate product tax codes, active registrations
+in the relevant jurisdictions, and Prices with the intended tax behavior.
+Stripe collects no tax where there is no active registration. Existing Prices
+with fixed inclusive/exclusive behavior need replacement Prices to change that
+behavior; update the Capsule's Price catalogue accordingly. Confirm the setup
+in a Stripe sandbox, including address and tax-ID cases, before live rollout.
+The local fake verifies request parameters and does not calculate VAT. Tax
+registration decisions and filing remain with the operator and their adviser.
+See [Stripe Tax setup](https://docs.stripe.com/tax/set-up) and
+[testing Stripe Tax](https://docs.stripe.com/tax/testing).
+
+The browser snapshot exposes only `stripe.tax.enabled` alongside activation and
+mode through `usePayments()` and `payments.get()` / `payments.subscribe()`.
+Use it for pricing disclosure together with the catalogue's actual Price tax
+behavior; tax being enabled alone does not imply an exclusive Price.
 
 `callbackPath` is an exact same-origin absolute path outside the reserved
 `/__sporades` runtime namespace. URL parsing must preserve the path exactly;

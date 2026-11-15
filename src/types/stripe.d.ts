@@ -8,6 +8,8 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   apiVersion: "2026-08-26.dahlia";
   livemode: boolean;
   requestTimeoutMs: number;
+  /** Explicit decision required for activation; Stripe account setup is separate. */
+  tax: Readonly<{ enabled: boolean }>;
 }>;
 
 /** Configuration accepted by the server-only Stripe integration. */

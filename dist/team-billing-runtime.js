@@ -94,6 +94,8 @@ export function createTeamBillingTables(adapter) {
         ...(["eventType", "outcome", "safeReason"]
             .map((name) => () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", name, "TEXT"))),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "trialDays", "INTEGER"),
+        // NULL preserves the immutable taxless intent of operations admitted before Stripe Tax.
+        () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_operations", "taxEnabled", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_observations", "eventRank", "INTEGER"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "activeJobGenerationId", "TEXT"),
         () => adapter.dialect.addMissingColumn?.(adapter, "sporades_team_billing_desired_state", "targetPriceId", "TEXT"),
@@ -320,8 +322,8 @@ export async function startTeamBillingCheckout(database, auth, teamId, requestId
         await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'superseded', [updatedAt] = ? " +
             "WHERE [teamId] = ? AND [kind] = 'checkout' AND [status] = 'queued' AND [providerObjectId] IS NULL")).run(now, teamId);
         await transaction.prepare(sql("INSERT INTO [sporades_team_billing_operations] " +
-            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [currency], [trialDays]) " +
-            "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, currency ?? null, desired.trialDays ?? null);
+            "([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [providerObjectId], [idempotencyKey], [safeFailureCode], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [continuationUrl], [continuationExpiresAt], [attemptedAt], [providerExpiresAt], [currency], [trialDays], [taxEnabled]) " +
+            "VALUES (?, ?, ?, ?, 'checkout', ?, 'queued', NULL, ?, NULL, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)")).run(operationId, requestId, teamId, auth.userId, productKey, idempotencyKey, now, now, desired.mode, desired.quantity, desired.priceId, providerExpiresAt, currency ?? null, desired.trialDays ?? null, Number(database.paymentsConfig.stripe.tax.enabled));
         if (typeof database.enqueueTeamBillingCheckoutJob !== "function")
             throw checkoutUnavailable();
         await database.enqueueTeamBillingCheckoutJob(transaction, { operationId }, `team-billing-checkout:${operationId}`);
@@ -411,7 +413,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
     try {
         providerInput = await database.adapter.withTransaction(async (transaction) => {
             const sql = transaction.dialect.sql;
-            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [currency], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId] " +
+            const operation = await transaction.prepare(sql("SELECT [id], [teamId], [actorUserId], [productKey], [providerPriceId], [currency], [status], [mode], [quantity], [idempotencyKey], [providerExpiresAt], [trialDays], [providerSubscriptionId], [taxEnabled] " +
                 "FROM [sporades_team_billing_operations] WHERE [id] = ? AND [kind] = 'checkout'")).get(operationId);
             if (!operation || !["queued", "running", "retrying"].includes(operation.status))
                 return null;
@@ -463,6 +465,7 @@ export async function performTeamBillingCheckout(database, context, payload, att
             await transaction.prepare(sql("UPDATE [sporades_team_billing_operations] SET [status] = 'running', [attemptedAt] = COALESCE([attemptedAt], ?), [updatedAt] = ? WHERE [id] = ?")).run(attemptedAt, attemptedAt, operationId);
             return {
                 operationId,
+                taxEnabled: operation.taxEnabled == null ? null : operation.taxEnabled === 1,
                 teamId: operation.teamId,
                 productKey: operation.productKey,
                 mode: "subscription",

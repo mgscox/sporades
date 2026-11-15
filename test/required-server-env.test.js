@@ -79,7 +79,7 @@ const mail = {
 
 test('configured SMTP, webhook and enabled payments keys are implied; dormant integrations require nothing', async () => temporary(async dir => {
   const { STRIPE_API_VERSION } = await import('../dist/stripe-payment-config.js');
-  const payments = { stripe: { enabled: true, secretKeyEnv: 'STRIPE_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK', publicOrigin: 'https://capsule.example.test', callbackPath: '/stripe-events', apiVersion: STRIPE_API_VERSION, livemode: false, requestTimeoutMs: 1000 } };
+  const payments = { stripe: { enabled: true, secretKeyEnv: 'STRIPE_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK', publicOrigin: 'https://capsule.example.test', callbackPath: '/stripe-events', tax: { enabled: false }, apiVersion: STRIPE_API_VERSION, livemode: false, requestTimeoutMs: 1000 } };
   await writeFile(path.join(dir, 'sporades.json'), JSON.stringify({ name: 'env-implied', env: {}, mail, payments }));
   const result = runCli(dir, ['doctor']);
   assert.deepEqual(result.output.data.checks.find(c => c.id === 'doctor.server-env').details.missingKeys,

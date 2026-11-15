@@ -59,8 +59,8 @@ export async function startTeamBillingCurrencyHandover(db, auth, input) {
             throw failure();
         const id = randomUUID();
         const createdAt = now(db);
-        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt]) " +
-            "VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?)")).run(id, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1000) + 23 * 3600);
+        await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [currency], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [quantity], [providerPriceId], [providerCustomerId], [providerExpiresAt], [taxEnabled]) " +
+            "VALUES (?, ?, ?, ?, 'currency-handover', ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?)")).run(id, requestId, teamId, auth.userId, productKey, currency, `sporades-currency-${id}`, createdAt, createdAt, mode, quantity, price.priceId, customer.providerCustomerId, Math.floor(db.clock.now().getTime() / 1000) + 23 * 3600, Number(db.paymentsConfig.stripe.tax.enabled));
         await tx.prepare(tx.dialect.sql("INSERT INTO [sporades_team_billing_handovers] ([operationId], [teamId], [sourceSubscriptionId], [sourceSnapshot], [anchor], [phase]) VALUES (?, ?, ?, ?, ?, 'setup')")).run(id, teamId, source.providerSubscriptionId, JSON.stringify(source), source.currentPeriodEnd);
         await enqueue(db, tx, id, "setup");
         return resultFor(db, await operation(tx, teamId, requestId));
@@ -136,7 +136,7 @@ export async function performTeamBillingCurrencyHandover(db, context, payload, a
         claimed = true;
         const provider = db.createStripeTeamBillingProvider({ config: db.paymentsConfig.stripe, env: db.serverEnv, signal: context?.signal,
             ...(db.stripeApiBaseUrl ? { apiBaseUrl: db.stripeApiBaseUrl } : {}) });
-        const common = { operationId: snapshot.id, customerId: snapshot.providerCustomerId, sourceSubscriptionId: snapshot.sourceSubscriptionId,
+        const common = { operationId: snapshot.id, taxEnabled: snapshot.taxEnabled == null ? null : snapshot.taxEnabled === 1, customerId: snapshot.providerCustomerId, sourceSubscriptionId: snapshot.sourceSubscriptionId,
             sourcePriceId: snapshot.source.providerPriceId, sourceItemId: snapshot.source.providerSubscriptionItemId, sourceCurrency: snapshot.source.currency,
             sourceQuantity: snapshot.source.quantity, anchor: Date.parse(snapshot.anchor) / 1000, currency: snapshot.currency,
             priceId: snapshot.providerPriceId, quantity: snapshot.quantity, idempotencyKey: snapshot.idempotencyKey };

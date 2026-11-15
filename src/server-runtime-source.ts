@@ -6899,6 +6899,7 @@ export function createWebSocketHub(
           stripe: {
             enabled: database.paymentsConfig?.stripe.enabled === true,
             livemode: database.paymentsConfig?.stripe.enabled === true ? database.paymentsConfig.stripe.livemode : null,
+            tax: { enabled: database.paymentsConfig?.stripe.enabled === true && database.paymentsConfig.stripe.tax.enabled },
           },
         },
       },

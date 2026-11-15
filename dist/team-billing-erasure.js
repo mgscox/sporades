@@ -65,7 +65,7 @@ export async function performTeamBillingErasure(database, context, payload) {
             throw retryable("TEAM_BILLING_PROVIDER_LANE_BUSY");
         const customer = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerCustomerId] FROM [sporades_team_billing_customers] WHERE [teamId] = ?")).get(state.teamId);
         const subscriptions = await transaction.prepare(transaction.dialect.sql("SELECT [mode], [providerSubscriptionId] FROM [sporades_team_billing_subscriptions] WHERE [teamId] = ? ORDER BY [providerSubscriptionId]")).all(state.teamId);
-        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays] " +
+        const checkouts = await transaction.prepare(transaction.dialect.sql("SELECT [id], [kind], [productKey], [providerObjectId], [providerCustomerId], [mode], [quantity], [providerPriceId], [currency], [providerExpiresAt], [idempotencyKey], [status], [attemptedAt], [trialDays], [taxEnabled] " +
             "FROM [sporades_team_billing_operations] WHERE [teamId] = ? AND [kind] IN ('checkout', 'currency-handover') ORDER BY [providerObjectId], [id]")).all(state.teamId);
         const mode = customer?.mode ?? subscriptions[0]?.mode ?? checkouts.find((row) => row.mode)?.mode
             ?? (database.paymentsConfig?.stripe?.livemode ? "live" : "sandbox");
@@ -77,6 +77,7 @@ export async function performTeamBillingErasure(database, context, payload) {
         const checkoutSessionIds = checkouts.map((row) => row.providerObjectId).filter(Boolean);
         const checkoutRecoveries = checkouts.filter((row) => row.attemptedAt && !row.providerObjectId).map((row) => ({
             operationId: row.id,
+            taxEnabled: row.taxEnabled == null ? null : row.taxEnabled === 1,
             teamId: state.teamId,
             productKey: row.productKey,
             mode: row.kind === "currency-handover" ? "setup" : "subscription",
