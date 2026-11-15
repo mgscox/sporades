@@ -30,7 +30,15 @@ function Keys() {
       setNotice("Saved");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Operation failed"); }
   }
-  useEffect(() => { void perform(async () => null); }, []);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const listed = await accessKeys.list();
+        if (listed.error) throw new Error(listed.error.message);
+        setKeys(listed.data?.accessKeys ?? []);
+      } catch (error) { setNotice(error instanceof Error ? error.message : "Operation failed"); }
+    })();
+  }, []);
   return <section aria-labelledby="keys-title"><h2 id="keys-title">Agent access</h2>
     <p>Start with read permission. Add permission allows an agent to capture todos for your list.</p>
     <form onSubmit={event => { event.preventDefault(); void perform(() => accessKeys.issue({ name, grants: [...(read ? ["todos:read"] : []), ...(add ? ["todos:add"] : [])] })); }}>
