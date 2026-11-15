@@ -923,3 +923,37 @@ test(`reset recovery does not acknowledge an unaligned or partial quarterly peri
   });
   assert.equal(writes, 1);
 });
+
+test("Subscription card capture attests provider association and hides rejected evidence", async () => {
+  let subscription;
+  const method = { id: "pm_private", object: "payment_method", type: "card", livemode: false, customer: "cus_identity", card: { fingerprint: "privatefingerprint" } };
+  await withProvider((request, response) => {
+    assert.equal(request.method, "GET"); assert.equal(request.headers["idempotency-key"], undefined);
+    assert.deepEqual([...new URL(request.url, "http://localhost").searchParams.values()], ["default_payment_method", "pending_setup_intent.payment_method"]);
+    response.setHeader("content-type", "application/json"); response.end(JSON.stringify(subscription));
+  }, async apiBaseUrl => {
+    const provider = createStripeTeamBillingProvider({ config: { ...config, cardIdentityKeyEnv: "CARD_KEY" },
+      env: { STRIPE_SECRET_KEY: "sk_test_identity", CARD_KEY: "0123456789abcdef0123456789abcdef" }, apiBaseUrl });
+    for (const fields of [{ default_payment_method: method }, { default_payment_method: null, pending_setup_intent: { payment_method: method } }]) {
+      subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, ...fields };
+      const result = await provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" });
+      assert.match(result.card.token, /^[A-Za-z0-9_-]{43}$/); assert.ok(Object.isFrozen(result));
+    }
+    for (const fields of [{ default_payment_method: null }, { default_payment_method: { ...method, card: {} } }]) {
+      subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, ...fields };
+      assert.deepEqual(await provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" }),
+        { ok: true, card: null, pending: true });
+    }
+    for (const status of ["canceled", "incomplete_expired"]) {
+      subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, status, default_payment_method: method };
+      assert.deepEqual(await provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" }),
+        { ok: true, card: null, unavailable: true });
+    }
+    for (const fields of [{ customer: "cus_foreign" }, { livemode: true }, { default_payment_method: "pm_private" }, { default_payment_method: { ...method, object: "customer" } }, { default_payment_method: { ...method, customer: "cus_foreign" } }]) {
+      subscription = { id: "sub_identity", object: "subscription", customer: "cus_identity", livemode: false, default_payment_method: method, ...fields };
+      await assert.rejects(provider.readSubscriptionCardIdentity({ customerId: "cus_identity", subscriptionId: "sub_identity" }), error => {
+        assert.equal(error.retryable, false); assert.doesNotMatch(error.message, /pm_private|privatefingerprint|foreign/); return true;
+      });
+    }
+  });
+});

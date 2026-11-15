@@ -1,3 +1,4 @@
+import { stageTeamBillingCardIdentity, performTeamBillingCardIdentity, readTeamBillingCardIdentity, repairTeamBillingCardIdentities, settleExhaustedTeamBillingCardIdentityJob } from "../../../dist/team-billing-card-identity.js";
 import assert from "node:assert/strict";
 import {
   performTeamBillingPlanTransition,
@@ -27,7 +28,7 @@ async function count(adapter, statement, ...values) {
 async function clearTeamBillingStorage(adapter) {
   const sql = adapter.dialect.sql;
   for (const table of [
-    "sporades_team_billing_desired_state", "sporades_team_billing_provider_lanes",
+    "sporades_team_billing_card_identities", "sporades_team_billing_desired_state", "sporades_team_billing_provider_lanes",
     "sporades_team_billing_erasure_state", "sporades_team_billing_erasure_tombstones",
     "sporades_team_billing_erasure_object_tombstones", "sporades_team_billing_replay",
     "sporades_team_billing_observations", "sporades_team_billing_operations",
@@ -57,6 +58,8 @@ export const CONFORMANCE_SURFACE = {
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_observations] ([id], [teamId], [mode], [providerEventId], [providerObjectId], [payloadDigest], [observedAt], [createdAt]) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")).run("observation-1", "billing-team", "sandbox", "evt_private", "sub_private", "digest", NOW, NOW);
         await adapter.prepare(sql("INSERT INTO [sporades_team_billing_replay] ([providerEventId], [payloadDigest], [settledAt], [retainedUntil]) VALUES (?, ?, ?, ?)")).run("evt_private", "digest", NOW, "2026-09-13T12:00:00.000Z");
 
+        await adapter.exec(sql("CREATE TABLE [sporades_team_billing_card_identities] ([operationId] TEXT PRIMARY KEY, [teamId] TEXT NOT NULL, [generationId] TEXT NOT NULL, [kind] TEXT NOT NULL, [token] TEXT NULL, [capturedAt] TEXT NULL)"));
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind]) VALUES ('legacy-card', 'billing-team', 'legacy-generation', 'pending')")).run();
         await adapter.ensureTeamBillingStorage();
         await adapter.prepare(sql(
           "UPDATE [sporades_team_billing_subscriptions] SET [providerSubscriptionItemId] = 'si_private', [currentPeriodStart] = ?, [lastEventOccurredAt] = ?, [lastEventKind] = 'cancelled', [lastEventRank] = 50, [terminalLatch] = 1, [hasSchedule] = 1 WHERE [id] = 'local-sub'",
@@ -74,10 +77,14 @@ export const CONFORMANCE_SURFACE = {
           "INSERT INTO [sporades_team_billing_provider_lanes] ([teamId], [claimToken], [claimExpiresAt], [updatedAt]) VALUES (?, NULL, NULL, ?)",
         )).run("billing-team", NOW);
 
+        const legacy = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = 'legacy-card'")).get();
+        assert.equal(legacy.generationCount, 1); assert.equal(legacy.readAttempts, 0); assert.equal(legacy.nextAttemptAt, null);
+        await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [generationCount] = 3, [readAttempts] = 2, [nextAttemptAt] = ? WHERE [operationId] = 'legacy-card'")).run(NOW);
         await adapter.ensureTeamBillingStorage();
         for (const table of ["customers", "subscriptions", "operations", "observations", "replay", "desired_state", "provider_lanes"]) {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 1, table);
         }
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities] WHERE [generationCount] = 3 AND [readAttempts] = 2 AND [nextAttemptAt] = ?", NOW), 1);
         assert.equal(await count(adapter,
           "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_subscriptions] WHERE [providerSubscriptionItemId] = 'si_private' AND [currentPeriodStart] = ? AND [lastEventRank] = 50 AND [terminalLatch] = 1 AND [hasSchedule] = 1", NOW), 1);
         assert.equal(await count(adapter,
@@ -87,6 +94,70 @@ export const CONFORMANCE_SURFACE = {
         for (const table of ["erasure_state", "erasure_tombstones", "erasure_object_tombstones"]) {
           assert.equal(await count(adapter, `SELECT COUNT(*) AS [count] FROM [sporades_team_billing_${table}]`), 0, table);
         }
+        await clearTeamBillingStorage(adapter);
+      },
+    },
+    {
+      name: "private card capture and rollback survive every Database adapter",
+      async run(adapter) {
+        await adapter.ensureTeamBillingStorage();
+        const sql = adapter.dialect.sql;
+        const teamId = "11111111-1111-4111-8111-111111111111";
+        const operationId = "22222222-2222-4222-8222-222222222222";
+        await adapter.prepare(sql("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Card capture', ?, 'admin')")).run(teamId, NOW);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_operations] ([id], [requestId], [teamId], [actorUserId], [kind], [productKey], [status], [idempotencyKey], [createdAt], [updatedAt], [mode], [providerCustomerId], [providerSubscriptionId]) VALUES (?, ?, ?, 'admin', 'checkout', 'agency', 'completed', 'card-conformance', ?, ?, 'sandbox', 'cus_card', 'sub_card')")).run(operationId, operationId, teamId, NOW, NOW);
+        let payload, availableAt;
+        const db = { adapter, clock: { now: () => new Date(NOW) }, teamBillingDefinition: {},
+          paymentsConfig: { stripe: { enabled: true, livemode: false, cardIdentityKeyEnv: "CARD_KEY" } },
+          serverEnv: { CARD_KEY: "0123456789abcdef0123456789abcdef" },
+          enqueueTeamBillingCardIdentityJob: async (_tx, value, _key, at) => { payload = value; availableAt = at; },
+          createStripeTeamBillingProvider: () => ({ readSubscriptionCardIdentity: async () => ({ ok: true, card: { token: "a".repeat(43) } }) }),
+        };
+        await assert.rejects(adapter.withTransaction(async tx => {
+          await stageTeamBillingCardIdentity({ ...db, adapter: tx }, operationId); throw new Error("rollback");
+        }), /rollback/);
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities]"), 0);
+        await adapter.withTransaction(tx => stageTeamBillingCardIdentity({ ...db, adapter: tx }, operationId));
+        assert.deepEqual(await readTeamBillingCardIdentity(db, adapter, teamId), { state: "pending" });
+        await performTeamBillingCardIdentity(db, {}, payload);
+        assert.deepEqual(await readTeamBillingCardIdentity(db, adapter, teamId), { state: "captured", card: { token: "a".repeat(43) }, capturedAt: NOW });
+        await adapter.ensureTeamBillingStorage();
+        assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities]"), 1);
+        await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [kind] = 'pending', [token] = NULL, [capturedAt] = NULL WHERE [operationId] = ?")).run(operationId);
+        const oldGeneration = payload;
+        db.paymentsConfig.stripe.livemode = true;
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, false);
+        db.paymentsConfig.stripe.livemode = false;
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, true);
+        assert.notEqual(payload.generationId, oldGeneration.generationId);
+        assert.equal(availableAt, new Date(Date.parse(NOW) + 60_000).toISOString());
+        assert.equal((await settleExhaustedTeamBillingCardIdentityJob(db, oldGeneration)).replacementScheduled, false);
+        const beforeRestart = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(operationId);
+        await repairTeamBillingCardIdentities(db);
+        const afterRestart = await adapter.prepare(sql("SELECT * FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).get(operationId);
+        assert.notEqual(afterRestart.generationId, beforeRestart.generationId);
+        assert.equal(afterRestart.generationCount, 2); assert.equal(afterRestart.readAttempts, 0);
+        assert.equal(afterRestart.nextAttemptAt, beforeRestart.nextAttemptAt);
+        assert.equal(availableAt, beforeRestart.nextAttemptAt);
+        await performTeamBillingCardIdentity(db, {}, payload);
+        for (const erased of [false, true]) {
+          await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [kind] = 'pending', [token] = NULL, [capturedAt] = NULL WHERE [operationId] = ?")).run(operationId);
+          let enter, release;
+          const entered = new Promise(resolve => { enter = resolve; });
+          const gate = new Promise(resolve => { release = resolve; });
+          db.createStripeTeamBillingProvider = () => ({ readSubscriptionCardIdentity: async () => { enter(); await gate; return { ok: true, card: { token: "b".repeat(43) } }; } });
+          const stale = performTeamBillingCardIdentity(db, {}, payload);
+          await entered;
+          if (erased) await adapter.prepare(sql("DELETE FROM [sporades_team_billing_card_identities] WHERE [operationId] = ?")).run(operationId);
+          else await adapter.prepare(sql("UPDATE [sporades_team_billing_card_identities] SET [generationId] = '33333333-3333-4333-8333-333333333333' WHERE [operationId] = ?")).run(operationId);
+          release(); await stale;
+          assert.equal(await count(adapter, "SELECT COUNT(*) AS [count] FROM [sporades_team_billing_card_identities] WHERE [token] IS NOT NULL"), 0);
+          if (!erased) payload = { ...payload, generationId: "33333333-3333-4333-8333-333333333333" };
+        }
+        await adapter.prepare(sql("DELETE FROM [sporades_teams] WHERE [id] = ?")).run(teamId);
+        await repairTeamBillingCardIdentities(db);
+        await adapter.prepare(sql("INSERT INTO [sporades_team_billing_card_identities] ([operationId], [teamId], [generationId], [kind], [token], [capturedAt]) VALUES (?, ?, ?, 'card', ?, ?)")).run(operationId, teamId, payload.generationId, "a".repeat(43), NOW);
+        await repairTeamBillingCardIdentities(db);
         await clearTeamBillingStorage(adapter);
       },
     },

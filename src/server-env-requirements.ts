@@ -56,6 +56,7 @@ export function requiredServerEnvKeys(config: Config): string[] {
   if (stripe?.enabled === true) {
     keys.add(stripe.secretKeyEnv);
     keys.add(stripe.webhookSecretEnv);
+    if (stripe.cardIdentityKeyEnv) keys.add(stripe.cardIdentityKeyEnv);
   }
   for (const service of Object.values(config.services ?? {}) as Config[]) {
     if (service?.kind !== "container") continue;

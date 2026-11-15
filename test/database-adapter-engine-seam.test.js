@@ -226,6 +226,8 @@ const MIGRATED_RUNTIME_MODULES = [
   // runtime-owned callback composition module. The verifier sentinel is
   // private so signature admission cannot silently leave the census while the
   // public Checkout operations keep the module otherwise reachable.
+  { file: "stripe-card-identity.js", atLeast: 2, sentinel: "stripeCardIdentity" },
+  { file: "team-billing-card-identity.js", atLeast: 4, sentinel: "performTeamBillingCardIdentity" },
   { file: "stripe-payment-integration.js", atLeast: 12, sentinel: "verifyStripeWebhookEvent" },
   { file: "stripe-webhook-runtime.js", atLeast: 0, sentinel: "createStripeCallbackEndpoint" },
   // Verified provider events cross into Capsule policy through this single

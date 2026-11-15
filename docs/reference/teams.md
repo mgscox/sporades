@@ -1209,3 +1209,99 @@ Passing a local stub test certifies **nothing about live Stripe**: it does not
 attest Stripe's sandbox/live API behavior, Dashboard Portal configuration,
 payment methods, tax, SCA, delivery timing, or production readiness. Real Stripe
 acceptance remains a separately authorized human check.
+
+## Server-only card identity
+
+`await ctx.teamBilling.getCardIdentity(teamId)` returns one frozen value:
+
+- `{ state: "none" }`: no completed Checkout in the current payment mode.
+- `{ state: "pending" }`: completed Checkout awaits verifiable card evidence or
+  provider recovery. **Pending must never permit a trial.**
+- `{ state: "unavailable" }`: automatic capture stopped because its retry budget
+  was spent or the Subscription was cancelled/replaced. **Never permit a trial.**
+  This is not evidence of a non-card method.
+- `{ state: "captured", card: { token } | null, capturedAt }`: captured card
+  equality token, or null after an actual non-card method is seen. `capturedAt`
+  is the capture settlement time. An absent method or missing fingerprint stays pending until the budget is spent.
+
+
+A Capsule trial gate must handle all four states. For example, persist a
+server-owned `deadline` when admitting Checkout, then run this in trusted server
+code; return only the safe decision to the browser:
+
+```ts
+async function trialGate(ctx, teamId, deadline) {
+  const identity = await ctx.teamBilling.getCardIdentity(teamId);
+  const deadlineMs = Date.parse(deadline);
+  if (!Number.isFinite(deadlineMs) || Date.now() >= deadlineMs) {
+    return { allowed: false, reason: "deadline-expired" };
+  }
+  switch (identity.state) {
+    case "none":
+      return { allowed: false, reason: "checkout-required" };
+    case "pending":
+      return { allowed: false, reason: "awaiting-card" };
+    case "unavailable":
+      return { allowed: false, reason: "card-unavailable" };
+    case "captured":
+      if (!identity.card) return { allowed: false, reason: "card-required" };
+      return { allowed: await claimPrivateTrialToken(teamId, identity.card.token, deadline) };
+  }
+}
+```
+
+`claimPrivateTrialToken` is a Capsule-owned helper: atomically claim the token
+under a unique constraint, recheck the deadline in that transaction, allow an
+idempotent retry by the same Team, and refuse another Team's claim. Keep this ledger private. The persisted deadline must come
+from trusted Capsule state, never a browser value. Once expired, keep withholding
+entitlement even if capture later succeeds, and schedule the Capsule's cancellation
+or provider-safe erasure workflow. The trial Subscription already exists at this
+point; Sporades does not enforce the duplicate-card rule or cancel it automatically.
+
+Current-user server code needs current linked Team membership, administrator
+authority and the Team Billing `read` policy. Privileged callbacks are userless.
+Atomic Stripe consequence handlers receive only this provider-free read, which
+may still be pending. Dormant Team Billing refuses with `TEAM_BILLING_DENIED`;
+a missing key declaration refuses with `STRIPE_CARD_IDENTITY_NOT_CONFIGURED`.
+The browser client, Team Billing projection, handshake and WebSocket operations
+never expose this method or token.
+
+Set the dedicated optional `payments.stripe.cardIdentityKeyEnv` secret before
+relying on capture. Verified paid or trial Checkout stages a durable private
+capture Job. Provider-free convergence stays inside its atomic fence; the Job
+reads Stripe afterward. Capture admits at most five automatic generations, each
+with at most four Subscription reads (permanent refusals end a generation earlier).
+Replacement delays grow exponentially: **1, 5, 25 and 125 minutes**. The generation
+count, reserved read count and next due time are durable; restarting transfers
+ownership without resetting the budget or advancing the due time. After exhaustion,
+no further timed Job is scheduled and the read becomes `unavailable`. Cancellation
+or replacement of the Subscription stops pending capture early; Team erasure removes
+it. A missing method or fingerprint never settles as `captured` with `card: null`.
+
+Verified `customer.subscription.updated`, `setup_intent.succeeded` and `invoice.paid`
+events can wake associated pending or unavailable captures. After the automatic
+budget is spent, each new verified event admits only one bounded generation of up
+to four reads; it does not replenish the budget. Replayed events do not wake it again.
+A stopped capture costs no provider calls while idle. Events supply no card truth:
+the Job still retrieves and attests the stored exact Subscription and refuses a
+cancelled or replaced one. Captured cards are not refreshed by these hints.
+Restart repairs missing work but never revives an unavailable capture on its own.
+Capsules must deny both pending and unavailable trial gates, persist their own
+deadline and refuse after it expires. Currency handover refreshes
+the token after verified replacement Subscription evidence. Portal method
+updates do not refresh in v1: this identifies the card that started billing.
+Provider-safe erasure removes the runtime token with billing rows. Retention of
+any copy in the Capsule's trial ledger belongs to the Capsule.
+
+To deter repeated trials, store tokens under a unique constraint in a private
+Capsule table and decide the consequence. Capture happens after Checkout, so a
+duplicate is detected after the trial Subscription exists. Withhold Capsule
+entitlement and cancel through Portal or erasure; Checkout cannot refuse it in
+advance. Never put the token in browser-visible Job state or results, logs or
+messages. Rotating the dedicated key invalidates previous tokens, with no v1
+dual-key window. Wallets can yield different tokens per device, and tokens are
+comparable only within the same configured key, payment mode and Stripe account.
+HMAC includes no account ID; cross-account separation relies on Stripe's
+account-scoped fingerprints. A human sandbox check of
+Stripe's expanded fields is required before relying on the model; see
+[ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md).

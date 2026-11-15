@@ -2,6 +2,8 @@ export type StripeEnabledPaymentsConfig = Readonly<{
   enabled: true;
   secretKeyEnv: string;
   webhookSecretEnv: string;
+  /** Dedicated random Sealed Server secret; rotating invalidates stored card tokens. */
+  cardIdentityKeyEnv?: string;
   publicOrigin: string;
   /** Runtime-owned POST path outside the reserved /__sporades namespace. */
   callbackPath: string;
@@ -82,7 +84,9 @@ export type StripeWebhookVerificationInput = Readonly<{
   signature: string;
 }>;
 
-/** Bounded provider value produced only after exact-byte signature verification. */
+/** Bounded server-only provider value produced after exact-byte signature verification.
+ * Direct verification retains provider JSON. Durable stripeEvents delivery removes
+ * only fingerprint keys recursively, preserving objectId and PaymentMethod references. */
 export type VerifiedStripeEvent = Readonly<{
   provider: "stripe";
   providerEventId: string;
@@ -90,18 +94,22 @@ export type VerifiedStripeEvent = Readonly<{
   occurredAt: string;
   livemode: boolean;
   objectId: string | null;
+  /** Frozen provider JSON; durable delivery omits fingerprint keys only. */
   raw: Readonly<Record<string, unknown>>;
 }>;
 
 export type StripeDisabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: unknown): Promise<StripePaymentsDisabledResult>;
   createCustomerPortalSession(input: unknown): Promise<StripePaymentsDisabledResult>;
+  readCheckoutCardIdentity(input: unknown): Promise<StripePaymentsDisabledResult>;
   verifyWebhookEvent(input: unknown): Promise<StripePaymentsDisabledResult>;
 }>;
 
 export type StripeEnabledPaymentIntegration = Readonly<{
   createCheckoutSession(input: StripeCheckoutSessionInput): Promise<StripeCheckoutSessionResult>;
   createCustomerPortalSession(input: StripeCustomerPortalSessionInput): Promise<StripeCustomerPortalSessionResult>;
+  /** Read only in server Jobs; never publish the token in browser-visible Job state. */
+  readCheckoutCardIdentity(input: Readonly<{ sessionId: string }>): Promise<StripeCardIdentityResult>;
   verifyWebhookEvent(input: StripeWebhookVerificationInput): Promise<VerifiedStripeEvent>;
 }>;
 
@@ -120,3 +128,6 @@ export type TeamBillingPriceEvidenceInput = Readonly<{
 }>;
 /** Throws TEAM_BILLING_PRICE_EVIDENCE_MISMATCH without exposing provider facts. Does no provider I/O. */
 export function validateTeamBillingPriceEvidence(input: TeamBillingPriceEvidenceInput): Readonly<{ ok: true }>;
+
+/** Opaque equality token, scoped to the Capsule key and Stripe account/mode. */
+export type StripeCardIdentityResult = Readonly<{ ok: true; card: Readonly<{ token: string }> | null }>;

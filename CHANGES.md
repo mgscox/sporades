@@ -1,5 +1,17 @@
 # Changes
 
+## Unreleased
+
+- Add server-only keyed card identity reads and durable Team Billing capture (#406).
+- Durable Stripe event delivery removes only `fingerprint` keys from `raw`;
+  PaymentMethod IDs, metadata and `objectId` remain available to Capsule handlers.
+- Keep Team Billing card capture pending while payment-method evidence is absent;
+  five automatic generations back off by 1, 5, 25 and 125 minutes, then stop as
+  `unavailable`. The budget and due time survive restarts. Cancelled/replaced
+  billing stops capture early; verified events may wake one bounded generation
+  after exhaustion. Trial gates must deny pending/unavailable results and enforce
+  their own deadline.
+
 ## v0.9.51 - 2026-11-11
 
 Changes since v0.9.50.
@@ -88,6 +100,10 @@ Changes since v0.9.47.
 - Make ai.test.js deterministic under QA-gate load (#380) (57c4a27b).
 
 ## Unreleased
+
+- Add server-only keyed card identity reads for completed Checkout and durable
+  Team Billing capture, with private storage, fake card controls and erasure
+  cleanup. Capsules own post-Checkout trial deduplication (#406).
 
 - Add provider-free Team Billing `previewPlanTransition` quotes. Durable previews
   bind confirmation to the same proration date and refuse expired, foreign or

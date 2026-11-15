@@ -1997,3 +1997,20 @@ See [Team Billing testing](./teams.md#test-team-billing-with-a-loopback-provider
 for `STRIPE_API_ORIGIN_INVALID`, `STRIPE_TEST_ORIGIN_LIVE_MODE`,
 `STRIPE_TEST_ORIGIN_DEV_ONLY`, and the redacted `loopback-test` diagnostics.
 Local protocol tests certify nothing about live Stripe.
+
+## Optional Stripe card identity key
+
+Enabled `payments.stripe` may additionally declare
+`"cardIdentityKeyEnv": "STRIPE_CARD_IDENTITY_KEY"`. Seal a dedicated randomly
+generated secret with at least 32 bytes of entropy under that name. The name
+must be uppercase, outside `SPORADES_`, and distinct from `secretKeyEnv` and
+`webhookSecretEnv`. Runtime validation enforces a nonblank value of 32–4096
+UTF-8 bytes; entropy remains the operator's responsibility. Required-env boot
+and doctor diagnostics report only the name. Omission changes no activation
+behavior; card-identity reads return `STRIPE_CARD_IDENTITY_NOT_CONFIGURED`.
+Configured missing or invalid values fail before database initialization.
+
+Never derive this key from Stripe credentials or public Capsule identity.
+Rotating it invalidates all previously stored tokens; v1 has no dual-key window.
+See [server card identity](./server-runtime.md#server-only-checkout-card-identity)
+and [Team Billing card identity](./teams.md#server-only-card-identity).

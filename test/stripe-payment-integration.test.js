@@ -95,6 +95,7 @@ test("the server-only Stripe integration exposes only narrow disabled payment op
   assert.deepEqual(Object.keys(integration).sort(), [
     "createCheckoutSession",
     "createCustomerPortalSession",
+    "readCheckoutCardIdentity",
     "verifyWebhookEvent",
   ]);
 
@@ -109,6 +110,7 @@ test("the server-only Stripe integration exposes only narrow disabled payment op
   assert.deepEqual(await integration.createCheckoutSession({}), expected);
   assert.deepEqual(await integration.createCustomerPortalSession({}), expected);
   assert.deepEqual(await integration.verifyWebhookEvent({}), expected);
+  assert.deepEqual(await integration.readCheckoutCardIdentity({}), expected);
   assert.equal("request" in integration, false);
   assert.equal("client" in integration, false);
 });
@@ -687,4 +689,90 @@ test("Checkout cancellation stops waiting and unexpected redirect authority fail
       });
     });
   }
+});
+
+test("completed Checkout card identity resolves all modes and keeps provider evidence private", async () => {
+  let object;
+  const requests = [];
+  await withStripeFake((req, res) => {
+    requests.push({ url: req.url, method: req.method, key: req.headers["idempotency-key"] });
+    res.setHeader("content-type", "application/json"); res.end(JSON.stringify(object));
+  }, async apiBaseUrl => {
+    const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, cardIdentityKeyEnv: "CARD_KEY" },
+      env: { STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: "whsec_fixture", CARD_KEY: "0123456789abcdef0123456789abcdef" }, apiBaseUrl });
+    const pm = { object: "payment_method", type: "card", card: { fingerprint: "secretfingerprint" } };
+    const tokens = [];
+    for (const [mode, fields] of [
+      ["payment", { payment_intent: { payment_method: pm } }],
+      ["setup", { setup_intent: { payment_method: pm } }],
+      ["subscription", { subscription: { default_payment_method: pm } }],
+      ["subscription", { subscription: { default_payment_method: null, pending_setup_intent: { payment_method: pm } } }],
+    ]) {
+      object = { id: "cs_test_identity", object: "checkout.session", status: "complete", livemode: false, mode, ...fields };
+      const result = await integration.readCheckoutCardIdentity({ sessionId: object.id });
+      assert.equal(result.ok, true); assert.match(result.card.token, /^[A-Za-z0-9_-]{43}$/);
+      assert.ok(Object.isFrozen(result)); assert.ok(Object.isFrozen(result.card)); tokens.push(result.card.token);
+    }
+    assert.equal(new Set(tokens).size, 1);
+    object = { id: "cs_test_identity", object: "checkout.session", status: "complete", livemode: false, mode: "setup",
+      setup_intent: { payment_method: { ...pm, card: { fingerprint: "opaque_provider-value" } } } };
+    assert.match((await integration.readCheckoutCardIdentity({ sessionId: object.id })).card.token, /^[A-Za-z0-9_-]{43}$/);
+    for (const payment_method of [null, { object: "payment_method", type: "sepa_debit" }, { object: "payment_method", type: "card", card: {} }]) {
+      object = { id: "cs_test_identity", object: "checkout.session", status: "complete", livemode: false, mode: "setup", setup_intent: { payment_method } };
+      assert.deepEqual(await integration.readCheckoutCardIdentity({ sessionId: object.id }), { ok: true, card: null });
+    }
+    for (const fields of [{ status: "open" }, { status: "expired" }, { livemode: true }, { setup_intent: { payment_method: "pm_unexpanded" } }]) {
+      object = { id: "cs_test_identity", object: "checkout.session", status: "complete", livemode: false, mode: "setup", setup_intent: { payment_method: pm }, ...fields };
+      await assert.rejects(integration.readCheckoutCardIdentity({ sessionId: object.id }), error => {
+        assert.equal(error.code, "STRIPE_CARD_IDENTITY_UNAVAILABLE"); assert.equal(error.retryable, false);
+        assert.doesNotMatch(error.message + error.hint, /secretfingerprint|pm_unexpanded/); return true;
+      });
+    }
+    const count = requests.length;
+    for (const input of [{}, { sessionId: "pm_bad" }, { sessionId: "cs_test_identity", extra: true }, null]) {
+      await assert.rejects(integration.readCheckoutCardIdentity(input), { code: "STRIPE_CARD_IDENTITY_INPUT_INVALID" });
+    }
+    assert.equal(requests.length, count);
+    assert.ok(requests.every(r => r.method === "GET" && r.key === undefined));
+    assert.ok(requests.every(r => [...new URL(r.url, apiBaseUrl).searchParams.keys()].filter(k => k.startsWith("expand[")).length === 4));
+  });
+});
+
+test("card identity keeps missing keys, provider failures and cancellation opaque", async () => {
+  const env = { STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: "whsec_fixture", CARD_KEY: "0123456789abcdef0123456789abcdef" };
+  const unconfigured = createStripePaymentIntegration({ enabled: true, config: enabledConfig, env });
+  await assert.rejects(unconfigured.readCheckoutCardIdentity({ sessionId: "cs_test_identity" }), { code: "STRIPE_CARD_IDENTITY_NOT_CONFIGURED" });
+  for (const status of [400, 403, 408, 409, 429, 503]) {
+    await withStripeFake((_req, res) => { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: "rawfingerprintsecret", type: "api_error" } })); }, async apiBaseUrl => {
+      const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, cardIdentityKeyEnv: "CARD_KEY" }, env, apiBaseUrl });
+      await assert.rejects(integration.readCheckoutCardIdentity({ sessionId: "cs_test_identity" }), error => {
+        assert.equal(error.retryable, [408, 409, 429, 503].includes(status));
+        assert.doesNotMatch(error.message + error.hint, /rawfingerprintsecret/); return true;
+      });
+    });
+  }
+  await withStripeFake(() => {}, async apiBaseUrl => {
+    const controller = new AbortController();
+    const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, cardIdentityKeyEnv: "CARD_KEY", requestTimeoutMs: 1000 }, env, apiBaseUrl, signal: controller.signal });
+    const pending = integration.readCheckoutCardIdentity({ sessionId: "cs_test_identity" });
+    setTimeout(() => controller.abort(), 10);
+    await assert.rejects(pending, { name: "AbortError" });
+  });
+  await withStripeFake(() => {}, async apiBaseUrl => {
+    const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, cardIdentityKeyEnv: "CARD_KEY", requestTimeoutMs: 1000 }, env, apiBaseUrl });
+    await assert.rejects(integration.readCheckoutCardIdentity({ sessionId: "cs_test_identity" }), error => error.retryable === true);
+  });
+});
+
+test("card identity separates live and sandbox tokens for the same fingerprint", async () => {
+  const tokens = [];
+  for (const livemode of [false, true]) await withStripeFake((_req, res) => {
+    res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ id: "cs_test_identity", object: "checkout.session", mode: "payment", livemode, status: "complete",
+      payment_intent: { payment_method: { object: "payment_method", type: "card", card: { fingerprint: "secretfingerprint" } } } }));
+  }, async apiBaseUrl => {
+    const integration = createStripePaymentIntegration({ enabled: true, config: { ...enabledConfig, cardIdentityKeyEnv: "CARD_KEY", livemode },
+      env: { STRIPE_SECRET_KEY: livemode ? "sk_live_fixture" : "sk_test_fixture", STRIPE_WEBHOOK_SECRET: "whsec_fixture", CARD_KEY: "0123456789abcdef0123456789abcdef" }, apiBaseUrl });
+    tokens.push((await integration.readCheckoutCardIdentity({ sessionId: "cs_test_identity" })).card.token);
+  });
+  assert.deepEqual(tokens, ["RCHAwwKahvd3iuo2rnCXuMLCxOzmDXds8ZAQ_gLqgls", "DcKuFJ6jq5EgcVz23nLwykT0uAIj9kQS6hpvzDzK5BA"]);
 });

@@ -79,11 +79,14 @@ const mail = {
 
 test('configured SMTP, webhook and enabled payments keys are implied; dormant integrations require nothing', async () => temporary(async dir => {
   const { STRIPE_API_VERSION } = await import('../dist/stripe-payment-config.js');
-  const payments = { stripe: { enabled: true, secretKeyEnv: 'STRIPE_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK', publicOrigin: 'https://capsule.example.test', callbackPath: '/stripe-events', tax: { enabled: false }, apiVersion: STRIPE_API_VERSION, livemode: false, requestTimeoutMs: 1000 } };
+  const payments = { stripe: { enabled: true, cardIdentityKeyEnv: 'STRIPE_CARD_KEY', secretKeyEnv: 'STRIPE_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK', publicOrigin: 'https://capsule.example.test', callbackPath: '/stripe-events', tax: { enabled: false }, apiVersion: STRIPE_API_VERSION, livemode: false, requestTimeoutMs: 1000 } };
   await writeFile(path.join(dir, 'sporades.json'), JSON.stringify({ name: 'env-implied', env: {}, mail, payments }));
   const result = runCli(dir, ['doctor']);
   assert.deepEqual(result.output.data.checks.find(c => c.id === 'doctor.server-env').details.missingKeys,
-    ['MAIL_WEBHOOK_SECRET', 'SMTP_PASSWORD', 'SMTP_USERNAME', 'STRIPE_KEY', 'STRIPE_WEBHOOK']);
+    ['MAIL_WEBHOOK_SECRET', 'SMTP_PASSWORD', 'SMTP_USERNAME', 'STRIPE_CARD_KEY', 'STRIPE_KEY', 'STRIPE_WEBHOOK']);
+  assert.equal(runCli(dir, ['env', 'set', 'STRIPE_CARD_KEY', '--stdin'], 'card-identity-private-value-32-bytes').status, 0);
+  const withCardKey = runCli(dir, ['doctor']);
+  assert.equal((withCardKey.stdout + withCardKey.stderr).includes('card-identity-private-value-32-bytes'), false);
   const { openDevDatabase, shutdownAndCloseDatabase } = await import('../dist/server-runtime-source.js');
   const log = path.join(dir, 'implied.jsonl');
   const config = { name: 'implied', mail, logs: { jsonlPath: log } };

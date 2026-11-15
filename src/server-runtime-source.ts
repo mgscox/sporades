@@ -1,3 +1,4 @@
+import { TEAM_BILLING_CARD_IDENTITY_JOB, performTeamBillingCardIdentity, repairTeamBillingCardIdentities, settleExhaustedTeamBillingCardIdentityJob } from "./team-billing-card-identity.js";
 import { TEAM_BILLING_CURRENCY_HANDOVER_JOB, startTeamBillingCurrencyHandover, performTeamBillingCurrencyHandover, repairTeamBillingCurrencyHandovers } from "./team-billing-currency-handover.js";
 import { snapshotIngressDecision, ingressRefusalJob } from "./file-ingress-refusal.js";
 import { createTrustedServices, bindServicesContext, serviceRedactionValues } from "./services-context.js";
@@ -864,6 +865,15 @@ export async function openDevDatabase(
       }
       return dispatchVerifiedStripeEvent(context, event, subscription);
     },
+    performTeamBillingCardIdentity: async (context: LooseRecord, payload: LooseRecord) => {
+      try { return await performTeamBillingCardIdentity(database, context, payload); }
+      catch (error: any) {
+        if (!context.signal?.aborted && ((database.__runtimeJobAttempts.get(context) ?? 1) >= 4 || error?.retryable === false)) {
+          await settleExhaustedTeamBillingCardIdentityJob(database, payload);
+        }
+        throw error;
+      }
+    },
     performTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
       performTeamBillingCheckout(database, context, payload, database.__runtimeJobAttempts.get(context) ?? 1),
     expireTeamBillingCheckout: (context: LooseRecord, payload: LooseRecord) =>
@@ -968,6 +978,12 @@ export async function openDevDatabase(
     mcp,
     createStripeTeamBillingProvider: options?.createStripeTeamBillingProvider,
     stripeApiBaseUrl: options?.stripeApiBaseUrl,
+    cancelTeamBillingCardIdentityJobs: (transaction: LooseRecord, operationId: string) => transaction.prepare(transaction.dialect.sql(
+      "UPDATE [sporades_jobs] SET [status] = 'cancelled', [completedAt] = ?, [startedAt] = NULL, [leaseExpiresAt] = NULL, [claimToken] = NULL " +
+      "WHERE [handler] = ? AND [idempotencyKey] LIKE ? AND [status] IN ('queued', 'delayed')",
+    )).run(database.clock.now().toISOString(), TEAM_BILLING_CARD_IDENTITY_JOB, `team-billing-card-identity:${operationId}:%`),
+    enqueueTeamBillingCardIdentityJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt?: string) =>
+      enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CARD_IDENTITY_JOB, payload, idempotencyKey, { maxAttempts: 4, delayMs: 1_000 }, true, availableAt, true),
     enqueueTeamBillingCheckoutJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string) =>
       enqueueRuntimeJob({ ...database, adapter: transaction, __rootDatabase: database }, TEAM_BILLING_CHECKOUT_JOB, payload, idempotencyKey, { maxAttempts: TEAM_BILLING_CHECKOUT_MAX_ATTEMPTS, delayMs: 1_000 }, true),
     enqueueTeamBillingCheckoutExpiryJob: (transaction: LooseRecord, payload: LooseRecord, idempotencyKey: string, availableAt: string) =>
@@ -1251,6 +1267,7 @@ export async function openDevDatabase(
       if (database.teamBillingDefinition) {
         await repairTeamBillingPlanPreviewExpiries(database);
         await repairTeamBillingCurrencyHandovers(database);
+        await repairTeamBillingCardIdentities(database);
         await repairTeamBillingDesiredStateAtStartup(database);
         await repairTeamBillingErasureStateAtStartup(database);
       }
@@ -2307,6 +2324,14 @@ export async function recoverExpiredJobLeases(database: LooseRecord) {
               { ...database, adapter: transaction, __transactionActive: true }, payload, "JOB_LEASE_EXPIRED",
             );
             replacementScheduled = managementSettlement?.replacementScheduled === true;
+          }
+          if (row.handler === TEAM_BILLING_CARD_IDENTITY_JOB) {
+            let payload: any = null;
+            try { payload = JSON.parse(row.payload); } catch {}
+            const captureSettlement = await settleExhaustedTeamBillingCardIdentityJob(
+              { ...database, adapter: transaction, __transactionActive: true }, payload,
+            );
+            replacementScheduled = captureSettlement.replacementScheduled;
           }
           if (row.handler === TEAM_BILLING_ERASURE_JOB) {
             let payload: any = null;
@@ -4334,6 +4359,8 @@ function createAtomicStripeConsequenceContext(database: LooseRecord, parent: Loo
   context.jobs = Object.freeze({
     enqueue: privilegedJobs.enqueue.bind(privilegedJobs),
   });
+  const billing = createPrivilegedTeamBillingApi(database, () => holder.current);
+  context.teamBilling = Object.freeze({ getCardIdentity: billing.getCardIdentity.bind(billing) });
   const privilegedTeams = createPrivilegedTeamsApi(database, () => holder.current);
   context.teams = Object.freeze({
     countMembers: privilegedTeams.countMembers.bind(privilegedTeams),

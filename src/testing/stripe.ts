@@ -1,6 +1,6 @@
 import { teamBillingIntervalEnd, teamBillingPeriodAt } from "../team-billing-subscription-semantics.js";
 import { normalizeBillingCurrency, billingCurrencyAmount } from "../team-billing-prices.js";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
 import type {
   StripeFakeCatalogue, StripeFakeDelivery, StripeFakeDeliveryFault, StripeFakeEvent, StripeFakeFault,
@@ -33,6 +33,7 @@ const EVENTS = [
   "checkout.session.completed", "checkout.session.expired", "customer.subscription.created",
   "customer.subscription.updated", "customer.subscription.deleted", "invoice.payment_failed",
   "customer.subscription.pending_update_applied", "customer.subscription.pending_update_expired",
+  "invoice.paid", "setup_intent.succeeded",
 ];
 const [CHECKOUT_COMPLETED, CHECKOUT_EXPIRED, SUBSCRIPTION_CREATED, SUBSCRIPTION_UPDATED, SUBSCRIPTION_DELETED, INVOICE_FAILED,
   PENDING_UPDATE_APPLIED, PENDING_UPDATE_EXPIRED] = EVENTS;
@@ -142,6 +143,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
   const schedules = new Map<string, Obj>();
   const portalSessions = new Map<string, Obj>();
   const setupIntents = new Map<string, Obj>();
+  const paymentMethods = new Map<string, Obj>();
   const invoices = new Map<string, Obj>();
   const pendingProrations = new Map<string, number>();
   const eventLog: StripeFakeEvent[] = []; const delivered = new Set<string>(); const deliveryLog: StripeFakeDelivery[] = [];
@@ -218,7 +220,16 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     await emit(subscription.status === "canceled" ? SUBSCRIPTION_DELETED : SUBSCRIPTION_UPDATED, subscription);
     return copy(subscription);
   }
-  async function complete(sessionId: string, input: { customerId?: string; billingMode?: "classic" | "flexible" } = {}) {
+  function createPaymentMethod(customerId: string, method: { type: "card"; card?: string } | { type: "sepa_debit" | "none" }) {
+    requireValue(method && typeof method === "object" && ["card", "sepa_debit", "none"].includes(method.type));
+    exactKeys(method, ["type"], method.type === "card" ? ["card"] : []);
+    if (method.type === "card") requireValue(method.card === undefined || typeof method.card === "string" && method.card.length > 0 && method.card.length <= 256);
+    const methodId = method.type === "none" ? null : id("pm");
+    if (methodId) paymentMethods.set(methodId, { id: methodId, object: "payment_method", type: method.type, customer: customerId, livemode: false,
+      ...(method.type === "card" ? { card: { fingerprint: createHash("sha256").update(`sporades-fake-card\0${method.card ?? "4242424242424242"}`).digest("hex").slice(0, 16) } } : {}) });
+    return methodId;
+  }
+  async function complete(sessionId: string, input: { customerId?: string; billingMode?: "classic" | "flexible"; deferPaymentMethod?: boolean; paymentMethod?: { type: "card"; card?: string } | { type: "sepa_debit" | "none" } } = {}) {
     const session = get(sessions, sessionId);
     requireValue(session.status === "open", "Checkout is not open.");
     requireValue(input.billingMode === undefined || ["classic", "flexible"].includes(input.billingMode));
@@ -226,8 +237,11 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     requireValue(!input.customerId || !session.customer || input.customerId === session.customer, "Checkout Customer mismatch.");
     const customerId = input.customerId ?? session.customer ?? id("cus");
     if (!customers.has(customerId)) customers.set(customerId, { id: customerId, object: "customer", livemode: false, metadata: {}, balance: 0, invoice_credit_balance: {} });
+    requireValue(input.deferPaymentMethod === undefined || typeof input.deferPaymentMethod === "boolean");
+    requireValue(!input.deferPaymentMethod || input.paymentMethod === undefined);
+    const methodId = createPaymentMethod(customerId, input.deferPaymentMethod ? { type: "none" } : input.paymentMethod ?? { type: "card" });
     if (session.mode === "setup") {
-      const intent = { id: id("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: id("pm") };
+      const intent = { id: id("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: methodId };
       setupIntents.set(intent.id, intent);
       Object.assign(session, { status: "complete", payment_status: "no_payment_required", setup_intent: intent.id });
       await emit(CHECKOUT_COMPLETED, session);
@@ -237,10 +251,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     const subscriptionId = id("sub"); const itemPrice = price(session.line_items.data[0].price.id, session.currency);
     const trialDays = session.subscription_data.trial_period_days ? integer(session.subscription_data.trial_period_days, 90) : null;
     const trialEnd = trialDays ? now + trialDays * 86400 : null;
-    const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
+    const pendingSetup = trialDays && methodId ? { id: id("seti"), object: "setup_intent", livemode: false, customer: customerId, status: "succeeded", payment_method: methodId } : null;
+    if (pendingSetup) setupIntents.set(pendingSetup.id, pendingSetup);
+    const subscription = { default_payment_method: trialDays ? null : methodId, pending_setup_intent: pendingSetup?.id ?? null, id: subscriptionId, object: "subscription", livemode: false, customer: customerId,
       ...(session.currency ? { currency: session.currency } : {}),
       status: trialDays ? "trialing" : "active", trial_start: trialDays ? now : null, trial_end: trialEnd, billing_mode: { type: input.billingMode ?? "flexible" }, billing_cycle_anchor: now, cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, latest_invoice: null,
-      ...(session.payment_method_collection === "always" ? { default_payment_method: id("pm") } : {}),
+      ...(session.payment_method_collection === "always" ? { default_payment_method: methodId } : {}),
       metadata: copy(session.subscription_data.metadata),
       items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
         quantity: session.line_items.data[0].quantity, price: itemPrice, current_period_start: now, current_period_end: trialEnd ?? periodEnd(now, itemPrice) }] } };
@@ -249,6 +265,16 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     // Commit both objects before delivering either event.
     await emit(CHECKOUT_COMPLETED, session); await emit(SUBSCRIPTION_CREATED, subscription);
     return copy(session);
+  }
+  function expandedMethod(methodId: string | null) { return methodId ? copy(get(paymentMethods, methodId)) : null; }
+  function expandedSubscription(value: Obj) {
+    const subscription = copy(value);
+    subscription.default_payment_method = expandedMethod(subscription.default_payment_method);
+    if (subscription.pending_setup_intent) {
+      subscription.pending_setup_intent = copy(get(setupIntents, subscription.pending_setup_intent));
+      subscription.pending_setup_intent.payment_method = expandedMethod(subscription.pending_setup_intent.payment_method);
+    }
+    return subscription;
   }
   async function expire(sessionId: string) {
     const session = get(sessions, sessionId);
@@ -460,8 +486,17 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         exactKeys(p, [], ["expand"]);
         const session = copy(get(sessions, resourceId));
         if (p.expand) {
-          exactKeys(p.expand, ["0"]); requireValue(p.expand[0] === "setup_intent");
-          if (session.setup_intent) session.setup_intent = copy(get(setupIntents, session.setup_intent));
+          const paths = Object.values(p.expand);
+          if (paths.join() === "setup_intent") {
+            if (session.setup_intent) session.setup_intent = copy(get(setupIntents, session.setup_intent));
+          } else {
+            requireValue(paths.join() === ["payment_intent.payment_method", "setup_intent.payment_method", "subscription.default_payment_method", "subscription.pending_setup_intent.payment_method"].join());
+            if (session.setup_intent) {
+              session.setup_intent = copy(get(setupIntents, session.setup_intent));
+              session.setup_intent.payment_method = expandedMethod(session.setup_intent.payment_method);
+            }
+            if (session.subscription) session.subscription = expandedSubscription(get(subscriptions, session.subscription));
+          }
         }
         return session;
       }
@@ -499,7 +534,7 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         requireValue(anchor > now && anchor <= periodEnd(now, itemPrice) && p.proration_behavior === "none");
         requireValue([...setupIntents.values()].some(i => i.customer === p.customer && i.status === "succeeded" && i.payment_method === p.default_payment_method));
         const subscriptionId = id("sub");
-        const subscription = { id: subscriptionId, object: "subscription", livemode: false, customer: p.customer, currency: p.currency,
+        const subscription = { pending_setup_intent: null, id: subscriptionId, object: "subscription", livemode: false, customer: p.customer, currency: p.currency,
           status: "active", trial_start: null, trial_end: null, billing_mode: { type: "flexible" }, billing_cycle_anchor: anchor, default_payment_method: p.default_payment_method,
           cancel_at_period_end: false, cancel_at: null, schedule: null, pending_update: null, metadata: copy(p.metadata),
           items: { object: "list", has_more: false, data: [{ id: id("si"), object: "subscription_item", subscription: subscriptionId,
@@ -523,7 +558,12 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
         return transitionInvoice(subscription, price(details.items[0].price, subscription.currency), integer(details.items[0].quantity),
           details.billing_cycle_anchor === "now", details.trial_end === "now", Number(details.proration_date ?? now), p.preview_mode === "recurring").invoice;
       }
-      case "subscriptions.retrieve": exactKeys(p, []); return copy(get(subscriptions, resourceId));
+      case "subscriptions.retrieve": {
+        exactKeys(p, [], ["expand"]);
+        if (p.expand) requireValue(Object.values(p.expand).join() === ["default_payment_method", "pending_setup_intent.payment_method"].join());
+        const subscription = get(subscriptions, resourceId);
+        return p.expand ? expandedSubscription(subscription) : copy(subscription);
+      }
       case "subscriptions.update": {
         exactKeys(p, ["items", "proration_behavior", "proration_date", "payment_behavior"], ["billing_cycle_anchor", "cancel_at_period_end", "expand", "trial_end"]);
         requireValue(p.trial_end === undefined || p.trial_end === "now");
@@ -672,6 +712,17 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     portal: { switchPrice, cancelAtPeriodEnd: (id) => setCancellation(id, true), resume: (id) => setCancellation(id, false) },
     subscriptions: {
       setStatus, setQuantity,
+      async attachPaymentMethod(id, method = { type: "card" }) {
+        const subscription = liveSubscription(id);
+        requireValue(method.type === "card" || method.type === "sepa_debit");
+        const methodId = createPaymentMethod(subscription.customer, method);
+        const setup = { id: idForSetupIntent(), object: "setup_intent", livemode: false, customer: subscription.customer,
+          status: "succeeded", payment_method: methodId };
+        setupIntents.set(setup.id, setup);
+        subscription.default_payment_method = methodId;
+        await emit("setup_intent.succeeded", setup);
+        return subscriptionEvent(subscription);
+      },
       async setSchedule(id, scheduleId) {
         requireValue(scheduleId === null || typeof scheduleId === "string" && /^sub_sched_[A-Za-z0-9_]{1,240}$/.test(scheduleId));
         const subscription = liveSubscription(id);
@@ -795,17 +846,19 @@ export async function createStripeTeamBillingFake(options: StripeTeamBillingFake
     },
     requests: () => copy(requests),
     state: () => copy({ catalogue, now, customers: [...customers.values()], subscriptions: [...subscriptions.values()], schedules: [...schedules.values()],
-      checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices: [...invoices.values()], events: eventLog }),
+      paymentMethods: [...paymentMethods.values()], setupIntents: [...setupIntents.values()], checkouts: [...sessions.values()], portalSessions: [...portalSessions.values()], invoices: [...invoices.values()], events: eventLog }),
     reset() {
-      setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); schedules.clear(); portalSessions.clear(); invoices.clear(); pendingProrations.clear(); idempotency.clear(); lastCreated.clear();
+      paymentMethods.clear(); setupIntents.clear(); sessions.clear(); customers.clear(); subscriptions.clear(); schedules.clear(); portalSessions.clear(); invoices.clear(); pendingProrations.clear(); idempotency.clear(); lastCreated.clear();
       eventLog.length = 0; delivered.clear(); deliveryLog.length = 0; requests.length = 0; faults.length = 0; now = initialNow;
     },
   };
+  function idForSetupIntent() { return id("seti"); }
   function idForInvoice() { return id("in"); } function idForLine() { return id("il"); }
   // An explicit dispatch table prevents control clients from reaching arbitrary object properties.
   const controls: Record<string, (...args: any[]) => any> = {
     "checkout.complete": fake.checkout.complete, "checkout.expire": fake.checkout.expire,
     "portal.switchPrice": fake.portal.switchPrice, "portal.cancelAtPeriodEnd": fake.portal.cancelAtPeriodEnd, "portal.resume": fake.portal.resume,
+    "subscriptions.attachPaymentMethod": fake.subscriptions.attachPaymentMethod,
     "subscriptions.setSchedule": fake.subscriptions.setSchedule,
     "subscriptions.setStatus": fake.subscriptions.setStatus, "subscriptions.setQuantity": fake.subscriptions.setQuantity,
     "subscriptions.completePayment": fake.subscriptions.completePayment,

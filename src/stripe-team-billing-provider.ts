@@ -1,3 +1,4 @@
+import { cardIdentityKey, stripeCardIdentity, SUBSCRIPTION_CARD_EXPAND } from "./stripe-card-identity.js";
 import { normalizeTeamBillingPortalPolicy } from "./team-billing-portal-policy.js";
 import { teamBillingIntervalEnd, teamBillingPeriodAt } from "./team-billing-subscription-semantics.js";
 import { createHash } from "node:crypto";
@@ -22,6 +23,27 @@ export function createStripeTeamBillingProvider(options: LooseRecord) {
     ...(provider ?? {}),
   });
   return Object.freeze({
+    async readSubscriptionCardIdentity(input: LooseRecord) {
+      const key = cardIdentityKey(config, options.env);
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join() !== "customerId,subscriptionId"
+        || !validCustomerId(input.customerId) || !validSubscriptionId(input.subscriptionId)) throw providerFailure(false);
+      throwIfAborted(options.signal);
+      try {
+        const subscription: any = await stripe.subscriptions.retrieve(input.subscriptionId, { expand: SUBSCRIPTION_CARD_EXPAND });
+        throwIfAborted(options.signal);
+        if (subscription.object !== "subscription" || subscription.id !== input.subscriptionId || subscription.customer !== input.customerId
+          || subscription.livemode !== config.livemode || typeof subscription.pending_setup_intent === "string") throw providerFailure(false);
+        if (["canceled", "incomplete_expired"].includes(subscription.status)) return Object.freeze({ ok: true, card: null, unavailable: true });
+        const method = subscription.default_payment_method ?? subscription.pending_setup_intent?.payment_method;
+        if (method && (method.customer !== input.customerId || method.livemode !== config.livemode)) throw providerFailure(false);
+        const card = stripeCardIdentity(method, key, config.livemode);
+        // Absence may precede attachment; only an observed non-card method settles null.
+        return Object.freeze({ ok: true, card, ...(!method || method.type === "card" && !card ? { pending: true } : {}) });
+      } catch (error: any) {
+        if (typeof error?.retryable === "boolean") throw providerFailure(error.retryable);
+        throwProviderOperationFailure(error);
+      }
+    },
     async create(input: LooseRecord) {
       validateInput(input);
       throwIfAborted(options.signal);

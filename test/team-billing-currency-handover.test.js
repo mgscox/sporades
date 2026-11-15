@@ -6,8 +6,8 @@ import Stripe from 'stripe';
 import { createStripeTeamBillingFake } from 'sporades/testing/stripe';
 
 const catalogue = { products: [{ id: 'prod_team', prices: [{ id: 'price_team', recurring: 'month', currency: 'gbp', unitAmount: 1900, currencyOptions: { eur: { unitAmount: 2500 } } }] }], portalConfigurations: [] };
-const config = { enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
-const env = { STRIPE_SECRET_KEY: 'sk_test_handover', STRIPE_WEBHOOK_SECRET: 'whsec_handover' };
+const config = { cardIdentityKeyEnv: 'CARD_KEY', enabled: true, secretKeyEnv: 'STRIPE_SECRET_KEY', webhookSecretEnv: 'STRIPE_WEBHOOK_SECRET', publicOrigin: 'https://billing.example.test', callbackPath: '/stripe/webhook', tax: { enabled: false }, apiVersion: '2026-08-26.dahlia', livemode: false, requestTimeoutMs: 1000 };
+const env = { CARD_KEY: '0123456789abcdef0123456789abcdef', STRIPE_SECRET_KEY: 'sk_test_handover', STRIPE_WEBHOOK_SECRET: 'whsec_handover' };
 
 for (const resetAtAnchor of [false, true]) test(`fake handover replacement preserves flexible billing and resets ${resetAtAnchor ? 'at' : 'before'} its first paid anchor`, async t => {
   const server = createServer((_req, res) => res.writeHead(200).end());
@@ -157,6 +157,9 @@ for (const stage of ['queued', 'ready', 'expired by poll', 'expired after restar
 test('GBP to EUR handover settles from verified evidence and permits later managed plan changes', async t => {
   const f = await fixture(t, false, true);
   const before = await f.read();
+  const cardApi = (await import('../dist/team-billing-runtime.js')).createPrivilegedTeamBillingApi(f.database, () => ({ __privilegedRunActive: true }));
+  const originalCard = await cardApi.getCardIdentity(f.teamId);
+  assert.equal(originalCard.state, 'captured');
   assert.equal((await f.start()).error, null);
   assert.deepEqual(await f.read(), before, 'collecting consent preserves the current entitlement');
   await f.drain();
@@ -164,7 +167,7 @@ test('GBP to EUR handover settles from verified evidence and permits later manag
   const setup = f.fake.state().checkouts.find(s => s.mode === 'setup');
   assert.ok(setup); assert.equal(setup.customer, f.initial.customer);
   assert.equal(f.fake.subscriptions.get(f.initial.subscription).status, 'active', 'no cancellation before verified setup');
-  await f.fake.checkout.complete(setup.id);
+  await f.fake.checkout.complete(setup.id, { paymentMethod: { type: 'card', card: 'replacement-card' } });
   await f.deliver();
   assert.equal(f.fake.subscriptions.get(f.initial.subscription).status, 'canceled');
   assert.deepEqual(await f.read(), before, 'provider acknowledgement cannot switch entitlement');
@@ -198,6 +201,21 @@ test('GBP to EUR handover settles from verified evidence and permits later manag
   const changed = f.fake.subscriptions.get(replacement.id);
   assert.equal(changed.billing_cycle_anchor, replacement.billing_cycle_anchor, 'a subsequent same-interval plan change preserves the free stub');
   assert.equal(f.fake.state().invoices.length, 0);
+  const refreshedCard = await (await import('../dist/team-billing-runtime.js')).createPrivilegedTeamBillingApi(f.database, () => ({ __privilegedRunActive: true })).getCardIdentity(f.teamId);
+  assert.equal(refreshedCard.state, 'captured');
+  assert.notEqual(refreshedCard.card.token, originalCard.card.token);
+  const browserRead = await f.send({ type: 'teamBilling.getCardIdentity', teamId: f.teamId });
+  assert.ok(browserRead.error);
+  assert.ok(!JSON.stringify(await f.read()).includes(refreshedCard.card.token));
+  const handshake = await f.send({ type: 'auth.get' });
+  assert.deepEqual(handshake.data.payments, { stripe: { enabled: true, livemode: false, tax: { enabled: false } } });
+  assert.ok(!JSON.stringify(handshake).includes(refreshedCard.card.token));
+  const rows = f.database.adapter.prepare("SELECT * FROM [sporades_jobs]").all();
+  assert.ok(!JSON.stringify(rows).includes(refreshedCard.card.token));
+  for (const pm of f.fake.state().paymentMethods) {
+    if (pm.card) assert.ok(!JSON.stringify(rows).includes(pm.card.fingerprint));
+  }
+
 });
 
 for (const amount of [-700, 700]) test(`old-currency balance ${amount} refuses safely before collecting setup or canceling`, async t => {
@@ -329,6 +347,7 @@ test('provider-safe erasure expires setup and cancels both sides of a lost repla
   const erased = await f.send({ type: 'teamBilling.prepareErasure', input: { teamId: f.teamId, requestId: randomUUID() } });
   assert.equal(erased.error, null); await f.drain();
   assert.ok(f.fake.state().subscriptions.every(s => s.status === 'canceled'));
+  assert.equal(f.database.adapter.prepare('SELECT COUNT(*) AS count FROM [sporades_team_billing_card_identities] WHERE [teamId] = ?').get(f.teamId).count, 0);
   await f.deliver(); assert.equal((await f.read()).state, 'inactive');
 });
 

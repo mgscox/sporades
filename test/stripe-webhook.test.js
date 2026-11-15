@@ -1850,3 +1850,63 @@ test("an expired reserved Stripe Job is recovered by a second Postgres runtime w
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("durable Stripe handlers retain PaymentMethod ids and objectId while removing only fingerprints", async () => {
+  const delivered = [];
+  await withDatabase({ name: "card-redaction", payments: { stripe } }, {
+    stripeEvents: declareStripeEvent((_ctx, event) => { delivered.push(event); }),
+  }, async database => {
+    await database.init();
+    for (const [type, object] of [
+      ["setup_intent.succeeded", { id: "seti_callback", object: "setup_intent", payment_method: "pm_callback" }],
+      ["payment_method.attached", { id: "pm_callback", object: "payment_method", type: "card" }],
+    ]) {
+      object.card = { fingerprint: "privatecallbackfingerprint" };
+      object.metadata = { reference: "pm_business_reference" };
+      object.nested = [{ fingerprint: "nestedfingerprint", payment_method: "pm_nested" }];
+      const response = await postStripe(database, stripeEvent(`evt_${object.id}`, { type, object }));
+      const jobId = JSON.parse(response.response.body).jobId;
+      await waitForJob(database, jobId, "succeeded");
+      const stored = JSON.parse(database.adapter.prepare("SELECT [payload] FROM [sporades_jobs] WHERE [id] = ?").get(jobId).payload);
+      assert.equal(stored.objectId, object.id);
+      assert.equal(stored.raw.data.object.id, object.id);
+      assert.equal(stored.raw.data.object.metadata.reference, "pm_business_reference");
+      assert.equal(stored.raw.data.object.nested[0].payment_method, "pm_nested");
+      assert.doesNotMatch(JSON.stringify(stored), /privatecallbackfingerprint|nestedfingerprint|"fingerprint"/);
+      assert.match(stored.__sporadesProviderPayloadDigest, /^[a-f0-9]{64}$/);
+    }
+    assert.equal(delivered.length, 2);
+    assert.equal(delivered[0].raw.data.object.payment_method, "pm_callback");
+    assert.equal(delivered[0].objectId, "seti_callback");
+    assert.equal(delivered[1].raw.data.object.id, "pm_callback");
+    assert.equal(delivered[1].objectId, "pm_callback");
+    for (const event of delivered) {
+      assert.equal("__sporadesProviderPayloadDigest" in event, false);
+      assert.ok(Object.isFrozen(event.raw.data.object));
+      assert.doesNotMatch(JSON.stringify(event), /privatecallbackfingerprint|nestedfingerprint|"fingerprint"/);
+    }
+  });
+});
+
+test("atomic card identity reads stay provider-free and expire with their consequence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-atomic-card-"));
+  const teamId = "11111111-1111-4111-8111-111111111111";
+  let retained;
+  const config = { name: "atomic-card", payments: { stripe: { ...stripe, cardIdentityKeyEnv: "CARD_KEY" } } };
+  const capsule = { schema: {}, teamBilling: testTeamBillingDefinition() };
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", { ...serverEnv, CARD_KEY: "0123456789abcdef0123456789abcdef" }, config, capsule,
+    { createStripeCallbackEndpoint, createStripeTeamBillingProvider: () => { assert.fail("atomic card reads must not call the provider"); } });
+  try {
+    await database.init();
+    database.adapter.prepare("INSERT INTO [sporades_teams] ([id], [name], [createdAt], [createdByUserId]) VALUES (?, 'Atomic card', ?, 'admin')").run(teamId, new Date().toISOString());
+    const raw = JSON.parse(stripeEvent("evt_atomic_card"));
+    const event = { provider: "stripe", providerEventId: raw.id, type: raw.type, occurredAt: new Date(raw.created * 1000).toISOString(), livemode: false, objectId: raw.data.object.id, raw };
+    await runAtomicStripeConsequence(database, { auth: { userId: "__privileged__" }, signal: new AbortController().signal }, event,
+      declareStripeEvent({ consequence: "atomic" }, async ctx => {
+        retained = ctx.teamBilling;
+        assert.deepEqual(Object.keys(retained), ["getCardIdentity"]);
+        assert.deepEqual(await retained.getCardIdentity(teamId), { state: "none" });
+      }));
+    await assert.rejects(retained.getCardIdentity(teamId), { code: "PRIVILEGED_TEAM_BILLING_ACCESS_INACTIVE" });
+  } finally { await database.close(); await rm(dir, { recursive: true, force: true }); }
+});

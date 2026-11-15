@@ -1,0 +1,142 @@
+# ADR-0060: Card identity is a keyed server-only equality token
+
+Status: Accepted
+
+## Decision
+
+Capsules may compare a card identity token after completed Checkout. Sporades
+computes base64url HMAC-SHA256 of
+`"sporades-card-identity\0v1\0" + mode + "\0" + card.fingerprint`, with `mode`
+`sandbox` or `live`. Only the 43-character token leaves the provider-read
+boundary. Raw Stripe fingerprints correlate with Dashboard, Radar and exports;
+a leaked token ledger cannot be confirmed against those fingerprints without
+the key. PaymentMethod IDs identify individual objects rather than cards.
+
+The optional `payments.stripe.cardIdentityKeyEnv` names a dedicated Sealed Server
+env secret, distinct from the Stripe and webhook secret names. Operators must
+generate at least 32 random bytes of entropy. Runtime validation enforces a
+nonblank 32–4096 UTF-8 byte value; it cannot measure entropy. Never derive the key
+from either rotating Stripe credential or public `capsuleIdentity`. Diagnostics
+name the env reference and never show its value. Omission preserves activation
+and returns `STRIPE_CARD_IDENTITY_NOT_CONFIGURED` on card reads. A configured
+missing or undersized key fails configuration validation before storage opens.
+
+**Rotating this key invalidates all previously stored tokens. There is no
+ dual-key window in v1.** Existing stored Team tokens are historical values;
+new captures use the new key, so the Capsule must plan any ledger migration.
+
+## Both server surfaces
+
+`sporades/server/stripe` adds `readCheckoutCardIdentity({ sessionId })`. A single
+GET retrieves Checkout with four exact expansions: `payment_intent.payment_method`,
+`setup_intent.payment_method`, `subscription.default_payment_method` and
+`subscription.pending_setup_intent.payment_method`. Only complete Sessions in
+the configured mode and expanded PaymentMethod objects are admitted. Missing
+methods, non-card methods and cards without fingerprints return `card: null`.
+Unexpanded associations and malformed evidence refuse opaquely. Provider faults
+follow ordinary bounded retry and cancellation conventions; GET has no
+idempotency key. Disabled payments retain `STRIPE_PAYMENTS_DISABLED`.
+
+The user-level Checkout creator now supports card-collecting subscription trials
+through server-owned `trialDays` (1–90), added by
+[#409](https://github.com/mgscox/sporades/pull/409) to complete
+[follow-up #407](https://github.com/mgscox/sporades/issues/407). After completed
+Checkout, the same server-only card read can supply the Capsule's private trial
+ledger. User-level setup Checkout remains unsupported.
+
+Team Billing exposes `ctx.teamBilling.getCardIdentity(teamId)` in trusted
+current-user, Privileged and atomic Stripe consequence contexts. Current-user
+reads require linked Team membership, Team administrator authority and the
+existing `read` authorization policy. Privileged reads are userless and revoked
+with the callback. Atomic handlers receive only this provider-free read, often
+still `pending`. No client API, WebSocket handler, projection, handshake or
+payment activation snapshot gains the token.
+
+After verified Checkout binds the Customer and Subscription, provider-free
+convergence stages a private pending row and durable capture Job in the same
+atomic Stripe transaction (ADR 0047). The Job retrieves the Subscription with
+`default_payment_method` and `pending_setup_intent.payment_method` expanded,
+attests exact Subscription, Customer and live-mode association, computes the
+token transiently and writes only `card | none`, token and `capturedAt` alongside
+local Team/operation/generation correlation. Payloads contain only local
+operation and generation UUIDs; results are null. Failures are fixed and opaque.
+Restart repair reconstructs missing work and transfers pending ownership without
+resetting the persisted generation count, reserved read count or next due time;
+stale attempts cannot settle replacement-owned or erased rows. Up to five automatic
+generations make at most four Subscription reads each. Exhaustion backs off by
+1, 5, 25 and 125 minutes between generations, including recovery of exhausted
+interrupted claims. Once the budget is spent, no timed capture Job remains and
+`getCardIdentity` returns `unavailable`. Cancellation or replacement retires pending
+capture early; provider reads also detect terminal Subscription status. Erasure
+removes capture authority. Budget reservations precede provider I/O, so repeated
+restarts cannot replenish a generation's four reads. Legacy pending rows adopt the
+finite budget on upgrade; subsequent boots preserve it.
+
+Missing methods and card objects without a fingerprint are pending evidence, not
+a final non-card result. Actual non-card methods settle a captured null. The stopped
+`unavailable` state is never `captured` with a null card and never permits a trial.
+Verified `customer.subscription.updated`, `setup_intent.succeeded` and `invoice.paid`
+events may wake existing pending or unavailable captures associated with the Customer
+and, where supplied, the exact Subscription. After exhaustion each new event admits
+one bounded generation without replenishing the automatic budget; replayed events
+are inert. Stopped captures make no calls while idle or on restart. SetupIntents
+identify a Customer rather than a Subscription; the Job re-reads and attests the
+stored exact Subscription and refuses retired billing before settlement. No event
+supplies a token, refreshes an already captured card or grants entitlement. Capsules
+must deny both pending and unavailable trial gates and own a persisted deadline.
+No provider I/O enters convergence or atomic Capsule handlers.
+
+Currency handover captures again after verified replacement Subscription truth
+settles the operation. A pending handover refresh does not expose the old token
+as the replacement's card. Portal payment-method changes do **not** refresh in
+v1: this answers which card started the Team's billing, rather than its current
+payment method. Reads select completed operations in the current payment mode.
+Provider-safe erasure (ADR 0049) deletes capture rows with billing rows; stale
+workers never recreate them. The Capsule decides retention of any copied ledger.
+
+Durable callback delivery removes only `fingerprint` keys recursively before
+enqueue, including expanded webhook objects. PaymentMethod IDs, metadata and
+`objectId` retain their verified provider values for Capsule payment flows. The internal envelope
+retains only an original-payload SHA-256 digest for replay/quarantine comparison;
+that internal field is omitted from Capsule event delivery. Direct signature
+verification still returns its existing server-only Verified Stripe event. No
+provider-read fingerprint or PaymentMethod ID enters a capture row, capture Job
+payload/result, log, telemetry or diagnostic. General verified-event Jobs retain
+PaymentMethod references; they never retain fingerprint keys.
+
+## Capsule rule and limits
+
+Sporades does not enforce one trial per card. The Capsule stores tokens under a
+unique constraint and chooses the consequence. Identity is available only after
+Checkout completes, when the trial Subscription already exists. Withhold the
+Capsule entitlement for a duplicate, then cancel through Portal or provider-safe
+erasure; Checkout cannot refuse it in advance. Never return the token in
+browser-visible payment Job state, app messages, query results or logs.
+
+Apple Pay and Google Pay can present device-specific card numbers, producing
+different fingerprints for one physical card across devices or plain-card use.
+This is a deterrent, not a guarantee. Fingerprints are per Stripe account;
+comparisons require the same key, payment mode and Stripe account. The HMAC
+input contains no account or Capsule identifier: cross-account separation comes
+from Stripe's account-scoped fingerprints, while independently generated Capsule
+keys separate their tokens.
+
+## Evidence and certification limits
+
+The loopback fake deterministically hashes `"sporades-fake-card\0" + cardLabel`
+to a 16-character hexadecimal fingerprint, stable across customers, processes,
+reset and runs. Omitted methods default to card `4242424242424242`. Non-card
+methods settle a captured null; none and deferred controls model missing evidence
+and remain pending. Deferred completion plus later attachment
+runs through the separate HTTP fake service with the real Stripe SDK and signed
+webhooks; tests cover both event/attachment orderings, non-card settlement,
+provider failure, delayed retry and event-driven repair. `state()` alone exposes fake PaymentMethods
+and their fingerprints for assertions. Exact supported expansion paths remain
+closed; arbitrary expansions are unsupported. ADR 0058's endpoint parity gate
+continues to bind every provider SDK endpoint to a fake route.
+
+Tests certify Sporades' model, including trial pending SetupIntents. They do
+**not** certify that live Stripe `2026-08-26.dahlia` populates
+`subscription.default_payment_method` or `pending_setup_intent.payment_method`
+as modelled. A human Stripe sandbox check is required before a derived Capsule
+relies on this behavior. No live Stripe calls are part of this implementation.

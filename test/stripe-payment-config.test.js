@@ -163,3 +163,19 @@ test("runtime publication fails closed before opening an incompletely activated 
     },
   );
 });
+
+test("card identity uses an optional distinct Sealed Server key with at least 32 bytes", () => {
+  const stripe = { ...enabledStripeConfig, cardIdentityKeyEnv: "CARD_IDENTITY_KEY" };
+  const env = { STRIPE_SECRET_KEY: "sk_test_fixture", STRIPE_WEBHOOK_SECRET: "whsec_fixture", CARD_IDENTITY_KEY: "0123456789abcdef0123456789abcdef" };
+  assert.deepEqual(validateStripePaymentsRuntimeConfig({ stripe }, env), { stripe });
+  for (const cardIdentityKeyEnv of [null, "", "sk_test_secret", "SPORADES_KEY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]) {
+    assert.throws(() => validatePaymentsConfig({ stripe: { ...stripe, cardIdentityKeyEnv } }), { code: "INVALID_STRIPE_PAYMENTS_CONFIG" });
+  }
+  for (const value of [undefined, "", "short", " ".repeat(32)]) {
+    assert.throws(() => validateStripePaymentsRuntimeConfig({ stripe }, { ...env, CARD_IDENTITY_KEY: value }), error => {
+      assert.equal(error.code, "INVALID_STRIPE_PAYMENTS_CONFIG");
+      assert.doesNotMatch(error.message + error.hint, /0123456789abcdef|short/);
+      return true;
+    });
+  }
+});

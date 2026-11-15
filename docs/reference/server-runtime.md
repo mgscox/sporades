@@ -996,8 +996,9 @@ Capsule server code owns Catalogue authority, current-user authorization,
 trial eligibility, duplicate-trial policy, and entitlements. Trial Checkout
 creates a Subscription, so browser return and Checkout completion alone must
 not grant access. Use verified Stripe events for idempotent consequences and
-later subscription changes. Card identity reads are separate work in
-[#406](https://github.com/mgscox/sporades/issues/406); detecting a duplicate card
+later subscription changes. Use the
+[server-only card identity read](#server-only-checkout-card-identity) after completed
+Checkout; detecting a duplicate card
 after completion happens after the Subscription exists. The Capsule must own
 the refusal and cancellation consequence and keep any identity token out of
 browser-visible payment Job state. This user-level option does not reserve or
@@ -1441,3 +1442,36 @@ Add `mcp: true` or `mcp: { description }` to an endpoint's options to list it
 as a tool on the Capsule's key-guarded MCP bridge. Endpoints without `mcp` are
 never exposed. The bridged request carries no caller credential, so the
 handler must authorize it. See the [MCP bridge reference](./mcp-bridge.md).
+
+## Server-only Checkout card identity
+
+Configure `payments.stripe.cardIdentityKeyEnv` with a dedicated random Sealed
+Server secret (at least 32 bytes of entropy). In a server Job triggered by the
+Verified `checkout.session.completed` event:
+
+```ts
+const identity = await stripe.readCheckoutCardIdentity({ sessionId: event.objectId! });
+if (identity.ok && identity.card) {
+  // Store identity.card.token in a private Capsule trial ledger with a unique constraint.
+}
+```
+
+The frozen result is `{ ok: true, card: { token } | null }`. A single GET resolves
+payment, setup and subscription Checkout, including a trial's pending
+SetupIntent. Non-card, no collected method and a card without a fingerprint
+return null. Incomplete/expired or mismatched-mode evidence returns the opaque
+non-retryable `STRIPE_CARD_IDENTITY_UNAVAILABLE`; transient provider failures
+remain retryable. Unconfigured keys refuse with
+`STRIPE_CARD_IDENTITY_NOT_CONFIGURED`, and disabled integration returns
+`STRIPE_PAYMENTS_DISABLED`. `options.signal` cancels waiting. GET uses no
+idempotency key. User-level subscription Checkout supports
+[card-collecting trials](#card-collecting-subscription-trials) through server-owned
+`trialDays`; creating user-level setup Checkout remains unsupported.
+
+Do not place tokens in browser-visible payment Job state, results, app messages,
+logs or telemetry. Durable Stripe callback delivery recursively removes only
+`fingerprint` keys from `raw`, preserving PaymentMethod IDs, metadata values and
+`objectId` so Capsule payment handlers retain their existing references. An
+internal original-payload digest preserves replay comparison. Direct signature verification keeps its existing server-only
+raw-event contract. See [ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md)
+for rotation and the human Stripe sandbox verification requirement.

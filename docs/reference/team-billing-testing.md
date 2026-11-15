@@ -126,16 +126,17 @@ the same tax, discount, and accounting limits described above.
 
 All returned objects are independent JSON snapshots of the supported provider
 subset. `state()` includes `catalogue`, `now`, `customers`, `subscriptions`,
-`checkouts`, `portalSessions`, `invoices` and `events`. Bearer keys are never logged or
+`paymentMethods`, `setupIntents`, `checkouts`, `portalSessions`, `invoices` and `events`. Bearer keys are never logged or
 returned. The in-memory state belongs to one fake and lasts until `reset()` or
 `close()`; settle outstanding work before resetting it.
 
 | Control | Effect |
 | --- | --- |
-| `checkout.complete(id, { customerId? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. Setup-mode Sessions instead save a payment method through a successful SetupIntent without creating a Subscription or charging. An existing Session Customer cannot be replaced. |
+| `checkout.complete(id, { customerId?, paymentMethod?, deferPaymentMethod? })` | Creates or reuses a Customer, creates an active one-item Subscription, emits Checkout completion and Subscription creation. Setup-mode Sessions instead save a payment method through a successful SetupIntent without creating a Subscription or charging. An existing Session Customer cannot be replaced. `deferPaymentMethod: true` completes before a method exists; attach it later through the control below. |
 | `checkout.expire(id)` | Expires an open Session and emits expiry. |
 | `portal.switchPrice(id, priceId)` | Simulates a Portal Price change, resets the billing period on interval/count changes only in classic mode, and emits an update. |
 | `portal.cancelAtPeriodEnd(id)`, `portal.resume(id)` | Schedules or removes cancellation and emits an update. |
+| `subscriptions.attachPaymentMethod(id, method)` | Attaches a deterministic PaymentMethod, records a successful SetupIntent, and emits `setup_intent.succeeded` plus `customer.subscription.updated`. |
 | `subscriptions.setStatus(id, status)` | Accepts `active`, `past_due`, `unpaid`, `trialing`, `incomplete`, `incomplete_expired`, `canceled`; canceled and expired Subscriptions stay terminal. |
 | `subscriptions.setSchedule(id, scheduleId)` | Attaches an external `sub_sched_…` identity or clears it with `null`, emitting an update for transition-guard tests. |
 | `subscriptions.setQuantity(id, quantity)` | Changes a licensed seat or usage quantity and emits an update. |
@@ -334,3 +335,70 @@ failed invoices and Portal switches preserve it. Unsupported Price currencies
 and incompatible Customer currencies are refused. Omitting currency facts keeps
 existing fixtures unchanged. Fake-backed tests certify the runtime protocol;
 real Stripe regional charging remains a release smoke check.
+
+## Late card attachment over HTTP
+
+The stateful `sporades stripe-fake` CLI runs separate Stripe API and control HTTP
+origins. The runtime uses the real Stripe SDK against that API, and the service
+signs callbacks to the Capsule. No request is forwarded to live Stripe. To model
+Checkout completion arriving before its PaymentMethod:
+
+```ts
+await control("checkout.complete", sessionId, { deferPaymentMethod: true });
+await control("events.deliver"); // completed Checkout: getCardIdentity stays pending
+await control("subscriptions.attachPaymentMethod", subscriptionId,
+  { type: "card", card: "same-card" });
+await control("events.deliver"); // successful SetupIntent and Subscription update
+// Read getCardIdentity in trusted server code; deny pending and unavailable trials.
+```
+
+`control` posts `{ args: [...] }` to the control origin's `/__control/<name>` as
+described above. JavaScript controls expose the same methods. Attachment creates
+a deterministic PaymentMethod and successful SetupIntent, updates the existing
+Subscription, and emits signed-event candidates. Delivery can be withheld to test
+the runtime's finite capture repair independently of webhooks: five generations,
+with 1, 5, 25 and 125 minute delays. An exhausted capture becomes `unavailable`
+and makes no more timed reads; a new verified hint may wake one bounded generation. Use
+`faults.inject` for a transient Subscription-read failure, and `events.emit` with
+a matching `invoice.paid` object to exercise that wake-up path. See the HTTP CLI
+rehearsal in `test/team-billing-card-identity.test.js` for early/late attachment,
+same-card equality across Customers, non-card methods, backoff, budget exhaustion,
+restart preservation, cancellation/replacement/erasure and every hint.
+The service proves Sporades handles these orderings; live Stripe ordering and
+population of expanded payment methods remain unverified.
+
+## Two Teams using the same card
+
+Seal a test-only 32-byte-or-longer `CARD_IDENTITY_KEY` and configure
+`payments.stripe.cardIdentityKeyEnv` to that name. Start both Teams' ordinary
+Checkout flows. With the fake running and their Sessions ready:
+
+```ts
+await fake.checkout.complete(firstSessionId, { paymentMethod: { type: "card", card: "same-card" } });
+await fake.checkout.complete(secondSessionId, { paymentMethod: { type: "card", card: "same-card" } });
+// Deliver the verified callbacks, then let runtime capture Jobs settle.
+await fake.events.deliver();
+// In trusted Capsule server code (poll while pending):
+const first = await ctx.teamBilling.getCardIdentity(firstTeamId);
+const second = await ctx.teamBilling.getCardIdentity(secondTeamId);
+if (first.state === "captured" && second.state === "captured" && first.card && second.card) {
+  if (first.card.token === second.card.token) { /* reject a duplicate in the private trial ledger */ }
+}
+```
+
+Different labels yield different tokens. Omitted `paymentMethod` uses the card
+`4242424242424242`; `{ type: "card" }` does the same. Use
+`{ paymentMethod: { type: "sepa_debit" } }` for a non-card method and
+`{ paymentMethod: { type: "none" } }` for a trial collecting none. An observed
+non-card method captures `card: null`; no method stays pending, then becomes
+`unavailable` when the budget is spent. Fingerprints are deterministic across processes, customers,
+`reset()` and runs. `fake.state().paymentMethods` exposes fake `pm_…` objects and
+raw fake fingerprints only for assertions. The CLI control API accepts the same
+`checkout.complete` options and exposes the same `state` snapshot.
+
+The fake supports only the exact card-read expansions documented in
+[ADR 0060](../adr/0060-card-identity-is-a-keyed-server-only-token.md); other reads
+stay `sporades_fake_unsupported`. It certifies Sporades' model, not Stripe's live
+Checkout behavior, wallet equivalence or actual free-trial prevention. Keep
+tokens out of browser-visible Job state and allow for post-Checkout duplicate
+detection. The Capsule owns cancellation and entitlement decisions.
