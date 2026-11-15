@@ -71,8 +71,17 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, emailEvent, endpoint, job, message, mutation, query, requireAuth, requireUserAuth, schedule, stripeEvent, table, type TableApi, type TableDefinition, type ServerEnvConfig } from "sporades/server";
+const scopedEndpoint = endpoint({ method: "POST", path: "/scope-check" }, ctx => {
+  const scopes = ["todos:read"] as const;
+  const allowed: boolean = ctx.hasAccessKeyScopes(scopes);
+  const canonical: publicServerApi.EndpointContext = ctx;
+  const parity: boolean = canonical.hasAccessKeyScopes(scopes);
+  return { body: { allowed, parity } };
+});
 const publicHealth = endpoint({ method: "GET", path: "/health", session: "none" }, ctx => {
   const restricted: publicServerApi.SessionlessEndpointContext = ctx;
+  // @ts-expect-error Sessionless endpoints have no admitted Access key.
+  ctx.hasAccessKeyScopes(["todos:read"]);
   const service = ctx.services.embeddings;
   if (service) {
     const url: string = service.url;

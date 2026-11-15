@@ -99,6 +99,7 @@
     "vite": "^6.4.5"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
     "@sveltejs/vite-plugin-svelte": "^5.1.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.0.0",

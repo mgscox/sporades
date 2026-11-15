@@ -146,3 +146,30 @@ the security policy, request-admission policy and quotas. The bridged request
 arrives from the runtime's own address, so on a Hosted Capsule an admission
 policy with address rules fails closed for it, and quotas count both requests.
 Request bodies follow `http.maxBodyBytes`.
+
+## Capsule-owned app-facing MCP
+
+An application may own a separate MCP endpoint as an ordinary Custom endpoint
+with an Access-key-only declarative guard. Its Server Bundle owns all tool names,
+schemas, dispatch and application policy. `EndpointContext.hasAccessKeyScopes`
+checks concrete declared scopes against the captured admission for discovery and
+again for calls; owner filters and ACL still govern the resource. Adding or
+changing a tool requires editing and redeploying only that Capsule on the same
+Sporades version. The runtime-owned operator bridge above remains independent.
+
+The opt-in [React Todo pilot](https://github.com/mgscox/sporades/tree/main/examples/todo-mcp)
+uses `/mcp`, `todos:read` and `todos:add`, a Session-only key-management panel,
+separate Service Users, and durable owner/request-ID add receipts. Its README
+includes the source-candidate installation path, real MCP client configuration,
+HTTP error boundaries, independent operator enablement, and a same-package tool
+edit/redeploy exercise. It implements stateless JSON Streamable HTTP revision
+`2026-07-28`: `server/discover`, filtered `tools/list`, schema-validated
+`tools/call`, required per-request metadata and mirrored headers, Origin checks,
+private/no-store responses, and 405 for GET/DELETE. See the
+[protocol transport contract](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
+
+Use a manually provisioned Capsule Access key at `/mcp` and the independently
+configured operator bearer at `/__sporades/mcp`. OAuth-discovery-only clients
+require a later integration. The app endpoint has no `mcp` exposure option and
+works when the operator bridge is disabled. The operator bridge still omits
+caller credentials when invoking explicitly exposed Custom endpoints.
