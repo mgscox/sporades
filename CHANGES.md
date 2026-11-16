@@ -1,5 +1,13 @@
 # Changes
 
+## v0.9.54 - 2026-11-16
+
+Changes since v0.9.53.
+
+### 🐛 Bug Fixes
+
+- Fix QA cancellation accounting for buffered results (#426) (2c80116e).
+
 ## v0.9.53 - 2026-11-16
 
 Changes since v0.9.52.
