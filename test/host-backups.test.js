@@ -411,7 +411,7 @@ test('shipped CLI and helper quiesce exact containers, restore staging, and repo
   const metricDirectory = path.join(h.remoteRoot, 'backup-metrics');
   const metricFiles = await Promise.all((await readdir(metricDirectory)).map(async name => ({ name, text: await readFile(path.join(metricDirectory, name), 'utf8') })));
   const metricName = metricFiles.find(file => file.text.includes('capsule_subname="source"')).name;
-  await writeFile(path.join(bin, 'caddy'), `#!${process.execPath}\nprocess.exit(0);\n`, { mode: 0o755 });
+  await writeFile(path.join(bin, 'caddy'), `#!${process.execPath}\nif (process.argv[2] === 'version') console.log('v2.11.9 h1:fake=');\nprocess.exit(0);\n`, { mode: 0o755 });
   const failedUnregister = spawnSync(process.execPath, ['bin/sporades-host-helper.js'], { cwd: root, env: { ...env, SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE: '1' }, input: JSON.stringify({ action: 'capsule.unregister', host: h, capsule: { subname: 'source' } }), encoding: 'utf8' });
   assert.equal(JSON.parse(failedUnregister.stdout).ok, false);
   assert.notEqual(JSON.parse(await readFile(path.join(registry, 'source.json'), 'utf8')).status, 'unregistered');

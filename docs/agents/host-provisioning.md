@@ -531,7 +531,15 @@ ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   if ! command -v node >/dev/null 2>&1 || ! node --version | grep -Eq '^v2[2-9]\\.'; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   fi
+  # Caddy must come from the official Caddy apt repository (Cloudsmith
+  # caddy/stable, any-version). Ubuntu's own package is Caddy 2.6.2, which the
+  # Host helper refuses: the minimum supported version is 2.9.1.
+  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
+  apt-get update
   apt-get install -y nodejs docker.io caddy
+  caddy version
   printf '%s\n' \
     '[sshd]' \
     'enabled = true' \

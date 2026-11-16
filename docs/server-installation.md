@@ -34,7 +34,9 @@ Host server:
 - Linux server reachable over SSH.
 - Node.js `>=22.13 <23` or `>=24` to run the Sporades Host helper.
 - Docker available to run Hosted Capsule containers.
-- Caddy available to serve and reload generated routes.
+- Caddy 2.9.1 or newer, installed from the official Caddy apt repository, to
+  serve and reload generated routes. Distribution packages such as Ubuntu's
+  Caddy 2.6.2 are too old and are refused by `sporades host bootstrap`.
 - `tar` available to extract pushed Capsule releases.
 - Ports 80 and 443 reachable from the public internet or via proxy (e.g. Cloudflare).
 - A DNS Hosted domain that resolves to the Host server. Wildcard DNS is expected
@@ -115,6 +117,16 @@ apt-get update
 apt-get install -y ca-certificates curl fail2ban gnupg tar
 
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+
+# Caddy comes from the official Caddy repository, never the distribution package.
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+  | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+  > /etc/apt/sources.list.d/caddy-stable.list
+chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+  /etc/apt/sources.list.d/caddy-stable.list
+apt-get update
+
 apt-get install -y nodejs docker.io caddy
 
 cat >/etc/fail2ban/jail.d/sporades-sshd.conf <<'EOF'
@@ -143,6 +155,48 @@ docker --version
 caddy version
 fail2ban-client status sshd
 tar --version
+```
+
+`caddy version` must report 2.9.1 or newer. The repository file selects the
+Cloudsmith `caddy/stable` channel with the `any-version` distribution, so later
+`apt-get upgrade` runs keep Caddy current. The Host helper checks the version
+before bootstrap, route changes and Host metrics reconciliation, and refuses an
+older Caddy with the upgrade instruction; `sporades host stats --json` reports
+`services.caddy.version`, `minimumVersion` and `supported`.
+
+### Upgrade Caddy on an existing Host
+
+Hosts installed from older instructions run the distribution package (Caddy
+2.6.2 on Ubuntu 24.04). That version advertises HTTP/3 but can leave browser
+requests sent over HTTP/3 hanging, and it cannot parse the routes Sporades now
+generates. Upgrade in place; sites, certificates, the service user and Sporades'
+systemd drop-in are retained:
+
+```sh
+ssh root@<server-ip-or-hostname>
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y ca-certificates curl gnupg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+  | gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt \
+  > /etc/apt/sources.list.d/caddy-stable.list
+chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+  /etc/apt/sources.list.d/caddy-stable.list
+apt-get update
+apt-get install -y -o Dpkg::Options::=--force-confold caddy
+caddy version
+systemctl is-active caddy
+```
+
+`--force-confold` keeps the existing `/etc/caddy/Caddyfile`. Then update the
+Host helper and rerun bootstrap from the workstation so routes are regenerated
+and, on monitored Hosts, the managed metrics block moves to the global option:
+
+```sh
+sporades host bootstrap --host personal --json
+sporades host telemetry reconcile --host personal --json
+sporades host stats --host personal --json
 ```
 
 Fail2ban protects the Host server's own `sshd` service. It is Host hardening,
@@ -630,15 +684,17 @@ ports or Caddy's administration endpoint. Container localhost is not Host
 localhost. No Docker socket or privileged exporter is used; the exporter has a
 128 MiB memory limit, 0.25 CPU limit and a restricted collector set.
 
-Caddy 2.6.2 is the minimum tested version. The helper enables `servers { metrics }`
-and the `metrics /metrics` handler, validates the candidate Caddyfile, then
+Caddy 2.9.1 is the minimum supported version. The helper enables the global
+`metrics` option and the `metrics /metrics` handler, validates the candidate Caddyfile, then
 performs a graceful reload. It preserves other global options, sites and TLS.
 A rejected candidate never replaces the working file; failed reload restores
-the previous file. Managed blocks are marked `Sporades Host metrics`. On systemd
+the previous file. Managed blocks are marked `Sporades Host metrics`. Reconciling
+replaces the deprecated `servers { metrics }` block written by older helpers; an
+operator's own `metrics` option is left alone. On systemd
 Hosts, an owned drop-in orders Caddy after Docker, retries failed startup and
 sets its start/reload command to the managed `<remote-root>/caddy/Caddyfile`.
 This preserves the same sites and metrics configuration across reboot; existing
-service environment, user and other overrides are retained. The supported
+service environment, user and other overrides are retained. The official Caddy
 Debian/Ubuntu package installs Caddy at `/usr/bin/caddy`. No native Caddy OTLP export or Caddy tracing is added.
 
 Open `/grafana/d/sporades-hosts` and `/grafana/d/sporades-caddy` through the

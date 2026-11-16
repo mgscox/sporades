@@ -548,7 +548,7 @@ if (args[0] === 'rm') state.relay = false;
 if (args[0] === 'run') { state.relay = true; fs.writeFileSync(stateFile, JSON.stringify(state)); if (failure === 'start') process.exit(1); }
 fs.writeFileSync(stateFile, JSON.stringify(state));
 `, { mode: 0o755 });
-  await writeFile(path.join(f.bin, 'caddy'), `#!/bin/sh\nif [ -f '${failFile}' ] && [ "$(cat '${failFile}')" = caddy ]; then exit 1; fi\n`, { mode: 0o755 });
+  await writeFile(path.join(f.bin, 'caddy'), `#!/bin/sh\nif [ "$1" = version ]; then echo 'v2.11.9 h1:fake='; exit 0; fi\nif [ -f '${failFile}' ] && [ "$(cat '${failFile}')" = caddy ]; then exit 1; fi\n`, { mode: 0o755 });
   await writeFile(path.join(f.bin, 'systemctl'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const disableIntent = async () => {
     const file = path.join(f.telemetry, 'connection.json');

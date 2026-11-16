@@ -66,6 +66,7 @@ import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } 
 import { disableHostTelemetryExports, removeHostTelemetryAgents, checkHostTelemetryDelivery, recoverHostTelemetryActivation, migrateHostTelemetryRelay, connectHostTelemetryRelay, readHostTelemetryConnection, reconcileHostTelemetryRelay, statusHostTelemetryRelay } from "./host-telemetry-relay.js";
 import { queueHostInventory, removeHostInventoryWorker, hostInventoryStatus, exportHostInventory, reconcileHostInventory, installHostInventoryWorker, kickHostInventory } from "./host-inventory.js";
 import { installHostAutostart } from "./host-autostart.js";
+import { assertSupportedCaddy, inspectCaddyVersion } from "./host-caddy-version.js";
 import { configureObservabilityMail } from "./host-observability-mail.js";
 import { applyObservabilityMail, enableObservability, disableObservability, statusObservability, provisionObservability, readObservabilityState, backupObservability, listObservabilityBackups, pruneObservabilityBackups, restoreObservability, installObservabilityMonitor, renderObservabilityRoutes, OBSERVABILITY_ROUTE_FILE } from "./host-observability.js";
 import { type HostBackupResumeDiagnostics, configureHostBackups, readHostBackupPolicy, createHostBackup, listHostBackups, pruneHostBackups, restoreHostBackup, recoverHostBackupRestore, hostBackupStatus, hostBackupRetention, hostBackupDirectory, atomicBackupJson, trustedBackupPath, publishHostBackupMetric } from "./host-backups.js";
@@ -1294,6 +1295,8 @@ function versionHost(request: HostHelperRequest) {
 
 async function bootstrapHost(request: HostHelperRequest) {
   validateBootstrapRequest(request);
+  // Before any Host mutation: an outdated Caddy must not receive generated config.
+  assertSupportedCaddy("rerun `sporades host bootstrap`");
   const bootstrap = normaliseBootstrap(request);
   await assertHostnamesAvailable(request.host.remoteRoot, [`host.${request.host.domain}`], `health:${request.host.domain}`);
   await ensureBootstrapDirectories(bootstrap);
@@ -3529,7 +3532,7 @@ async function statsHost(request: HostHelperRequest) {
   validateHostStatsRequest(request);
   const records = await readCapsuleRegistryRecords(request);
   const dockerAvailable = checkDockerAvailable();
-  const caddyAvailable = checkCaddyAvailable();
+  const caddy = inspectCaddyVersion();
   const dockerStates = dockerAvailable ? records.map((record: any) => lookupCapsuleDockerState(request, record)) : [];
 
   const data = {
@@ -3546,7 +3549,7 @@ async function statsHost(request: HostHelperRequest) {
     },
     services: {
       docker: { available: dockerAvailable },
-      caddy: { available: caddyAvailable },
+      caddy,
     },
     capsules: countHostedCapsules(records, dockerStates),
   };
@@ -4204,11 +4207,6 @@ function readHostLoadStats() {
 
 function checkDockerAvailable() {
   return runDocker(["version", "--format", "{{.Server.Version}}"]).ok;
-}
-
-function checkCaddyAvailable() {
-  const result = spawnSync("caddy", ["version"], { encoding: "utf8" });
-  return !result.error && result.status === 0;
 }
 
 function countHostedCapsules(records: any, dockerStates: any) {
@@ -5424,6 +5422,7 @@ function trustedBootstrapFinalFileOwner(file: string) {
 }
 
 function validateCaddyBootstrap(caddyfile: string) {
+  assertSupportedCaddy("rerun `sporades host bootstrap`");
   const result = spawnSync("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -5947,11 +5946,17 @@ function renderRunningRoute(route: HostedCapsuleRoute) {
     "    header Cache-Control public,*",
     "  }",
     "}",
-    // Identity must vary too. Defer preserves upstream Vary on Caddy 2.6.2;
-    // response-header match blocks require 2.9 and misparse on older Hosts.
+    // Caddy adds Vary only to encoded responses; identity variants must vary too.
+    // Response-header match blocks need Caddy 2.9.1, the enforced Host minimum.
     "header @sporadesStaticAssets {",
     "  +Vary Accept-Encoding",
-    "  defer",
+    "  match {",
+    "    header Content-Type text/javascript*",
+    "    header Content-Type application/javascript*",
+    "    header Content-Type text/css*",
+    "    header Cache-Control no-cache",
+    "    header Cache-Control public,*",
+    "  }",
     "}",
     `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
     `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
@@ -6580,6 +6585,8 @@ function runtimeDataOwnershipError(targetPath: string, uid: any, gid: any) {
 }
 
 function validateCaddyRoute(routeFile: string) {
+  // Older Caddy validates a response-header `match` block as a literal header.
+  assertSupportedCaddy("retry the lifecycle command", process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2_000 : 30_000);
   const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2_000 : 30_000 });
   if (result.error || result.status !== 0) {
     throw helperError(

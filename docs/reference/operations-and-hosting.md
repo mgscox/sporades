@@ -448,25 +448,27 @@ JavaScript or CSS with the public tree's `no-cache` or `public, ...` cache polic
 Private and no-store responses are excluded. Caddy prefers Zstandard when the
 client gives both encodings the same weight; explicit identity requests remain uncompressed. Responses below
 Caddy's default 512-byte minimum and responses with an existing `Content-Encoding`
-remain uncompressed. HTML, JSON, images, runtime
+or `Cache-Control: no-transform` remain uncompressed. HTML, JSON, images, runtime
 health probes, and WebSocket traffic keep their existing behavior.
 
-The generated configuration supports Caddy 2.6.2, the minimum tested Host version.
-That version can compress otherwise eligible public responses carrying
-`Cache-Control: no-transform`; this directive alone does not exclude a response.
-Use `Cache-Control: private, no-store` for dynamic endpoints that must be excluded.
+The generated configuration requires Caddy 2.9.1, the minimum supported Host
+version: response-header `match` blocks in `header` first parse in 2.9.1, and the
+global `metrics` option used for Host metrics in 2.9.0. The Host helper checks
+`caddy version` before bootstrap, route changes and Host metrics reconciliation
+and refuses an older or unidentifiable Caddy. Install Caddy from the official
+Caddy apt repository; see
+[Upgrade Caddy on an existing Host](../server-installation.md#upgrade-caddy-on-an-existing-host).
 
 Cache-Control is preserved: hashed public assets remain immutable, stable names
-retain revalidation, and HTML remains no-store. All GET/HEAD responses on the
-matching asset paths include `Vary: Accept-Encoding`, including identity and
-responses excluded from encoding, retaining other Vary fields. Caddy owns
-encoding; Capsule releases still contain original bytes.
+retain revalidation, and HTML remains no-store. Matching asset responses include
+`Vary: Accept-Encoding` for both encoded and identity variants, retaining other
+Vary fields. Caddy owns encoding; Capsule releases still contain original bytes.
 
 To check compatibility, run the live acceptance test with the upstream Caddy
-2.6.2 binary, then repeat with the newer version installed on the target Host:
+2.9.1 binary, then repeat with the newer version installed on the target Host:
 
 ```sh
-SPORADES_CADDY_ACCEPTANCE_BIN=/path/to/caddy-2.6.2 node --test --test-name-pattern='real Caddy negotiates Hosted public asset encoding' test/public-assets.test.js
+SPORADES_CADDY_ACCEPTANCE_BIN=/path/to/caddy-2.9.1 node --test --test-name-pattern='real Caddy negotiates Hosted public asset encoding' test/public-assets.test.js
 ```
 
 After updating the Host helper, start/restart generates the new routes. Existing

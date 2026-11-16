@@ -744,6 +744,12 @@ process.exit(0);
 const { appendFileSync } = require("node:fs");
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
+// Version probes stay out of the call log so lifecycle assertions keep their shape.
+if (args[0] === "version") {
+  if (process.env.FAKE_CADDY_LOG_VERSION === "1") appendFileSync(process.env.FAKE_DOCKER_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+  process.stdout.write((process.env.FAKE_CADDY_VERSION ?? "v2.11.9 h1:fake=") + "\\n");
+  process.exit(Number(process.env.FAKE_CADDY_VERSION_STATUS || "0"));
+}
 appendFileSync(process.env.FAKE_DOCKER_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
 const delayMs = Number(process.env.FAKE_DOCKER_CADDY_DELAY_MS || "0");
 if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
@@ -811,6 +817,12 @@ async function installFakeCaddy(dir, options = {}) {
 const { appendFileSync } = require("node:fs");
 const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
+// Version probes stay out of the call log so lifecycle assertions keep their shape.
+if (args[0] === "version") {
+  if (process.env.FAKE_CADDY_LOG_VERSION === "1") appendFileSync(process.env.FAKE_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+  process.stdout.write((process.env.FAKE_CADDY_VERSION ?? "v2.11.9 h1:fake=") + "\\n");
+  process.exit(Number(process.env.FAKE_CADDY_VERSION_STATUS || "0"));
+}
 appendFileSync(process.env.FAKE_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
 let status = args[0] === "validate"
   ? process.env.FAKE_CADDY_VALIDATE_STATUS

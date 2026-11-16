@@ -775,6 +775,29 @@ test("Host provisioning shared install script enables fail2ban for sshd", async 
   assert.match(script, /fail2ban-client status sshd/);
 });
 
+test("Host provisioning installs Caddy from the official repository and documents the minimum version", async () => {
+  const [serverInstallation, hostProvisioning, operations] = await Promise.all([
+    readProjectFile("docs/server-installation.md"),
+    readProjectFile("docs/agents/host-provisioning.md"),
+    readProjectFile("docs/reference/operations-and-hosting.md"),
+  ]);
+  const script = extractShellBlockAfter(hostProvisioning, "## Shared script: install Sporades Host server");
+
+  for (const [name, contents] of [["shared script", script], ["server installation", serverInstallation]]) {
+    const repository = contents.indexOf("https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt");
+    const install = contents.indexOf("apt-get install -y nodejs docker.io caddy");
+    assert.ok(repository >= 0 && install > repository, `${name}: the Caddy repository is configured before Caddy is installed`);
+    assert.match(contents, /dl\.cloudsmith\.io\/public\/caddy\/stable\/gpg\.key/, name);
+    assert.match(contents.slice(repository, install), /apt-get update/, name);
+  }
+  assert.match(serverInstallation, /### Upgrade Caddy on an existing Host/);
+  assert.match(serverInstallation, /apt-get install -y -o Dpkg::Options::=--force-confold caddy/);
+  for (const contents of [serverInstallation, hostProvisioning, operations]) {
+    assert.match(contents, /2\.9\.1/);
+    assert.doesNotMatch(contents, /2\.6\.2 is the minimum|supports Caddy 2\.6\.2|servers \{ metrics \}` *\n?and the/);
+  }
+});
+
 test("Host installation docs keep Fail2ban hardening separate from SSH audit truth", async () => {
   const serverInstallation = await readProjectFile("docs/server-installation.md");
 
