@@ -69,3 +69,9 @@ export function descendants(snapshot, pid, known = new Map()) {
   } while (size !== owned.size);
   return [...owned.values()];
 }
+
+export function countUnreportedCancellations(pending, countsAtPressure, finalCounts) {
+  const total = counts => counts ? counts.passed + counts.failed + counts.skipped + counts.cancelled + counts.todo : 0;
+  const reportedAfterPressure = Math.max(0, total(finalCounts) - total(countsAtPressure));
+  return Math.max(0, pending - reportedAfterPressure);
+}

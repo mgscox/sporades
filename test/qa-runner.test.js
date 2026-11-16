@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { countUnreportedCancellations } from '../scripts/test-resources.mjs';
 
 async function fixture(t, source) {
   const dir = await mkdtemp(path.join(tmpdir(), 'qa-runner-'));
@@ -321,6 +322,14 @@ test('QA ENOMEM identifies resource exhaustion without an RSS floor crossing', a
   assert.equal(result.summary.fail, 0);
   assert.equal(result.summary.timedOut, false);
   assert.equal(result.summary.pass + result.summary.cancelled, 3, result.output);
+});
+
+test('buffered results settle pending tests after resource exhaustion', () => {
+  const countsAtPressure = { passed: 1, failed: 0, skipped: 0, cancelled: 0, todo: 0 };
+  const buffered = { ...countsAtPressure, passed: 3, cancelled: 1 };
+  assert.equal(countUnreportedCancellations(3, countsAtPressure, buffered), 0);
+  assert.equal(countUnreportedCancellations(3, countsAtPressure, { ...buffered, passed: 2 }), 1);
+  assert.equal(countUnreportedCancellations(1, undefined, undefined), 1);
 });
 
 test('test cancellation without memory evidence remains a test failure', async t => {
