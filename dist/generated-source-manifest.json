@@ -38,6 +38,7 @@
       "src/cli/host-autostart.ts",
       "src/cli/host-availability.ts",
       "src/cli/host-backups.ts",
+      "src/cli/host-caddy-version.ts",
       "src/cli/host-domain-aliases.ts",
       "src/cli/host-helper-archive.ts",
       "src/cli/host-helper-config.ts",
@@ -174,7 +175,7 @@
       "tsconfig.json",
       "tsconfig.runtime.json"
     ],
-    "digest": "ddf613944fdd60aba93522e5d9a3f8ae7b99946d3d1c6d952259acf296ccbf3e"
+    "digest": "180d3409d4485dfe6b577174932e49a0bf27eaef4fa1a1ed1c7cf697fc872cfc"
   },
   "outputs": {
     "files": [
@@ -296,6 +297,10 @@
       "dist/cli/host-backups.d.ts.map",
       "dist/cli/host-backups.js",
       "dist/cli/host-backups.js.map",
+      "dist/cli/host-caddy-version.d.ts",
+      "dist/cli/host-caddy-version.d.ts.map",
+      "dist/cli/host-caddy-version.js",
+      "dist/cli/host-caddy-version.js.map",
       "dist/cli/host-domain-aliases.d.ts",
       "dist/cli/host-domain-aliases.d.ts.map",
       "dist/cli/host-domain-aliases.js",
@@ -774,6 +779,6 @@
       "dist/user-preferences-runtime.js.map",
       "monitoring/trace/inventory-contract.mjs"
     ],
-    "digest": "d6e4fc8658d7dc2558adea7e6f0a8cc09ffa33315854e4e9ac1d493b8ddf12d9"
+    "digest": "44c622f0a51634b44e58fc29f8d43a58363d827ce671b0e621bf17e820662e8c"
   }
 }

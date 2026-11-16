@@ -1,5 +1,13 @@
 # Changes
 
+## v0.9.53 - 2026-11-16
+
+Changes since v0.9.52.
+
+### 🐛 Bug Fixes
+
+- Require Caddy 2.9.1 and install it from the official repository (#424) (f83f017b).
+
 ## v0.9.52 - 2026-11-15
 
 Changes since v0.9.51.

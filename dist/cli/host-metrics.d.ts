@@ -7,6 +7,7 @@ export type HostMetrics = {
     caddyMetricsServer?: string;
 };
 export declare function readHostMetrics(root: string): Promise<HostMetrics | null>;
+export declare function renderHostMetricsCaddyfile(s: string, address: string): string;
 export declare function configureHostMetrics(root: string, host: string, operation?: "reconcile" | "enable" | "disable" | "remove"): Promise<HostMetrics>;
 export declare function hostScrapeConfig(state: HostMetrics): string;
 export declare function hostMetricsStatus(root: string): Promise<{

@@ -26595,8 +26595,46 @@ var init_inventory_contract = __esm({
   }
 });
 
-// src/cli/host-metrics.ts
+// src/cli/host-caddy-version.ts
 import { spawnSync as spawnSync3 } from "node:child_process";
+function parseCaddyVersion(output) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?![\d.])/.exec(String(output ?? "").trim());
+  return match ? `${Number(match[1])}.${Number(match[2])}.${Number(match[3])}` : null;
+}
+function caddyVersionSupported(version2) {
+  const actual = version2.split(".").map(Number);
+  const minimum = MINIMUM_CADDY_VERSION.split(".").map(Number);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if (actual[index] !== minimum[index]) return actual[index] > minimum[index];
+  }
+  return true;
+}
+function inspectCaddyVersion(timeout = 3e4) {
+  const result = spawnSync3("caddy", ["version"], { encoding: "utf8", timeout });
+  const available = !result.error && result.status === 0;
+  const version2 = available ? parseCaddyVersion(result.stdout) : null;
+  return { available, version: version2, minimumVersion: MINIMUM_CADDY_VERSION, supported: version2 !== null && caddyVersionSupported(version2) };
+}
+function assertSupportedCaddy(retry, timeout) {
+  const status = inspectCaddyVersion(timeout);
+  if (status.supported) return;
+  throw helperError(
+    status.version ? `Caddy ${status.version} is older than the minimum supported version ${MINIMUM_CADDY_VERSION}.` : "Could not determine the installed Caddy version.",
+    `${CADDY_UPGRADE_HINT} Then ${retry}.`
+  );
+}
+var MINIMUM_CADDY_VERSION, CADDY_UPGRADE_HINT;
+var init_host_caddy_version = __esm({
+  "src/cli/host-caddy-version.ts"() {
+    "use strict";
+    init_cli_support();
+    MINIMUM_CADDY_VERSION = "2.9.1";
+    CADDY_UPGRADE_HINT = `Install Caddy ${MINIMUM_CADDY_VERSION} or newer from the official Caddy apt repository (see "Upgrade Caddy on an existing Host" in docs/server-installation.md); distribution packages such as Ubuntu's 2.6.2 are too old.`;
+  }
+});
+
+// src/cli/host-metrics.ts
+import { spawnSync as spawnSync4 } from "node:child_process";
 import { createHash as createHash5, randomBytes as randomBytes3 } from "node:crypto";
 import { mkdir as mkdir3, lstat as lstat6, readFile as readFile5, writeFile as writeFile2, rename as rename4, rm as rm4, access, chmod as chmod2 } from "node:fs/promises";
 import { isIP as isIP3 } from "node:net";
@@ -26605,7 +26643,7 @@ function fail2(message) {
   throw helperError(message, "Inspect Host telemetry resources and protected Caddy configuration, then retry `sporades host telemetry reconcile`. No secret values are included in diagnostics.");
 }
 function run(command2, args, timeout = 6e4) {
-  const r = spawnSync3(command2, args, { encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
+  const r = spawnSync4(command2, args, { encoding: "utf8", timeout, maxBuffer: 2 * 1024 * 1024 });
   return { ok: !r.error && r.status === 0, text: String(r.stdout ?? "").trim() };
 }
 function inspect2(kind, name2) {
@@ -26667,45 +26705,27 @@ function tokens(s) {
 function stripManaged(s) {
   return s.replace(/# BEGIN Sporades Host metrics[\s\S]*?# END Sporades Host metrics\n?/g, "");
 }
-function enableCaddy(s, address) {
-  if (s.includes(`${BEGIN}
-http://${address}:20190 {
- bind ${address}
- metrics /metrics
-}
-${END}`)) return s;
+function renderHostMetricsCaddyfile(s, address) {
   s = stripManaged(s);
   const t2 = tokens(s);
-  const additions = [];
-  const metric = `
-${BEGIN}
+  const metric = `${BEGIN}
 metrics
 ${END}
 `;
   if (t2[0]?.value !== "{") {
     s = `{
-${BEGIN}
-servers {
- metrics
-}
-${END}
-}
+${metric}}
 ${s}`;
   } else {
-    let depth2 = 1, globalEnd = -1, catchall = false;
+    let depth2 = 1, globalEnd = -1, operatorMetrics = false;
     for (let i = 1; i < t2.length; i++) {
-      if (depth2 === 1 && t2[i].value === "servers") {
-        let open9 = i + 1;
-        while (open9 < t2.length && t2[open9].value !== "{") open9++;
-        if (open9 === t2.length) fail2("Cannot locate Caddy servers options.");
-        if (open9 === i + 1) catchall = true;
-        let d = 1, hasMetrics = false;
-        for (let j = open9 + 1; j < t2.length && d; j++) {
-          if (d === 1 && t2[j].value === "metrics") hasMetrics = true;
+      if (depth2 === 1 && t2[i].value === "metrics") operatorMetrics = true;
+      if (depth2 === 1 && t2[i].value === "servers" && t2[i + 1]?.value === "{") {
+        for (let j = i + 2, d = 1; j < t2.length && d; j++) {
+          if (d === 1 && t2[j].value === "metrics") operatorMetrics = true;
           if (t2[j].value === "{") d++;
           if (t2[j].value === "}") d--;
         }
-        if (!hasMetrics) additions.push({ at: t2[open9].end, text: metric });
       }
       if (t2[i].value === "{") depth2++;
       if (t2[i].value === "}") depth2--;
@@ -26715,13 +26735,7 @@ ${s}`;
       }
     }
     if (globalEnd < 0) fail2("Unclosed Caddy global options.");
-    if (!catchall) additions.push({ at: globalEnd, text: `${BEGIN}
-servers {
- metrics
-}
-${END}
-` });
-    for (const a of additions.sort((a2, b) => b.at - a2.at)) s = s.slice(0, a.at) + a.text + s.slice(a.at);
+    if (!operatorMetrics) s = s.slice(0, globalEnd) + metric + s.slice(globalEnd);
   }
   return `${s.trimEnd()}
 
@@ -26770,7 +26784,8 @@ async function configureCaddy(root, address, enabled) {
   await trusted(dir);
   await trusted(file);
   const before = await readFile5(file, "utf8");
-  const after = enabled ? enableCaddy(before, address) : stripManaged(before);
+  if (enabled) assertSupportedCaddy("retry `sporades host telemetry reconcile`");
+  const after = enabled ? renderHostMetricsCaddyfile(before, address) : stripManaged(before);
   if (before === after) return enabled ? metricsServer(file, address) : void 0;
   const candidate = path7.join(dir, `.telemetry-${randomBytes3(8).toString("hex")}.tmp`);
   await writeFile2(candidate, after, { flag: "wx", mode: 420 });
@@ -26875,6 +26890,7 @@ var init_host_metrics = __esm({
   "src/cli/host-metrics.ts"() {
     "use strict";
     init_cli_support();
+    init_host_caddy_version();
     HOST_METRICS_NETWORK = "sporades-host-metrics";
     NAME = "sporades-node-exporter";
     IMAGE = "quay.io/prometheus/node-exporter:v1.12.1";
@@ -26951,7 +26967,7 @@ __export(host_inventory_exports, {
   reconcileHostInventory: () => reconcileHostInventory,
   removeHostInventoryWorker: () => removeHostInventoryWorker
 });
-import { spawnSync as spawnSync4 } from "node:child_process";
+import { spawnSync as spawnSync5 } from "node:child_process";
 import { createHash as createHash6, randomBytes as randomBytes4 } from "node:crypto";
 import { lstat as lstat7, open as open4, readFile as readFile6, readdir as readdir4, rename as rename5, rm as rm5 } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
@@ -27080,7 +27096,7 @@ async function hostInventoryStatus(root, snapshotFailed = false) {
     const failed2 = snapshotFailed || unavailable2;
     const sameGeneration = Boolean(connection && state?.connectionGeneration === connection.generation);
     const acknowledgement = sameGeneration ? state?.acknowledgement : null;
-    const reconcilerInstalled = spawnSync4("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1e3 }).status === 0;
+    const reconcilerInstalled = spawnSync5("systemctl", ["is-enabled", `${inventoryUnit(root)}.timer`], { stdio: "ignore", timeout: 1e3 }).status === 0;
     return { host: state?.desired.host ?? connection?.host ?? connected?.inventoryHost ?? null, desiredRevision: state?.desired.revision ?? null, acknowledgedRevision: acknowledgement?.revision ?? null, acknowledgedAt: acknowledgement?.acknowledgedAt ?? null, pending: Boolean(connected && (failed2 || !sameGeneration || !state || state.desired.revision !== acknowledgement?.revision)), stale: Boolean(connected && (failed2 || !acknowledgement || Date.now() - Date.parse(acknowledgement.acknowledgedAt) > 18e4)), lastAttemptAt: state?.lastAttemptAt ?? null, failure: failed2 ? "snapshot-unavailable" : sameGeneration ? state?.failure ?? null : connected ? "snapshot-unavailable" : null, reconcilerInstalled };
   };
   return connected ? withHostTelemetryLock(root, status) : status();
@@ -27144,11 +27160,11 @@ function inventoryUnit(root) {
   return `sporades-inventory-${createHash6("sha256").update(root).digest("hex").slice(0, 16)}`;
 }
 function kickHostInventory(root) {
-  spawnSync4("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
+  spawnSync5("systemctl", ["start", "--no-block", `${inventoryUnit(root)}.service`], { stdio: "ignore", timeout: 1e3 });
 }
 async function installHostInventoryWorker(root) {
   directory(root);
-  const probe2 = spawnSync4("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
+  const probe2 = spawnSync5("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e3 });
   if (probe2.status !== 0 || probe2.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-unavailable" };
   const helper = path8.join(root, "bin", "sporades-host-helper");
   for (const file of ["/etc/systemd/system", helper]) {
@@ -27193,7 +27209,7 @@ WantedBy=timers.target
     }
     await atomicWrite(file, content2);
   }
-  for (const args of [["daemon-reload"], ["enable", "--now", `${unit}.timer`]]) if (spawnSync4("systemctl", args, { timeout: 1e4, stdio: "ignore" }).status !== 0) throw new Error("Inventory worker installation failed.");
+  for (const args of [["daemon-reload"], ["enable", "--now", `${unit}.timer`]]) if (spawnSync5("systemctl", args, { timeout: 1e4, stdio: "ignore" }).status !== 0) throw new Error("Inventory worker installation failed.");
   return { installed: true, unit: `${unit}.timer`, intervalSeconds: 60 };
 }
 async function removeHostInventoryWorker(root) {
@@ -27215,9 +27231,9 @@ async function removeHostInventoryWorker(root) {
       ...present.includes(files[0]) ? [["disable", "--now", `${unit}.timer`]] : [],
       ...present.includes(files[1]) ? [["stop", `${unit}.service`]] : []
     ];
-    for (const args of commands) if (spawnSync4("systemctl", args, { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
+    for (const args of commands) if (spawnSync5("systemctl", args, { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
     for (const file of present) await rm5(file);
-    if (spawnSync4("systemctl", ["daemon-reload"], { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
+    if (spawnSync5("systemctl", ["daemon-reload"], { stdio: "ignore", timeout: 1e4 }).status !== 0) throw new Error("Inventory worker removal failed.");
   }
   return { removed: true };
 }
@@ -27232,7 +27248,7 @@ var init_host_inventory = __esm({
 });
 
 // src/cli/host-telemetry-relay.ts
-import { spawnSync as spawnSync5 } from "node:child_process";
+import { spawnSync as spawnSync6 } from "node:child_process";
 import { createHash as createHash7, randomBytes as randomBytes5, X509Certificate } from "node:crypto";
 import { lstat as lstat8, mkdir as mkdir4, open as open5, readFile as readFile7, rename as rename6, rm as rm6 } from "node:fs/promises";
 import path9 from "node:path";
@@ -27435,7 +27451,7 @@ async function recoverActivation(files) {
   }
 }
 function docker(args) {
-  const result = spawnSync5("docker", args, { encoding: "utf8", timeout: 3e4, maxBuffer: 64 * 1024 });
+  const result = spawnSync6("docker", args, { encoding: "utf8", timeout: 3e4, maxBuffer: 64 * 1024 });
   return { ok: !result.error && result.status === 0, stdout: String(result.stdout ?? "").trim() };
 }
 function inspectRelay() {
@@ -29141,7 +29157,7 @@ function hostedPublicOrigin(record) {
 
 // src/cli/sporades-host-helper.ts
 init_base_image();
-import { spawn as spawn2, spawnSync as spawnSync8 } from "node:child_process";
+import { spawn as spawn2, spawnSync as spawnSync9 } from "node:child_process";
 import { constants as fsConstants, createReadStream as createReadStream3, statSync } from "node:fs";
 import { access as access2, chmod as chmod4, lstat as lstat13, mkdir as mkdir8, open as open8, opendir, readdir as readdir6, readFile as readFile11, readlink, rename as rename11, rm as rm11, stat, statfs as statfs2, symlink, writeFile as writeFile6 } from "node:fs/promises";
 import { createHash as createHash11, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes10 } from "node:crypto";
@@ -46633,7 +46649,7 @@ var mutationExecution = new MutationExecutionStorage();
 init_cli_support();
 
 // src/cli/cli-version.ts
-var CLI_VERSION = "0.9.52";
+var CLI_VERSION = "0.9.53";
 
 // src/cli/schedule-inspection-envelope.ts
 var SCHEDULE_DIAGNOSTIC_FIELDS = /* @__PURE__ */ new Set([
@@ -47100,7 +47116,7 @@ init_host_inventory();
 
 // src/cli/host-autostart.ts
 init_cli_support();
-import { spawnSync as spawnSync6 } from "node:child_process";
+import { spawnSync as spawnSync7 } from "node:child_process";
 import { createHash as createHash8, randomBytes as randomBytes6 } from "node:crypto";
 import { lstat as lstat9, readFile as readFile8, writeFile as writeFile3, rename as rename7, rm as rm7 } from "node:fs/promises";
 import path10 from "node:path";
@@ -47139,7 +47155,7 @@ WantedBy=multi-user.target
   };
 }
 async function installHostAutostart(host) {
-  const probe2 = spawnSync6("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
+  const probe2 = spawnSync7("systemctl", ["show", "docker.service", "--property=LoadState", "--value"], { encoding: "utf8", timeout: 1e4 });
   if (probe2.status !== 0 || probe2.stdout.trim() !== "loaded") return { installed: false, reason: "systemd-docker-unavailable" };
   const unit = `sporades-capsules-${createHash8("sha256").update(`${host.remoteRoot}\0${host.domain}`).digest("hex").slice(0, 16)}.service`;
   const shutdownUnit = unit.replace(/\.service$/, "-shutdown.service");
@@ -47214,12 +47230,15 @@ WantedBy=multi-user.target docker.service
       changed = true;
     }
   }
-  if (changed && spawnSync6("systemctl", ["daemon-reload"], { timeout: 3e4 }).status !== 0) throw helperError("Cannot reload Host autostart service.", "Inspect systemd and retry bootstrap.");
-  if (spawnSync6("systemctl", ["enable", unit, shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot enable Host autostart service.", "Inspect systemd and retry bootstrap.");
-  if (spawnSync6("systemctl", ["start", shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host shutdown evidence.", "Inspect systemd and retry bootstrap.");
-  if (spawnSync6("systemctl", ["enable", "--now", `${recovery.unit}.timer`], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host route recovery timer.", "Inspect systemd and retry bootstrap; Capsule starts remain operator-controlled.");
+  if (changed && spawnSync7("systemctl", ["daemon-reload"], { timeout: 3e4 }).status !== 0) throw helperError("Cannot reload Host autostart service.", "Inspect systemd and retry bootstrap.");
+  if (spawnSync7("systemctl", ["enable", unit, shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot enable Host autostart service.", "Inspect systemd and retry bootstrap.");
+  if (spawnSync7("systemctl", ["start", shutdownUnit], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host shutdown evidence.", "Inspect systemd and retry bootstrap.");
+  if (spawnSync7("systemctl", ["enable", "--now", `${recovery.unit}.timer`], { timeout: 3e4 }).status !== 0) throw helperError("Cannot activate Host route recovery timer.", "Inspect systemd and retry bootstrap; Capsule starts remain operator-controlled.");
   return { installed: true, unit, shutdownUnit, routeRecoveryTimer: `${recovery.unit}.timer`, startsExistingCapsules: false };
 }
+
+// src/cli/sporades-host-helper.ts
+init_host_caddy_version();
 
 // src/cli/host-observability-mail.ts
 init_cli_support();
@@ -47324,7 +47343,7 @@ function observabilityMailEnvironment(mail, domain) {
 
 // src/cli/host-observability.ts
 init_cli_support();
-import { spawnSync as spawnSync7 } from "node:child_process";
+import { spawnSync as spawnSync8 } from "node:child_process";
 import { createReadStream as createReadStream2 } from "node:fs";
 import { createHash as createHash10, randomBytes as randomBytes9 } from "node:crypto";
 import { chmod as chmod3, lstat as lstat12, mkdir as mkdir7, open as open7, readFile as readFile10, readdir as readdir5, rename as rename10, rm as rm10, statfs, writeFile as writeFile5 } from "node:fs/promises";
@@ -47369,7 +47388,7 @@ function assertObservabilityResources(cpus, memoryBytes, freeDiskBytes) {
   if (![cpus, memoryBytes, freeDiskBytes].every(Number.isFinite) || cpus < OBSERVABILITY_MINIMUM.cpus || memoryBytes < OBSERVABILITY_MINIMUM.memoryBytes || freeDiskBytes < OBSERVABILITY_MINIMUM.freeDiskBytes) fail4("Observability requires at least 2 CPUs, 2 GiB Docker memory and 20 GiB free disk, plus capacity for Capsules.");
 }
 function command(args, input, maxBuffer = 4 * 1024 * 1024) {
-  const r = spawnSync7("docker", args, { input, timeout: 6e5, maxBuffer });
+  const r = spawnSync8("docker", args, { input, timeout: 6e5, maxBuffer });
   if (r.error || r.status !== 0) fail4();
   return r.stdout;
 }
@@ -47392,7 +47411,7 @@ function composeArguments(host) {
 async function databaseDumpFile(host, args, file, restore = false) {
   const handle = await open7(file, restore ? "r" : "wx", 384);
   try {
-    const r = spawnSync7("docker", [...composeArguments(host), ...args], { stdio: restore ? [handle.fd, "pipe", "pipe"] : ["ignore", handle.fd, "pipe"], timeout: 36e5, maxBuffer: 4 * 1024 * 1024 });
+    const r = spawnSync8("docker", [...composeArguments(host), ...args], { stdio: restore ? [handle.fd, "pipe", "pipe"] : ["ignore", handle.fd, "pipe"], timeout: 36e5, maxBuffer: 4 * 1024 * 1024 });
     if (r.error || r.status !== 0) fail4("Observability database dump operation failed.");
   } finally {
     await handle.close();
@@ -47741,7 +47760,7 @@ async function installObservabilityMonitor(host, enabled, directory2 = "/etc/sys
       }
     }
   }
-  for (const args of [["daemon-reload"], [enabled ? "enable" : "disable", "--now", `${units.name}.timer`]]) if (spawnSync7("systemctl", args, { timeout: 3e4 }).status !== 0) fail4("Could not reconcile observability monitoring; retry the services command.");
+  for (const args of [["daemon-reload"], [enabled ? "enable" : "disable", "--now", `${units.name}.timer`]]) if (spawnSync8("systemctl", args, { timeout: 3e4 }).status !== 0) fail4("Could not reconcile observability monitoring; retry the services command.");
 }
 async function applyObservabilityMail(host) {
   const mail = await readObservabilityMail(host);
@@ -48172,7 +48191,7 @@ async function runHostHelperEntry() {
   }
   if (process.argv[2] === "--observe-host") {
     const host = JSON.parse(Buffer.from(process.argv[3] ?? "", "base64url").toString());
-    const child = spawnSync8(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: "host.services.status", host }), encoding: "utf8", timeout: 8e4 });
+    const child = spawnSync9(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: "host.services.status", host }), encoding: "utf8", timeout: 8e4 });
     let ok = false;
     try {
       ok = child.status === 0 && JSON.parse(child.stdout).ok === true;
@@ -48248,7 +48267,7 @@ async function runHostHelperInstaller() {
   if (!internal) {
     const timeoutMs = hostHelperUpgradeTimeoutMs("SPORADES_HOST_UPGRADE_LOCK_TIMEOUT_MS", 6e4);
     const flock = process.env.SPORADES_TEST_FLOCK_PATH || "/usr/bin/flock";
-    const result = spawnSync8(flock, [
+    const result = spawnSync9(flock, [
       "--exclusive",
       "--timeout",
       String(timeoutMs / 1e3),
@@ -48496,7 +48515,7 @@ async function runManagedRouteActionProcess(request2, input, lockIdentity) {
     process.execPath,
     process.argv[1]
   ] : [process.execPath, process.argv[1]];
-  const result = spawnSync8(flock, [
+  const result = spawnSync9(flock, [
     lockIdentity.routeLockFile && request2.action !== "capsule.register" ? "--shared" : "--exclusive",
     "--timeout",
     String(timeoutMs / 1e3),
@@ -49195,6 +49214,7 @@ function versionHost(request2) {
 }
 async function bootstrapHost(request2) {
   validateBootstrapRequest(request2);
+  assertSupportedCaddy("rerun `sporades host bootstrap`");
   const bootstrap = normaliseBootstrap(request2);
   await assertHostnamesAvailable(request2.host.remoteRoot, [`host.${request2.host.domain}`], `health:${request2.host.domain}`);
   await ensureBootstrapDirectories(bootstrap);
@@ -49596,7 +49616,7 @@ async function installClaimedRelease(request2, previousRecord, paths2, claimedAr
   await rm11(tempReleaseDirectory, { recursive: true, force: true });
   await rm11(tempCurrentLink, { force: true });
   await mkdir8(tempReleaseDirectory, { recursive: true });
-  const extract = spawnSync8("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
+  const extract = spawnSync9("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8"
   });
   if (extract.error || extract.status !== 0) {
@@ -50201,7 +50221,7 @@ async function resumeHostAtBoot() {
   for (const entry of (await readdir6(directory2, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isFile() || !/^[a-z0-9][a-z0-9-]*\.json$/.test(entry.name)) continue;
     const subname = entry.name.slice(0, -5);
-    const child = spawnSync8(process.execPath, [process.argv[1]], {
+    const child = spawnSync9(process.execPath, [process.argv[1]], {
       input: JSON.stringify({ action, host, capsule: { subname } }),
       encoding: "utf8",
       timeout: checkpointing ? 15e3 : 3e5,
@@ -50656,7 +50676,7 @@ async function backupHostFromTimer() {
     if (record.status === "unregistered" || !record.currentRelease?.id) continue;
     let ok = true;
     for (const operation of ["create", "prune"]) {
-      const child = spawnSync8(process.execPath, [process.argv[1]], {
+      const child = spawnSync9(process.execPath, [process.argv[1]], {
         input: JSON.stringify({ action: `capsule.backup.${operation}`, host, capsule: { subname: record.subname }, backup: { sourceSubname: record.subname } }),
         encoding: "utf8",
         timeout: 37e5,
@@ -50674,7 +50694,7 @@ async function backupHostFromTimer() {
   if ((await readObservabilityState(host))?.enabled) {
     let ok = true;
     for (const operation of ["backup", "prune"]) {
-      const child = spawnSync8(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: `host.services.${operation}`, host }), encoding: "utf8", timeout: 37e5, maxBuffer: 4 * 1024 * 1024 });
+      const child = spawnSync9(process.execPath, [process.argv[1]], { input: JSON.stringify({ action: `host.services.${operation}`, host }), encoding: "utf8", timeout: 37e5, maxBuffer: 4 * 1024 * 1024 });
       try {
         ok = child.status === 0 && JSON.parse(child.stdout).ok === true;
       } catch {
@@ -51310,7 +51330,7 @@ async function statsHost(request2) {
   validateHostStatsRequest(request2);
   const records = await readCapsuleRegistryRecords(request2);
   const dockerAvailable = checkDockerAvailable();
-  const caddyAvailable = checkCaddyAvailable();
+  const caddy = inspectCaddyVersion();
   const dockerStates = dockerAvailable ? records.map((record) => lookupCapsuleDockerState(request2, record)) : [];
   const data2 = {
     host: {
@@ -51326,7 +51346,7 @@ async function statsHost(request2) {
     },
     services: {
       docker: { available: dockerAvailable },
-      caddy: { available: caddyAvailable }
+      caddy
     },
     capsules: countHostedCapsules(records, dockerStates)
   };
@@ -51927,10 +51947,6 @@ function readHostLoadStats() {
 }
 function checkDockerAvailable() {
   return runDocker(["version", "--format", "{{.Server.Version}}"]).ok;
-}
-function checkCaddyAvailable() {
-  const result = spawnSync8("caddy", ["version"], { encoding: "utf8" });
-  return !result.error && result.status === 0;
 }
 function countHostedCapsules(records, dockerStates) {
   let running = 0;
@@ -52870,8 +52886,8 @@ async function provisionRouteLogFile(route, mutationBoundary) {
   });
 }
 function resolveCaddyServiceUser() {
-  const user = spawnSync8("id", ["-u", "caddy"], { encoding: "utf8" });
-  const group = spawnSync8("id", ["-g", "caddy"], { encoding: "utf8" });
+  const user = spawnSync9("id", ["-u", "caddy"], { encoding: "utf8" });
+  const group = spawnSync9("id", ["-g", "caddy"], { encoding: "utf8" });
   if (user.error || user.status !== 0 || group.error || group.status !== 0) {
     return null;
   }
@@ -52902,7 +52918,7 @@ async function validateBootstrapTls(request2, bootstrap) {
   await provisionCaddyRouteFileAccess(bootstrap.tls.key);
 }
 function ensureDockerNetwork(networkName) {
-  const inspect3 = spawnSync8("docker", ["network", "inspect", networkName], { encoding: "utf8" });
+  const inspect3 = spawnSync9("docker", ["network", "inspect", networkName], { encoding: "utf8" });
   if (inspect3.error) {
     throw helperError(
       "Docker is unavailable on the Host server.",
@@ -52912,7 +52928,7 @@ function ensureDockerNetwork(networkName) {
   if (inspect3.status === 0) {
     return { name: networkName, created: false };
   }
-  const create = spawnSync8("docker", ["network", "create", networkName], { encoding: "utf8" });
+  const create = spawnSync9("docker", ["network", "create", networkName], { encoding: "utf8" });
   if (create.error || create.status !== 0) {
     throw helperError(
       "Failed to create the Hosted Capsule Docker network.",
@@ -53041,7 +53057,8 @@ function trustedBootstrapFinalFileOwner(file) {
   return activeManagedRouteTrust?.finalFiles.find((entry) => entry.path === file)?.expectedOwner;
 }
 function validateCaddyBootstrap(caddyfile) {
-  const result = spawnSync8("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  assertSupportedCaddy("rerun `sporades host bootstrap`");
+  const result = spawnSync9("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate the Sporades Caddy bootstrap configuration.",
@@ -53050,7 +53067,7 @@ function validateCaddyBootstrap(caddyfile) {
   }
 }
 function reloadCaddyBootstrap(caddyfile) {
-  const result = spawnSync8("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  const result = spawnSync9("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to reload the Sporades Caddy bootstrap configuration.",
@@ -53277,7 +53294,7 @@ function ensureHostedBaseImage(lifecycle) {
   }
 }
 function runDocker(args, options = {}) {
-  const result = spawnSync8("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}, ...options.timeoutMs || process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? { timeout: options.timeoutMs ?? 1500 } : {} });
+  const result = spawnSync9("docker", args, { encoding: "utf8", ...options.maxBuffer ? { maxBuffer: options.maxBuffer } : {}, ...options.timeoutMs || process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? { timeout: options.timeoutMs ?? 1500 } : {} });
   if (options.ignoreFailure) {
     return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
@@ -53516,11 +53533,17 @@ function renderRunningRoute(route) {
     "    header Cache-Control public,*",
     "  }",
     "}",
-    // Identity must vary too. Defer preserves upstream Vary on Caddy 2.6.2;
-    // response-header match blocks require 2.9 and misparse on older Hosts.
+    // Caddy adds Vary only to encoded responses; identity variants must vary too.
+    // Response-header match blocks need Caddy 2.9.1, the enforced Host minimum.
     "header @sporadesStaticAssets {",
     "  +Vary Accept-Encoding",
-    "  defer",
+    "  match {",
+    "    header Content-Type text/javascript*",
+    "    header Content-Type application/javascript*",
+    "    header Content-Type text/css*",
+    "    header Cache-Control no-cache",
+    "    header Cache-Control public,*",
+    "  }",
     "}",
     `request_header -${ACCESS_KEY_CLIENT_ADDRESS_HEADER}`,
     `request_header -${CLIENT_ADDRESS_TOKEN_HEADER}`,
@@ -53848,7 +53871,7 @@ function linuxDeviceMajorMinor(deviceNumber) {
 function testDescriptorOwnsFlock(lockFile) {
   const flock = process.env.SPORADES_TEST_FLOCK_PATH;
   if (!flock) return false;
-  const result = spawnSync8(flock, [
+  const result = spawnSync9(flock, [
     "--exclusive",
     "--timeout",
     "0",
@@ -53912,7 +53935,7 @@ function managedRouteProtocolOwnerIsLive(owner) {
   if (owner.processIdentity === null) {
     return true;
   }
-  const result = spawnSync8("ps", ["-o", "lstart=", "-p", String(owner.pid)], { encoding: "utf8" });
+  const result = spawnSync9("ps", ["-o", "lstart=", "-p", String(owner.pid)], { encoding: "utf8" });
   const currentIdentity = result.status === 0 ? result.stdout.trim() || null : null;
   return currentIdentity === null || currentIdentity === owner.processIdentity;
 }
@@ -54101,7 +54124,8 @@ function runtimeDataOwnershipError(targetPath, uid, gid) {
   );
 }
 function validateCaddyRoute(routeFile) {
-  const result = spawnSync8("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4 });
+  assertSupportedCaddy("retry the lifecycle command", process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4);
+  const result = spawnSync9("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4 });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate Hosted Capsule route.",
@@ -54111,7 +54135,7 @@ function validateCaddyRoute(routeFile) {
 }
 function reloadCaddy(lifecycle) {
   const configPath = path15.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
-  const result = spawnSync8("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4 });
+  const result = spawnSync9("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8", timeout: process.env.SPORADES_HOST_ROUTE_RECOVERY === "1" ? 2e3 : 3e4 });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to apply Hosted Capsule route.",
@@ -54716,7 +54740,7 @@ async function readManagedCaddyAccessLog(logs) {
   return lastLogEntries(contents, logs.lines);
 }
 function readCaddyJournalLogs(logs) {
-  const result = spawnSync8("journalctl", ["-u", "caddy", "-n", String(logs.lines), "--no-pager", "-o", "cat"], {
+  const result = spawnSync9("journalctl", ["-u", "caddy", "-n", String(logs.lines), "--no-pager", "-o", "cat"], {
     encoding: "utf8"
   });
   if (result.error || result.status !== 0) {
@@ -54725,7 +54749,7 @@ function readCaddyJournalLogs(logs) {
   return lastLogEntries(result.stdout ?? "", logs.lines);
 }
 function readDockerStreamLogs(logs) {
-  const result = spawnSync8("docker", ["logs", "--tail", String(logs.lines), logs.container.name], {
+  const result = spawnSync9("docker", ["logs", "--tail", String(logs.lines), logs.container.name], {
     encoding: "utf8"
   });
   if (result.error || result.status !== 0) {
