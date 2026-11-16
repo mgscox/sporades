@@ -6,7 +6,7 @@ import { createConnection } from 'node:net';
 import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { testHarnessArgs } from './test-harness-args.mjs';
-import { processes, systemMemory, descendants } from './test-resources.mjs';
+import { processes, systemMemory, descendants, countUnreportedCancellations } from './test-resources.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 // testHarnessArgs passes the reporter as a file: URL: --test-reporter is loaded
@@ -46,8 +46,12 @@ function exhausted(reason) {
   sampleMemoryEvidence();
   runningAtExhaustion = [...children.values()].map(c => c.file ? path.relative(root, c.file) : c.label);
   for (const state of children.values()) if (state.file) {
-    pressureCancellations.set(state.file, Math.max(1, pendingTests.get(state.file) ?? 0));
-    failuresBeforePressure.set(state.file, (partial.get(state.file) ?? completed.get(state.file))?.failed ?? 0);
+    const counts = partial.get(state.file) ?? completed.get(state.file);
+    pressureCancellations.set(state.file, {
+      pending: Math.max(1, pendingTests.get(state.file) ?? 0),
+      counts: counts && { ...counts },
+    });
+    failuresBeforePressure.set(state.file, counts?.failed ?? 0);
   }
   console.error('RESOURCE PRESSURE ' + JSON.stringify({ reason, runningFiles: runningAtExhaustion, ...memory }));
   stop();
@@ -457,7 +461,11 @@ try {
   sampleMemoryEvidence();
   const totals = [...completed.values(), ...partial.values()].reduce((sum, c) => ({ pass: sum.pass + c.passed, fail: sum.fail + c.failed, cancelled: sum.cancelled + c.cancelled, skip: sum.skip + c.skipped, todo: sum.todo + c.todo }), { pass: 0, fail: 0, cancelled: 0, skip: 0, todo: 0 });
   const unfinishedFiles = selected.filter(file => !completed.has(file)).length;
-  const cancelledByPressure = [...pressureCancellations].reduce((sum, [file, count]) => sum + Math.max(0, count - ((partial.get(file) ?? completed.get(file))?.cancelled ?? 0)), 0);
+  // Readline can deliver buffered results after the stop request.
+  const cancelledByPressure = [...pressureCancellations].reduce((sum, [file, { pending, counts }]) => {
+    const finalCounts = partial.get(file) ?? completed.get(file);
+    return sum + countUnreportedCancellations(pending, counts, finalCounts);
+  }, 0);
   const summary = {
     ...totals,
     fail: totals.fail + (resourceExhaustion ? 0 : totals.cancelled + infrastructureFailures + Number(timedOut || interrupted)),
